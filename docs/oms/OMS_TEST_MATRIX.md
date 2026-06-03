@@ -152,7 +152,7 @@ Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界
 
 | 场景 | 预期 | 状态 |
 |---|---|---|
-| 重启恢复 open orders | 批量入口留到 Phase 2.4；Phase 2.3A 只覆盖单笔 `recover_order`。 | Phase 2.4 blocker |
+| 重启恢复 open orders | 通过真实 PostgreSQL `UnitOfWork.orders.list_open_orders()` 获取 open/recovery orders，并逐笔调用 `OMSService.recover_order`；终态订单不进入入口。 | Done |
 | 事件流一致 | 返回当前订单，不写额外事件。 | Done |
 | 事件流不一致 | 进入 `UNKNOWN` 或保持 `UNKNOWN`，append 诊断事件。 | Done |
 | 缺少初始事件 | 进入 `UNKNOWN`。 | Done |
@@ -201,6 +201,8 @@ Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界
 | PostgreSQL terminal recover | 终态保护，不自动恢复、不回退。 | Done |
 | PostgreSQL append 后 update 失败 | 同事务 rollback，事件不可见。 | Done |
 | raw_payload 非 source-of-truth | 类型化字段决定状态，`raw_payload` 只作诊断。 | Done |
+| 非法迁移类型化拒绝 | `previous_status == current` 但目标非法时返回 `MISMATCH_REJECTED`，不抛状态机异常，不写成功事件。 | Done |
+| PostgreSQL open orders 批量恢复入口 | open/recovery 集合由 `list_open_orders()` 返回，逐笔恢复覆盖 no-op、UNKNOWN 可恢复、UNKNOWN 不可恢复和终态排除。 | Done |
 | 完整乱序撮合语义 | 不在 Phase 2.5 实现。 | Phase 2.6+ |
 | 外部查询恢复 | 不在 Phase 2.5 实现。 | Phase 3+ |
 | `risk_events` 持久化 | Phase 3 最小版禁止写；未来必须先设计 RiskEventRepository/UoW。 | Phase 3+ |

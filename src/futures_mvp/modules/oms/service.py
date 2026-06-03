@@ -181,6 +181,12 @@ class OMSService:
                 )
 
             if event.previous_status == order.status:
+                if not can_transition(order.status, event.new_status):
+                    return self._result(
+                        EventApplicationStatus.MISMATCH_REJECTED,
+                        order,
+                        reason="invalid_transition_rejected",
+                    )
                 return self._apply_validated_event(
                     uow,
                     order,

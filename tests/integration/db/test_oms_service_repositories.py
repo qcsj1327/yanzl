@@ -110,6 +110,55 @@ def _event_count(session: Session) -> int:
     return session.scalar(select(func.count()).select_from(OrderEventOrm)) or 0
 
 
+def _set_order_status(
+    db_session_factory: sessionmaker[Session],
+    order_id: str,
+    status: OrderStatus,
+) -> None:
+    with SQLAlchemyUnitOfWork(session_factory=db_session_factory) as uow:
+        uow.orders.update_status(order_id, status)
+        uow.commit()
+
+
+def _append_order_event_row(
+    db_session_factory: sessionmaker[Session],
+    order_id: str,
+    *,
+    previous_status: OrderStatus,
+    new_status: OrderStatus,
+    external_event_id: str,
+) -> None:
+    with db_session_factory.begin() as session:
+        session.add(
+            OrderEventOrm(
+                order_id=int(order_id),
+                previous_status=previous_status.value,
+                new_status=new_status.value,
+                event_source=EventSource.SYSTEM.value,
+                external_event_id=external_event_id,
+                raw_payload={"diagnostic": True},
+                occurred_at=NOW,
+            )
+        )
+
+
+def _append_status_stream(
+    db_session_factory: sessionmaker[Session],
+    order_id: str,
+    transitions: list[tuple[OrderStatus, OrderStatus]],
+    *,
+    event_id_prefix: str,
+) -> None:
+    for index, (previous_status, new_status) in enumerate(transitions, start=1):
+        _append_order_event_row(
+            db_session_factory,
+            order_id,
+            previous_status=previous_status,
+            new_status=new_status,
+            external_event_id=f"{event_id_prefix}-{index}",
+        )
+
+
 def test_service_create_order_commits_order_and_initial_event(
     db_session_factory: sessionmaker[Session],
 ) -> None:
@@ -631,6 +680,100 @@ def test_service_recover_order_unknown_unrecoverable_stays_unknown(
 
     assert result.status == EventApplicationStatus.MISMATCH_REJECTED
     assert result.order.status == OrderStatus.UNKNOWN
+
+
+def test_open_orders_can_be_batch_recovered_without_external_engines(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    service = _service(db_session_factory)
+    open_statuses = [
+        OrderStatus.SUBMITTING,
+        OrderStatus.SUBMIT_TIMEOUT,
+        OrderStatus.SUBMITTED,
+        OrderStatus.ACKED,
+        OrderStatus.PARTIALLY_FILLED,
+        OrderStatus.CANCEL_PENDING,
+        OrderStatus.CANCEL_FAILED,
+        OrderStatus.UNKNOWN,
+    ]
+    terminal_statuses = [
+        OrderStatus.REJECTED_BY_RISK,
+        OrderStatus.SUBMIT_FAILED,
+        OrderStatus.CANCELED,
+        OrderStatus.FILLED,
+        OrderStatus.REJECTED_BY_EXCHANGE,
+        OrderStatus.EXPIRED,
+    ]
+    open_order_ids: dict[OrderStatus, str] = {}
+    terminal_order_ids: set[str] = set()
+
+    for status in open_statuses:
+        request = _order_request()
+        order = service.create_order(request, client_order_id=request.client_order_id)
+        _set_order_status(db_session_factory, order.order_id, status)
+        open_order_ids[status] = order.order_id
+
+    _append_status_stream(
+        db_session_factory,
+        open_order_ids[OrderStatus.SUBMITTING],
+        [
+            (OrderStatus.CREATED, OrderStatus.RISK_CHECKING),
+            (OrderStatus.RISK_CHECKING, OrderStatus.RISK_ACCEPTED),
+            (OrderStatus.RISK_ACCEPTED, OrderStatus.SUBMITTING),
+        ],
+        event_id_prefix="batch-consistent-submitting",
+    )
+
+    recoverable_request = _order_request()
+    recoverable_unknown = service.create_order(
+        recoverable_request,
+        client_order_id=recoverable_request.client_order_id,
+    )
+    _append_status_stream(
+        db_session_factory,
+        recoverable_unknown.order_id,
+        [
+            (OrderStatus.CREATED, OrderStatus.RISK_CHECKING),
+            (OrderStatus.RISK_CHECKING, OrderStatus.RISK_ACCEPTED),
+            (OrderStatus.RISK_ACCEPTED, OrderStatus.SUBMITTING),
+            (OrderStatus.SUBMITTING, OrderStatus.SUBMITTED),
+            (OrderStatus.SUBMITTED, OrderStatus.ACKED),
+            (OrderStatus.ACKED, OrderStatus.FILLED),
+        ],
+        event_id_prefix="batch-recoverable-unknown",
+    )
+    _set_order_status(db_session_factory, recoverable_unknown.order_id, OrderStatus.UNKNOWN)
+
+    for status in terminal_statuses:
+        request = _order_request()
+        order = service.create_order(request, client_order_id=request.client_order_id)
+        _set_order_status(db_session_factory, order.order_id, status)
+        terminal_order_ids.add(order.order_id)
+
+    with SQLAlchemyUnitOfWork(session_factory=db_session_factory) as uow:
+        open_orders = uow.orders.list_open_orders()
+
+    listed_order_ids = {order.order_id for order in open_orders}
+    assert set(open_order_ids.values()).issubset(listed_order_ids)
+    assert recoverable_unknown.order_id in listed_order_ids
+    assert listed_order_ids.isdisjoint(terminal_order_ids)
+
+    results = {
+        order.order_id: service.recover_order(order.order_id)
+        for order in open_orders
+    }
+
+    consistent_result = results[open_order_ids[OrderStatus.SUBMITTING]]
+    assert consistent_result.status == EventApplicationStatus.APPLIED
+    assert consistent_result.order.status == OrderStatus.SUBMITTING
+
+    recovered_result = results[recoverable_unknown.order_id]
+    assert recovered_result.status == EventApplicationStatus.RECOVERED_FROM_UNKNOWN
+    assert recovered_result.order.status == OrderStatus.FILLED
+
+    unrecoverable_result = results[open_order_ids[OrderStatus.UNKNOWN]]
+    assert unrecoverable_result.status == EventApplicationStatus.MISMATCH_REJECTED
+    assert unrecoverable_result.order.status == OrderStatus.UNKNOWN
 
 
 def test_service_recover_order_terminal_status_is_protected(

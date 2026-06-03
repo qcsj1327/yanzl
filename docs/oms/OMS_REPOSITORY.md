@@ -522,6 +522,14 @@ class OMSService:
 9. 在同一事务内更新订单状态并 append 原始事件。
 10. 显式 `commit`。
 
+非法目标迁移：
+
+- `event.previous_status == current.status` 但 `can_transition(current.status, event.new_status)` 为 false 时，返回 `MISMATCH_REJECTED`。
+- 不调用 `update_status`。
+- 不 append 成功事件。
+- 不泄漏 `InvalidOrderTransition` 给正常事件应用调用方。
+- 不自动进入 `UNKNOWN`，除非事件语义符合明确的 UNKNOWN 进入规则。
+
 禁止：
 
 - 不生成成交。
@@ -647,8 +655,8 @@ old event 是已经被当前订单状态覆盖、不会改变事实的迟到事�
 
 重启恢复流程候选：
 
-1. Phase 2.3A 只实现单笔 `recover_order(order_id)`。
-2. 批量重启恢复入口留到 Phase 2.4，通过 `OrderRepository.list_open_orders()` 找到 open/recovery orders 后逐笔调用 `recover_order(order_id)`。
+1. Phase 2.6 当前批量重启恢复入口由调用方通过 `OrderRepository.list_open_orders()` 找到 open/recovery orders 后逐笔调用 `recover_order(order_id)`。
+2. 当前阶段不新增 `OMSService.recover_open_orders()` 批量 API。
 3. `recover_order` 读取当前订单和按 `order_events.id` 升序排列的事件流。
 4. 从订单创建事件开始重放状态迁移。
 5. 每一步使用状态机校验迁移。

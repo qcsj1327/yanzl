@@ -613,6 +613,27 @@ def test_apply_order_event_previous_status_mismatch_enters_unknown() -> None:
     )
 
 
+def test_apply_order_event_invalid_transition_returns_typed_rejection() -> None:
+    uow = FakeUnitOfWork()
+    service = _service(uow)
+    order = service.create_order(_order_request(), client_order_id="client-1")
+    before_count = len(uow.order_events.events)
+
+    result = service.apply_order_event(
+        _event(
+            order.order_id,
+            previous_status=OrderStatus.CREATED,
+            new_status=OrderStatus.FILLED,
+            external_event_id="invalid-created-to-filled",
+        )
+    )
+
+    assert result.status == EventApplicationStatus.MISMATCH_REJECTED
+    assert result.order.status == OrderStatus.CREATED
+    assert len(uow.order_events.events) == before_count
+    assert uow.orders.get_by_id(order.order_id).status == OrderStatus.CREATED  # type: ignore[union-attr]
+
+
 def test_apply_order_event_missing_previous_status_enters_unknown() -> None:
     uow = FakeUnitOfWork()
     service = _service(uow)

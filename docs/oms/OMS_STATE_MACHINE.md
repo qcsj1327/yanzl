@@ -109,6 +109,8 @@ OMS 禁止负责：
 - `REJECTED_BY_EXCHANGE` 不得进入成交或撤单状态。
 - `EXPIRED` 不得进入成交或撤单状态。
 - `previous_status` 与当前状态不一致时，不得直接按普通事件应用。
+- `apply_order_event` 收到 `previous_status` 与当前状态一致、但目标状态不在合法迁移矩阵内的事件时，必须返回 `MISMATCH_REJECTED`，不得泄漏状态机异常。
+- 非法迁移不得更新订单状态，不得 append 成功状态事件，不得自动进入 `UNKNOWN`，除非事件语义另有明确 UNKNOWN 进入规则。
 
 ## UNKNOWN 进入条件
 
