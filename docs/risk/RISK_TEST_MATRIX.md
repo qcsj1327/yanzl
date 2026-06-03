@@ -26,9 +26,32 @@ Phase 3.0 进入实现前，以下 Phase 3.0 项默认为 `Pending`。实现完�
 | max position reject skeleton | `projected_position > max_position` 时拒绝。 | Pending |
 | first rejection wins | 多条规则同时失败时，返回第一条拒绝规则。 | Pending |
 | Decimal no float | 风控计算不得接受或产生 `float`。 | Pending |
-| pure config/context 字段存在性与默认值 | 内存配置包含 Phase 3.0 最小字段表；可选字段允许 `None`。 | Pending |
+| pure config/context 字段存在性与默认值 | 内存配置包含 Phase 3.0 最小字段表，并按契约提供默认值。 | Pending |
+| None disabled semantics | `None` 按契约禁用对应 skeleton 规则，不得被误判为拒绝。 | Pending |
+| dict missing key semantics | 字典缺 key 按契约禁用单 instrument 检查或触发配置错误。 | Pending |
+| config error raises `RiskConfigurationError` | 配置错误抛 `RiskConfigurationError`，不得返回普通 `REJECTED` 掩盖系统错误。 | Pending |
 | RiskEngine 不 import OMS/db/repository | RiskEngine 不依赖 `OMSService`、Repository / UnitOfWork / ORM / DB。 | Pending |
 | RiskEngine 不写 `risk_events` | Phase 3.0 不写 `risk_events`，不触碰 DB。 | Pending |
+
+## Config / Context 语义测试
+
+| 场景 | 预期 | 状态 |
+|---|---|---|
+| `disabled_instruments` 默认值 | 缺失时视为空集合，表示没有禁用合约。 | Pending |
+| `max_order_quantity is None` | 禁用最大单笔数量检查。 | Pending |
+| `max_notional is None` | 禁用最大名义金额检查。 | Pending |
+| `max_notional` 启用但缺 multiplier | 缺少 `contract_multiplier_by_instrument[signal.instrument_id]` 时抛 `RiskConfigurationError`。 | Pending |
+| multiplier 缺 key 且 `max_notional is None` | 不使用乘数，不拒绝，不抛配置错误。 | Pending |
+| `limit_up_by_instrument` 缺 key | 禁用该 instrument 的涨停检查。 | Pending |
+| `limit_down_by_instrument` 缺 key | 禁用该 instrument 的跌停检查。 | Pending |
+| `is_trading_session_allowed` 默认值 | 默认 `True`，Phase 3.0 不计算 calendar/session。 | Pending |
+| `allowed_offsets` 默认值 | 默认包含所有当前 `Offset` enum values。 | Pending |
+| `allowed_offsets` 为空集合 | 表示不允许任何 offset，所有 offset 均拒绝。 | Pending |
+| `available_margin` 与 `required_margin` 同为 `None` | 禁用 margin skeleton。 | Pending |
+| `available_margin` without `required_margin` | 抛 `RiskConfigurationError`。 | Pending |
+| `projected_position` 与 `max_position` 同为 `None` | 禁用 max position skeleton。 | Pending |
+| `max_position` without `projected_position` | 抛 `RiskConfigurationError`。 | Pending |
+| `current_position` diagnostic only | 不使用 `current_position` 推导 `projected_position`，只允许透传 / 诊断。 | Pending |
 
 ## 输入输出契约测试
 
@@ -42,6 +65,7 @@ Phase 3.0 进入实现前，以下 Phase 3.0 项默认为 `Pending`。实现完�
 | `RiskResult.reason` 可选 | `reason` 类型为 `str | None`；接受路径可为空，拒绝路径建议填写。 | Pending |
 | 正常拒绝不抛异常 | 规则拒绝通过 `RiskResult` 表达。 | Pending |
 | 系统错误才抛异常 | 输入缺失、类型错误或配置错误可抛异常。 | Pending |
+| 非 Decimal 核心数值 | 非 `Decimal` 数值进入核心计算时抛系统错误，不参与风控计算。 | Pending |
 
 ## 边界禁止测试
 
@@ -57,6 +81,12 @@ Phase 3.0 进入实现前，以下 Phase 3.0 项默认为 `Pending`。实现完�
 | 不调用真实交易接口 / CTP / SimNow / broker adapter | RiskEngine 不 import、不实例化、不调用任何真实交易接入或适配器。 | Pending |
 | 不读取环境变量 / 文件 | 配置来自纯内存对象或规则参数。 | Pending |
 | 不调用外部服务 | 不调用 HTTP / RPC / Redis / broker。 | Pending |
+| 不 import `futures_mvp.db.*` | RiskEngine 不 import DB 包或 ORM model。 | Pending |
+| 不 import `RiskEvent` ORM | 现有 `risk_events` schema 不属于 pure Risk 可用依赖。 | Pending |
+| 不新增 Domain 字段 | Phase 3.0 Risk 实现不得为规则上下文新增 Domain 字段。 | Pending |
+| 不新增 DB schema / migration | Phase 3.0 Risk 实现不得新增 schema 或 Alembic migration。 | Pending |
+| 不依赖 raw / metadata / details | Risk 不得把 `raw`、`metadata`、`details` 或 `raw_payload` 当作 source-of-truth。 | Pending |
+| 不新增 live / production / remote / KMS / cloud 文件 | Phase 3.0 不新增生产、远程、密钥或云流程文档 / 配置。 | Pending |
 
 ## Phase 3.1+ 后续项
 

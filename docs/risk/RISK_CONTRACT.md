@@ -47,7 +47,7 @@ Risk 禁止负责：
 
 `check_order` 方法参数只接收 `Signal`。
 
-非 `Signal` 风控上下文只能通过构造时注入的纯内存配置或规则参数提供。RiskEngine 本身仍保持 pure computation。
+非 `Signal` 风控上下文只能通过构造时注入的纯内存配置对象或规则参数提供，不得作为 `check_order` method 参数传入。RiskEngine 本身仍保持 pure computation。
 
 当前不直接消费 `OrderRequest`。如果后续需要 Risk 直接消费 `OrderRequest`，必须先做 domain/interface migration，并同步更新契约、测试和文档。
 
@@ -72,6 +72,8 @@ Risk 禁止：
 - 查询 DB。
 - 调用 OMS、Position、Margin 或 Calendar 模块。
 - 读取或写入 `orders`、`order_events`、`risk_events`。
+- import `futures_mvp.db.*`。
+- import `RiskEvent` ORM。
 - 通过 `raw_payload`、`metadata`、`raw` 或 `details` 承载 source-of-truth 字段。
 
 ## Phase 3.0 Pure Risk Config / Context
@@ -86,21 +88,21 @@ Risk 禁止：
 - 只能通过构造时注入的纯内存配置或规则参数提供。
 - 不允许 Risk 通过 DB、OMS、Position、Margin、Calendar 或外部服务自行获取。
 
-| 字段 | 类型 | 用途 |
-|---|---|---|
-| `disabled_instruments` | `set[str]` | 禁用合约检查。 |
-| `max_order_quantity` | `Decimal | None` | 最大单笔数量。 |
-| `max_notional` | `Decimal | None` | 最大单笔名义金额。 |
-| `contract_multiplier_by_instrument` | `dict[str, Decimal]` | 名义金额计算乘数。 |
-| `limit_up_by_instrument` | `dict[str, Decimal]` | 涨停价。 |
-| `limit_down_by_instrument` | `dict[str, Decimal]` | 跌停价。 |
-| `is_trading_session_allowed` | `bool` | 当前是否允许交易。Phase 3.0 不计算交易日历，只消费布尔值。 |
-| `allowed_offsets` | `set[Offset]` | Phase 3.0 offset skeleton 只检查 offset 是否在配置允许集合中。 |
-| `available_margin` | `Decimal | None` | 可用保证金输入值。 |
-| `required_margin` | `Decimal | None` | 本次请求所需保证金输入值。 |
-| `current_position` | `Decimal | None` | 当前输入持仓数量。 |
-| `projected_position` | `Decimal | None` | 本次交易后预计持仓数量。 |
-| `max_position` | `Decimal | None` | 最大持仓限制。 |
+| 字段 | 类型 | 默认值 / 缺失行为 | `None` / 缺 key 语义 | 是否启用规则 |
+|---|---|---|---|---|
+| `disabled_instruments` | `set[str]` | 默认空集合；缺失视为空集合。 | 不适用。空集合表示没有禁用合约。 | 集合非空时启用禁用合约检查。 |
+| `max_order_quantity` | `Decimal | None` | 默认 `None`。 | `None` 表示禁用最大单笔数量检查；非 `None` 时 `Signal.quantity` 超过则拒绝。 | 非 `None` 时启用。 |
+| `max_notional` | `Decimal | None` | 默认 `None`。 | `None` 表示禁用最大名义金额检查；非 `None` 时必须有对应合约乘数。 | 非 `None` 时启用。 |
+| `contract_multiplier_by_instrument` | `dict[str, Decimal]` | 默认空字典；缺失视为空字典。 | 若 `max_notional is None`，缺 key 不使用、不拒绝；若 `max_notional is not None`，缺 key 是配置错误，不得静默通过，不得用 `1` 兜底。 | 不是独立拒绝规则，仅服务名义金额检查。 |
+| `limit_up_by_instrument` | `dict[str, Decimal]` | 默认空字典；缺失视为空字典。 | 缺 key 表示禁用该 instrument 的涨停检查；非缺 key 时价格高于涨停价拒绝。 | instrument 有 key 时启用。 |
+| `limit_down_by_instrument` | `dict[str, Decimal]` | 默认空字典；缺失视为空字典。 | 缺 key 表示禁用该 instrument 的跌停检查；非缺 key 时价格低于跌停价拒绝。 | instrument 有 key 时启用。 |
+| `is_trading_session_allowed` | `bool` | 默认 `True`。 | `True` 表示通过交易时段 flag；`False` 表示拒绝。Phase 3.0 不计算 calendar/session。 | 始终启用，只消费布尔值。 |
+| `allowed_offsets` | `set[Offset]` | 默认所有当前 `Offset` enum values；缺失使用默认全量。 | 空集合表示不允许任何 offset；`Signal.offset` 不在集合中时拒绝。 | 始终启用。 |
+| `available_margin` | `Decimal | None` | 默认 `None`。 | 与 `required_margin` 同为 `None` 时禁用 margin skeleton；非 `None` 时要求 `required_margin` 非 `None`。 | 二者均非 `None` 时启用。 |
+| `required_margin` | `Decimal | None` | 默认 `None`。 | 若 `available_margin is None` 且 `required_margin is None`，禁用 margin skeleton；若 `available_margin is not None` 且 `required_margin is None`，是配置错误。 | 二者均非 `None` 时启用。 |
+| `current_position` | `Decimal | None` | 默认 `None`。 | 仅作透传 / 诊断。Phase 3.0 不用它推导 `projected_position`。 | 不启用任何规则。 |
+| `projected_position` | `Decimal | None` | 默认 `None`。 | `None` 表示禁用 max position skeleton；若 `max_position is not None` 且缺失，是配置错误。 | 与 `max_position` 均非 `None` 时启用。 |
+| `max_position` | `Decimal | None` | 默认 `None`。 | `None` 表示禁用 max position skeleton；非 `None` 时 `projected_position > max_position` 拒绝。 | 与 `projected_position` 均非 `None` 时启用。 |
 
 margin / position 均为 input-only skeleton：
 
@@ -108,6 +110,7 @@ margin / position 均为 input-only skeleton：
 - 不调用 `PositionManager`。
 - 不保证与真实账户、真实仓位一致。
 - `required_margin` 和 `projected_position` 的来源不属于 Phase 3.0。
+- RiskEngine 不使用 `current_position` 计算 `projected_position`；`projected_position` 必须由构造配置或规则参数直接提供。
 - Phase 3.1+ 再接真实上下文。
 
 ## Phase 3.0 最小规则范围
@@ -174,7 +177,9 @@ input-only max position skeleton：
 
 ## 配置边界
 
-Phase 3.0 最小配置来源为纯内存配置对象或规则参数。
+Phase 3.0 最小配置来源为构造时注入的纯内存配置对象或规则参数。
+
+配置不得作为 `check_order` method 参数传入。
 
 Risk 禁止：
 
@@ -184,6 +189,14 @@ Risk 禁止：
 - 调用外部服务。
 - 调用 Redis。
 - 调用 HTTP / RPC。
+
+## Source-of-Truth 边界
+
+Risk 不得依赖 `raw`、`metadata`、`details` 或 `raw_payload` 作为 source-of-truth 风控字段。
+
+如果未来需要扩展风控字段，必须通过明确配置对象或 Domain migration 进入契约，不得塞入诊断 payload。
+
+现有 DB schema 中即使存在 `risk_events`，也不属于 Phase 3.0 / Phase 3.1 pure Risk 可用依赖。RiskEngine 不得 import `futures_mvp.db.*`，不得 import `RiskEvent` ORM，不得写 `risk_events`。
 
 ## Decimal 规则
 
@@ -197,12 +210,27 @@ Risk 禁止：
 
 正常拒绝路径不得抛异常。
 
+配置错误和系统错误不得通过 `RiskDecision.REJECTED` 掩盖。
+
+Phase 3.0 采用以下错误语义：
+
+- 正常风控拒绝返回 `RiskResult(RiskDecision.REJECTED, rule_name, reason)`。
+- 配置错误抛 `RiskConfigurationError`。
+- `RiskConfigurationError` 是 Phase 3.0 Risk 实现必须提供的配置错误类型。
+
 异常只用于系统错误，例如：
 
 - 输入缺失。
 - 类型错误。
 - 配置错误。
 - Decimal 约束被破坏。
+
+配置错误包括：
+
+- `max_notional` 启用但缺少 `contract_multiplier_by_instrument[signal.instrument_id]`。
+- `available_margin` 已提供但 `required_margin` 缺失。
+- `max_position` 已提供但 `projected_position` 缺失。
+- 非 `Decimal` 数值进入核心风控计算。
 
 多规则命中策略：
 
