@@ -325,13 +325,17 @@ OMS 是订单状态唯一事实来源。
 - `EMS.cancel(order: OrderState) -> None`：执行撤单边界。
 - `MockFuturesExchange.submit_limit_order(order: OrderState) -> None`：仅限 Mock 的订单提交。
 - `MockFuturesExchange.cancel_order(order: OrderState) -> None`：仅限 Mock 的撤单。
-- `MockFuturesExchange.run_daily_settlement(trading_day: str) -> None`：仅限 Mock 的每日结算。
+- 当前 `MockFuturesExchange` Protocol 只冻结 submit / cancel command port，返回 `None`；它不承载 report surface，不表示 exchange report 已产生或已消费。
+- Phase 4 可实现的 `MockFuturesExchange` 当前不包含 settlement 方法；每日结算属于后续 Settlement 阶段，不得挂在 Execution skeleton 上。
+- 移除 `MockFuturesExchange.run_daily_settlement(trading_day)` 是 intentional interface migration；Future Settlement Protocol 必须在后续 Settlement 阶段另行定义。
 - `TradeProcessor.apply_trade(trade: Trade) -> bool`：成交应用，返回是否实际应用。
 - `FuturesPositionManager.apply_trade(trade: Trade) -> None`：成交更新持仓。
 - `FuturesPositionManager.roll_today_to_yesterday(account_id: str, trading_day: str) -> None`：今仓转昨仓。
 - `MarginEngine.margin_required(order: OrderRequest) -> Decimal`：保证金计算边界。
 - `PnLEngine.mark_to_market(account_id: str) -> Decimal`：盯市计算边界。
 - `SettlementEngine.settle(account_id: str, trading_day: str) -> None`：结算边界。
+
+`TradeProcessor`、`FuturesPositionManager`、`MarginEngine`、`PnLEngine` 和 `SettlementEngine` 是全局后续阶段接口，不属于 Phase 4.0 / Phase 4.1 status-only execution mapper。Phase 4.1 不实现、不调用、不测试这些接口，不更新 Trade / Position / Margin / PnL / Settlement。真实 fill / trade / position / margin / pnl / settlement 必须另开阶段。
 
 本阶段任何接口都不得连接真实期货柜台、CTP、SimNow 或真实交易网关。
 

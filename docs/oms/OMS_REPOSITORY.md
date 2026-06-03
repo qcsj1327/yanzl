@@ -26,6 +26,8 @@
 
 状态迁移判断属于 OMS application/service 层，应调用 `state_machine.validate_transition(...)`。Repository 只保存已经由上层确认的结果。
 
+真实交易接口、CTP、SimNow、broker adapter、异步任务、事件流、缓存、云服务和 KMS 不是项目永久禁止项；它们属于后续 Runtime / Infrastructure / Adapter 阶段。该限制只说明 Repository / UnitOfWork 当前和终态都不应直接调用这些外部运行时或交易接口。
+
 当前抽象端口签名：
 
 ```python

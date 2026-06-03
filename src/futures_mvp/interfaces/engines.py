@@ -45,17 +45,19 @@ class OMS(Protocol):
 
 
 class EMS(Protocol):
+    """Execution command port only; report surface is a later interface gate."""
+
     def submit(self, order: OrderState) -> None: ...
 
     def cancel(self, order: OrderState) -> None: ...
 
 
 class MockFuturesExchange(Protocol):
+    """Mock exchange command port only; methods do not return exchange reports."""
+
     def submit_limit_order(self, order: OrderState) -> None: ...
 
     def cancel_order(self, order: OrderState) -> None: ...
-
-    def run_daily_settlement(self, trading_day: str) -> None: ...
 
 
 class TradeProcessor(Protocol):

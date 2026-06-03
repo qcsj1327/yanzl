@@ -41,7 +41,7 @@ Risk 禁止负责：
 - 计算 PnL。
 - 执行结算。
 - 写 `risk_events`。
-- 连接真实柜台、CTP、SimNow 或 broker。
+- 在 Phase 3 pure Risk 阶段连接真实柜台、CTP、SimNow 或 broker；这些属于后续 Adapter 阶段，不属于 RiskEngine 职责。
 
 ## Phase 3.0 输入输出
 
@@ -190,7 +190,7 @@ Phase 3.0 最小配置来源为构造时注入的纯内存配置对象或规则�
 
 配置不得作为 `check_order` method 参数传入。
 
-Risk 禁止：
+Risk 在 Phase 3 pure computation 阶段不允许：
 
 - 读取环境变量。
 - 读取文件。
@@ -198,6 +198,8 @@ Risk 禁止：
 - 调用外部服务。
 - 调用 Redis。
 - 调用 HTTP / RPC。
+
+Redis、HTTP / RPC、异步框架和新配置系统不是项目永久禁止项；它们属于后续 Runtime / Infrastructure / Adapter 阶段。RiskEngine 当前仍必须只通过构造时注入的纯内存配置对象或规则参数获取上下文。
 
 ## Source-of-Truth 边界
 
@@ -249,9 +251,9 @@ Phase 3.0 采用以下错误语义：
 - 第一个拒绝规则决定 `RiskResult.decision` 和 `rule_name`，并建议填写 `reason`。
 - 聚合多个拒绝原因属于 Phase 3.3+。
 
-## Phase 3 禁止事项
+## Phase 3 Not Allowed In This Phase
 
-Phase 3.0 禁止：
+Phase 3.0 不允许：
 
 - OMS 集成。
 - DB 写入。
@@ -263,6 +265,8 @@ Phase 3.0 禁止：
 - SimNow。
 - broker adapter。
 - live / production / remote / KMS / cloud 流程。
+
+以上是 Phase 3 pure Risk 阶段边界，不是永久技术栈禁令。真实或仿真柜台、Runtime / Infrastructure、KMS、云服务和多环境配置必须在后续专门阶段通过契约和测试矩阵引入。
 
 ## Phase 3.3+ 后续候选
 
