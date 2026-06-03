@@ -1,0 +1,248 @@
+# OMS Repository / UnitOfWork 设计契约
+
+本文档定义 Phase 2.2A 的 OMS Repository 与 UnitOfWork 设计契约。本文档只定义设计边界和测试矩阵，不实现 Repository，不修改 DB schema。
+
+## Repository 边界
+
+### OrderRepository
+
+`OrderRepository` 只负责持久化相关操作：
+
+- 创建订单记录。
+- 按 `client_order_id` 查询订单。
+- 按 DB `id` 查询订单。
+- 按 Domain `order_id` 查询订单。
+- 更新订单状态。
+- 查询 open/recovery orders。
+
+`OrderRepository` 禁止负责：
+
+- 执行状态迁移判断。
+- 计算风控。
+- 生成成交。
+- 更新持仓。
+- 调用 EMS、Mock Exchange 或任何真实交易接口。
+- 处理 PnL、保证金或结算。
+
+状态迁移判断属于 OMS application/service 层，应调用 `state_machine.validate_transition(...)`。Repository 只保存已经由上层确认的结果。
+
+### OrderEventRepository
+
+`OrderEventRepository` 只负责事件持久化相关操作：
+
+- append `order_event`。
+- 按 `event_source + external_event_id` 查询重复事件。
+- 按 `order_id` 查询事件流。
+
+`OrderEventRepository` 禁止负责：
+
+- 判断事件是否乱序。
+- 判断事件是否重复应用。
+- 判断是否进入 `UNKNOWN`。
+- 决定状态迁移是否合法。
+- 把 source-of-truth 字段藏进 `raw_payload`。
+
+重复事件、乱序事件、`previous_status` mismatch 和 `UNKNOWN` 策略属于 OMS application/service 层。
+
+## UnitOfWork / Transaction Boundary
+
+Phase 2.2 后续实现必须使用统一事务边界：
+
+- 订单创建 + 初始 `order_event` 必须在同一事务内提交。
+- 订单状态更新 + `order_event` append 必须在同一事务内提交。
+- 幂等冲突审计若落库，也必须与冲突判断在同一事务内完成。
+- rollback 后不得留下半条订单或半条事件。
+- Repository 不自行 `commit`。
+- Repository 不自行 `rollback`。
+- `commit` / `rollback` 由 UnitOfWork 统一控制。
+
+建议边界：
+
+- OMS application/service 打开 UnitOfWork。
+- UnitOfWork 提供同一个 SQLAlchemy session。
+- `OrderRepository` 和 `OrderEventRepository` 共享该 session。
+- application/service 完成状态机判断、幂等判断和事件语义判断。
+- UnitOfWork 原子提交或回滚。
+
+## order_id 映射
+
+当前短期方案：
+
+- DB `orders.id` 是 `int` 主键。
+- Domain `order_id` 是 `str`。
+- Repository 统一执行 `str(db_order.id)` 暴露给 Domain。
+- 输入 Domain `order_id` 时，Repository 负责解析为 `int`。
+- 解析失败必须拒绝，不得查询错误订单。
+- 业务层不得直接依赖 ORM `Order.id`。
+
+Future Migration Candidate：
+
+- 未来可增加 `orders.oms_order_id` 作为稳定字符串订单 ID。
+- 当前阶段不做该 migration。
+
+## client_order_id 幂等
+
+`client_order_id` 是当前全局唯一幂等键。
+
+canonical payload 字段固定为：
+
+- `account_id`
+- `instrument_id`
+- `exchange`
+- `direction`
+- `offset`
+- `order_type`
+- `limit_price`
+- `quantity`
+
+比较规则：
+
+- Enum 按 `.value` 比较。
+- Decimal 按规范化后的 Decimal 值比较，不按输入字符串格式比较。
+- 只比较上述类型化字段，不依赖 `raw_payload`。
+
+幂等规则：
+
+- 同 `client_order_id` + canonical payload 相同：返回已有订单。
+- 同 `client_order_id` + canonical payload 不同：拒绝创建，返回幂等冲突。
+- 并发重复创建必须依赖 DB unique constraint + `IntegrityError` 后查询已有订单，而不是 `SELECT -> INSERT`。
+- 幂等冲突不得创建第二笔订单。
+- 幂等冲突不得调用 EMS、Mock Exchange 或真实交易接口。
+
+## 幂等冲突审计
+
+当前阶段策略：
+
+- 当前 schema 没有专用 conflict/audit 表。
+- 不允许伪造 `order_event` 状态事件表达幂等冲突。
+- Phase 2.2 只返回类型化错误或结果。
+- 幂等冲突事实不得只写入 `raw_payload` 当作 source-of-truth。
+
+Future Migration Candidate：
+
+- 新增 `audit_events` 表。
+- 或新增 `oms_conflicts` 表。
+- 或扩展 `order_events`，增加类型化 `event_type` / `outcome` / `reason` 字段。
+
+## order_events 事件时间
+
+时间语义：
+
+- Domain `OrderEvent.occurred_at` 是业务事件发生时间。
+- DB 当前已具备 `order_events.occurred_at DateTime(timezone=True) NOT NULL`。
+- `created_at` 是本地入库时间。
+- `created_at` 不能冒充 `occurred_at`。
+- `occurred_at` 不得只塞进 `raw_payload` 当作 source-of-truth。
+
+Phase 2.2B 当前事实：
+
+- `order_events.occurred_at DateTime(timezone=True) NOT NULL`
+
+Repository 后续写入 `order_events` 时必须显式提供 `occurred_at`。
+
+## order_events 幂等键
+
+当前 schema：
+
+```text
+UNIQUE(event_source, external_event_id)
+```
+
+Repository 后续实现必须按当前 schema 处理重复事件。
+
+已知风险：
+
+- 该约束作用域过宽。
+- 如果外部事件 ID 只在订单、账户、交易日或会话内唯一，可能误杀不同订单的同源事件。
+
+Future Migration Candidate：
+
+```text
+UNIQUE(order_id, event_source, external_event_id)
+```
+
+如果不迁移，必须要求 `external_event_id` 在 `event_source` 内全局唯一。
+
+## orders.version
+
+当前事实：
+
+- 当前 DB 已具备 `orders.version int not null default 0`。
+- `version` 是 Repository 后续状态更新的乐观并发控制字段，不是业务订单状态。
+
+Phase 2.2B 当前事实：
+
+- `orders.version int not null default 0`
+
+后续 Repository 状态更新必须使用 `version` 或等价锁机制：
+
+- 读取订单当前版本。
+- 更新时校验版本。
+- 写入成功后版本递增。
+- 版本不匹配时拒绝当前更新或交由上层进入恢复流程。
+
+## open/recovery query
+
+open/recovery 状态集合：
+
+- `SUBMITTING`
+- `SUBMIT_TIMEOUT`
+- `SUBMITTED`
+- `ACKED`
+- `PARTIALLY_FILLED`
+- `CANCEL_PENDING`
+- `CANCEL_FAILED`
+- `UNKNOWN`
+
+这些状态表示订单仍可能需要恢复、查询、重放或继续接收交易所/Mock Exchange 回报。
+
+终态必须排除自动恢复：
+
+- `REJECTED_BY_RISK`
+- `SUBMIT_FAILED`
+- `CANCELED`
+- `FILLED`
+- `REJECTED_BY_EXCHANGE`
+- `EXPIRED`
+
+`RISK_ACCEPTED` 是本地已过风控但尚未提交的状态，不属于交易所 open order。是否恢复该状态属于 OMS application/service 的本地任务恢复策略，不属于 exchange open query。
+
+## 事件重放排序
+
+事件重放必须使用稳定顺序：
+
+- 最小方案：按 `order_events.id` 升序重放。
+- 或按 `created_at, id` 升序重放。
+
+禁止：
+
+- 只按 `created_at` 重放。
+- 用 `created_at` 冒充业务事件发生顺序。
+- 用 `raw_payload` 中的时间字段作为唯一排序事实来源。
+
+当前 `occurred_at` 已是类型化业务事件时间列：
+
+- `created_at, id` 仍表示本地入库顺序。
+- `occurred_at` 可辅助判断旧事件或乱序事件。
+- 不得只按 `occurred_at` 覆盖状态机单调性。
+
+## Phase 2.2 测试矩阵
+
+后续 Phase 2.2 非 xfail 测试必须覆盖：
+
+- 订单创建 + 初始事件同事务。
+- 状态更新 + 事件同事务。
+- rollback 不留半条订单或半条事件。
+- `client_order_id` 相同 payload 幂等。
+- `client_order_id` 不同 payload 冲突。
+- `IntegrityError` 后查询已有订单。
+- `order_id` str/int 映射成功。
+- `order_id` 非法字符串拒绝。
+- duplicate `order_event` 不重复 append。
+- open/recovery query 状态集合正确。
+- 终态订单不进入恢复集合。
+- event replay ordering by `id` 或 `created_at, id`。
+- `raw_payload` 不承载 source-of-truth 字段。
+- `occurred_at` 必须持久化业务事件发生时间。
+
+并发创建测试如果不在 Phase 2.2 落地，必须明确记录为后续项；后续验收必须证明并发相同 `client_order_id` 最终只创建一笔订单。

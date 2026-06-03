@@ -186,7 +186,7 @@ event_source + external_event_id
 
 - `occurred_at` 是业务事件发生时间。
 - `created_at` 是本地入库时间。
-- 当前 DB `order_events` 缺少 `occurred_at` 类型化列，这是 Future Migration Candidate。
+- 当前 DB `order_events.occurred_at` 是类型化业务事件时间列，不得用 `created_at` 冒充。
 
 ## 乱序事件处理策略
 
@@ -202,6 +202,5 @@ event_source + external_event_id
 
 以下不是当前 schema 事实，只是 Phase 2 后续候选：
 
-- 为 `order_events` 增加 `occurred_at DateTime(timezone=True)`。
 - 将事件幂等键评估为 `UNIQUE(order_id, event_source, external_event_id)`。
-- 为 `orders` 增加状态版本、最后事件 ID、外部订单号、提交/确认/终态时间、恢复来源等恢复辅助字段。
+- 为 `orders` 增加最后事件 ID、外部订单号、提交/确认/终态时间、恢复来源等恢复辅助字段。

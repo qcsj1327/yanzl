@@ -15,6 +15,50 @@ Phase 2 OMS 测试分为：
 
 除 Mock Exchange 尚未实现的撮合场景外，OMS 核心契约测试不得使用 `xfail`。
 
+## Phase 2.2 最小非 xfail 测试矩阵
+
+Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界，不进入 OMSService、撮合、风控计算、持仓、保证金、PnL 或结算。
+
+### Repository 单元测试
+
+| 场景 | 预期 |
+|---|---|
+| 订单创建 + 初始事件 | 订单记录和初始 `order_event` 在同一事务内提交。 |
+| 状态更新 + 事件 append | `orders.status` 更新和 `order_events` append 在同一事务内提交。 |
+| 写事件失败 | 事务 rollback，不留下已更新订单状态。 |
+| 更新订单失败 | 事务 rollback，不留下半条事件。 |
+| 相同 `client_order_id` + 相同 canonical payload | 返回已有订单，不创建第二笔订单。 |
+| 相同 `client_order_id` + 不同 canonical payload | 返回类型化幂等冲突，不创建第二笔订单。 |
+| `IntegrityError` 后查询已有订单 | 唯一约束冲突后重新查询，并按 canonical payload 判断幂等或冲突。 |
+| `order_id` str/int 映射成功 | Domain `order_id` 与 DB `orders.id` 由 Repository 统一转换。 |
+| 非法 `order_id` 字符串 | 拒绝查询，不得查询错误订单。 |
+| duplicate `order_event` | 不重复 append，不重复应用。 |
+| open/recovery query | 返回 `SUBMITTING`, `SUBMIT_TIMEOUT`, `SUBMITTED`, `ACKED`, `PARTIALLY_FILLED`, `CANCEL_PENDING`, `CANCEL_FAILED`, `UNKNOWN`。 |
+| 终态订单恢复查询 | `REJECTED_BY_RISK`, `SUBMIT_FAILED`, `CANCELED`, `FILLED`, `REJECTED_BY_EXCHANGE`, `EXPIRED` 不进入自动恢复集合。 |
+| event replay ordering | 按 `id` 或 `created_at, id` 稳定重放，禁止只按 `created_at`。 |
+| `raw_payload` | 不承载 source-of-truth 字段。 |
+| `occurred_at` 持久化 | `order_events.occurred_at` 必须写入业务事件发生时间，不能用 `created_at` 冒充。 |
+
+### PostgreSQL 集成测试
+
+| 场景 | 预期 |
+|---|---|
+| `orders.client_order_id` 唯一约束 | 真实 PostgreSQL 触发唯一约束。 |
+| `order_events(event_source, external_event_id)` 唯一约束 | 真实 PostgreSQL 触发唯一约束。 |
+| `raw_payload` JSON round-trip | JSON 能完整写入和读出。 |
+| 订单 + 事件同事务提交 | 真实 PostgreSQL 中二者同时可见。 |
+| 事件插入失败 rollback | `orders.status` 不变。 |
+| 订单更新失败 rollback | `order_events` 不残留。 |
+
+### 后续项
+
+并发创建可以不在 Phase 2.2 首批测试中落地，但必须作为后续验收项：
+
+- 两个独立 PostgreSQL session 同时创建相同 `client_order_id` + 相同 payload。
+- 最终只存在一笔订单。
+- 两个调用都返回同一订单，或一路创建、一路在冲突后查询并返回同一订单。
+- 相同 `client_order_id` + 不同 payload 并发时，只保留原订单，另一路得到明确幂等冲突。
+
 ## 状态迁移测试
 
 | 场景 | 预期 |

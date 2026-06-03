@@ -90,6 +90,7 @@ class Order(Base, TimestampMixin):
     filled_quantity: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False, default=Decimal("0"))
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     reject_reason: Mapped[str | None] = mapped_column(String(512))
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
     events: Mapped[list["OrderEvent"]] = relationship(back_populates="order")
     trades: Mapped[list["Trade"]] = relationship(back_populates="order")
@@ -113,6 +114,7 @@ class OrderEvent(Base):
     event_source: Mapped[str] = mapped_column(String(32), nullable=False)
     external_event_id: Mapped[str] = mapped_column(String(128), nullable=False)
     raw_payload: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     order: Mapped[Order] = relationship(back_populates="events")

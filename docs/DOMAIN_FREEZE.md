@@ -11,6 +11,7 @@
 - `src/futures_mvp/interfaces/engines.py`
 - `src/futures_mvp/db/models.py`
 - `alembic/versions/0001_initial_schema.py`
+- `alembic/versions/0002_oms_repository_support.py`
 
 `DOMAIN_FREEZE.md` 不得遗漏当前 Domain 契约中已经存在的字段。新增字段、删除字段、字段重命名或字段语义变化，必须通过 domain migration，并同步更新本文档。
 
@@ -322,6 +323,7 @@ OMS 是订单状态唯一事实来源。
 - `UNIQUE(instrument_id)`
 - `product_id` 索引
 - `exchange` 索引
+- `version` 是 OMS Repository 状态更新的乐观并发版本字段，当前默认值为 `0`，不得用于表达业务订单状态。
 
 ### trading_calendars
 
@@ -376,6 +378,7 @@ OMS 是订单状态唯一事实来源。
 - `filled_quantity`
 - `status`
 - `reject_reason`
+- `version`
 - `created_at`
 - `updated_at`
 
@@ -397,6 +400,7 @@ OMS 是订单状态唯一事实来源。
 - `event_source`
 - `external_event_id`
 - `raw_payload`
+- `occurred_at`
 - `created_at`
 
 约束和索引：
@@ -406,6 +410,7 @@ OMS 是订单状态唯一事实来源。
 - `order_id` references `orders.id`
 
 `raw_payload` 是诊断 payload。凡是订单状态事实来源需要的字段，都必须有类型化列承载，不得只存在于 `raw_payload`。
+`occurred_at` 是业务事件发生时间，`created_at` 是本地入库时间，二者不得混用。
 
 ### trades
 

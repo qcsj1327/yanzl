@@ -1,6 +1,6 @@
-from sqlalchemy import UniqueConstraint
+from sqlalchemy import DateTime, Integer, UniqueConstraint
 
-from futures_mvp.db.models import Base, OrderEvent, Position, Trade
+from futures_mvp.db.models import Base, Order, OrderEvent, Position, Trade
 
 
 def _unique_constraint_columns(model: type[object], name: str) -> tuple[str, ...]:
@@ -31,6 +31,22 @@ def test_order_events_match_current_schema_idempotency() -> None:
         "external_event_id",
     )
     assert "raw_payload" in OrderEvent.__table__.columns
+
+
+def test_order_events_have_business_occurred_at() -> None:
+    occurred_at = OrderEvent.__table__.columns["occurred_at"]
+
+    assert isinstance(occurred_at.type, DateTime)
+    assert occurred_at.type.timezone is True
+    assert occurred_at.nullable is False
+
+
+def test_orders_have_repository_version_column() -> None:
+    version = Order.__table__.columns["version"]
+
+    assert isinstance(version.type, Integer)
+    assert version.nullable is False
+    assert version.default is not None
 
 
 def test_trades_unique_constraint_matches_exchange_trade_identity() -> None:
