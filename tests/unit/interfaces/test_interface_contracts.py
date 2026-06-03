@@ -17,7 +17,7 @@ def test_strategy_engine_outputs_signals_not_orders() -> None:
     assert hints["return"] == list[Signal]
 
 
-def test_risk_engine_accepts_signal_before_order_creation() -> None:
+def test_risk_engine_accepts_signal_as_pure_risk_input() -> None:
     hints = get_type_hints(FuturesRiskEngine.check_order)
 
     assert hints["signal"] is Signal

@@ -255,6 +255,13 @@ def test_oms_service_constructor_dependency_boundary() -> None:
     assert list(signature.parameters) == ["uow_factory", "clock"]
     assert signature.parameters["clock"].kind is inspect.Parameter.KEYWORD_ONLY
 
+    create_order_signature = inspect.signature(OMSService.create_order)
+    assert list(create_order_signature.parameters) == ["self", "request", "client_order_id"]
+    assert (
+        create_order_signature.parameters["client_order_id"].kind
+        is inspect.Parameter.KEYWORD_ONLY
+    )
+
     source = Path("src/futures_mvp/modules/oms/service.py").read_text()
     forbidden = {
         "sqlalchemy",

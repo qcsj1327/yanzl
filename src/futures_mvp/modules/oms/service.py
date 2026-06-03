@@ -61,13 +61,13 @@ class OMSService:
 
     def create_order(
         self,
-        order_request: OrderRequest,
+        request: OrderRequest,
         *,
         client_order_id: str,
     ) -> OrderState:
         with self._uow_factory() as uow:
             existing = uow.orders.get_by_client_order_id(client_order_id)
-            order = uow.orders.create_order(order_request, client_order_id=client_order_id)
+            order = uow.orders.create_order(request, client_order_id=client_order_id)
             if existing is not None:
                 return order
 

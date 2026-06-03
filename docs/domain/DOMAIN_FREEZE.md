@@ -189,7 +189,11 @@
 | `limit_price` | `Decimal` | required | 委托限价。 |
 | `quantity` | `Decimal` | required | 委托数量。 |
 
-所有 `OrderRequest` 在创建订单前必须经过 `FuturesRiskEngine`。
+OMS 不计算风控。`OMSService.create_order` 只创建 `CREATED` 订单和初始 OMS 事件；风控结果通过 `OMSService.apply_risk_result` 消费外部 `RiskResult` 推进订单状态。
+
+`RiskDecision.ACCEPTED` 推进到 `RISK_ACCEPTED`，`RiskDecision.REJECTED` 推进到 `REJECTED_BY_RISK`。`Signal -> OrderRequest -> RiskResult` 的上层应用编排不属于 OMS `create_order` 的内部前置条件。
+
+Phase 3 pure Risk 可以实现风控计算，但不得直接调用 `OMSService` 或写 DB。未来 Risk -> OMS 集成不得提前写成当前事实。
 
 ### OrderState
 
@@ -311,9 +315,9 @@ OMS 是订单状态唯一事实来源。
 
 - `MarketDataMock.latest_price(instrument_id: str) -> Decimal`：Mock 行情价格查询。
 - `StrategyEngine.on_market_data(...) -> list[Signal]`：策略代码只能输出信号。
-- `FuturesRiskEngine.check_order(signal: Signal) -> RiskResult`：订单创建前必须经过风控检查。
+- `FuturesRiskEngine.check_order(signal: Signal) -> RiskResult`：pure Risk 风控计算边界；OMS 不调用该接口。
 - `OMS.create_order(request: OrderRequest, *, client_order_id: str) -> OrderState`：创建或幂等返回 OMS 订单。
-- `OMS.apply_risk_result(order_id: str, risk_result: RiskResult, *, external_event_id: str, occurred_at: datetime | None = None) -> OrderEventApplicationResult`：消费外部风控结果，不计算风控。
+- `OMS.apply_risk_result(order_id: str, risk_result: RiskResult, *, external_event_id: str, occurred_at: datetime | None = None) -> OrderEventApplicationResult`：消费外部 `RiskResult` 推进风控状态，不计算风控。
 - `OMS.apply_order_event(event: OrderEvent) -> OrderEventApplicationResult`：订单状态变化通过 OMS 事件处理。
 - `OMS.recover_order(order_id: str) -> OrderEventApplicationResult`：基于 `orders + order_events` 对单笔订单恢复。
 - `OMS.get_by_client_order_id(client_order_id: str) -> OrderState | None`：客户端订单幂等查询。
