@@ -408,7 +408,12 @@ class OMSService:
         clock: Callable[[], datetime],
     ) -> None: ...
 
-    def create_order(self, request: OrderRequest) -> OrderState: ...
+    def create_order(
+        self,
+        request: OrderRequest,
+        *,
+        client_order_id: str,
+    ) -> OrderState: ...
 
     def apply_risk_result(
         self,
@@ -416,7 +421,7 @@ class OMSService:
         risk_result: RiskResult,
         *,
         external_event_id: str,
-        occurred_at: datetime,
+        occurred_at: datetime | None = None,
     ) -> OrderState: ...
 
     def apply_order_event(self, event: OrderEvent) -> OrderState: ...
@@ -433,6 +438,7 @@ class OMSService:
 - 构造函数只允许依赖 `UnitOfWork` factory 和时间源。
 - 不允许依赖 Risk Engine、EMS、Mock Exchange、Position Manager、Margin Engine、PnL Engine 或 Settlement Engine。
 - 本阶段不暴露批量提交、撤单、撮合、成交、持仓或结算接口。
+- 当前 `OrderState` 未暴露 `version` 字段，Phase 2.3 最小实现不向 `update_status` 传 `expected_version`。服务级乐观锁编排需要后续先冻结版本读取契约。
 
 ### create_order 契约
 

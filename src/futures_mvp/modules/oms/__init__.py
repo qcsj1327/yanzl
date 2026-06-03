@@ -1,4 +1,5 @@
 from futures_mvp.modules.oms.errors import InvalidOrderTransition, OMSError
+from futures_mvp.modules.oms.service import OMSService
 from futures_mvp.modules.oms.state_machine import (
     ALLOWED_TRANSITIONS,
     RECOVERABLE_STATUSES,
@@ -20,6 +21,7 @@ __all__ = [
     "UNKNOWN_RECOVERY_TARGETS",
     "InvalidOrderTransition",
     "OMSError",
+    "OMSService",
     "can_transition",
     "is_recoverable",
     "is_terminal",

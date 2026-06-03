@@ -80,35 +80,35 @@ Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界
 
 | 场景 | 预期 | 状态 |
 |---|---|---|
-| 新订单创建 | 创建 `CREATED` 订单，append 初始 OMS 事件，同事务 commit。 | Phase 2.3+ |
-| 相同 payload 幂等 | 返回既有订单，不新增订单，不新增事件。 | Phase 2.3+ |
-| 不同 payload 冲突 | 抛出幂等冲突，不修改订单，不写伪造事件。 | Phase 2.3+ |
+| 新订单创建 | 创建 `CREATED` 订单，append 初始 OMS 事件，同事务 commit。 | Done |
+| 相同 payload 幂等 | 返回既有订单，不新增订单，不新增事件。 | Done |
+| 不同 payload 冲突 | 抛出幂等冲突，不修改订单，不写伪造事件。 | Done |
 | Repository 创建失败 | rollback，不留下半条订单或半条事件。 | Phase 2.3+ |
-| 初始事件写入失败 | rollback，新订单不可见。 | Phase 2.3+ |
+| 初始事件写入失败 | rollback，新订单不可见。 | Done |
 
 ### risk accepted
 
 | 场景 | 预期 | 状态 |
 |---|---|---|
-| `CREATED` 风控通过 | 同事务内按 `CREATED -> RISK_CHECKING -> RISK_ACCEPTED` 迁移，append 对应 `RISK` 事件，最终返回 `RISK_ACCEPTED`。 | Phase 2.3+ |
+| `CREATED` 风控通过 | 同事务内按 `CREATED -> RISK_CHECKING -> RISK_ACCEPTED` 迁移，append 对应 `RISK` 事件，最终返回 `RISK_ACCEPTED`。 | Done |
 | `RISK_CHECKING` 风控通过 | 迁移到 `RISK_ACCEPTED`，append `RISK` 事件。 | Phase 2.3+ |
-| 非法状态风控通过 | 拒绝迁移，不修改订单，不写状态事件。 | Phase 2.3+ |
-| duplicate 风控事件 | 返回当前订单状态，不重复 append。 | Phase 2.3+ |
+| 非法状态风控通过 | 拒绝迁移，不修改订单，不写状态事件。 | Done |
+| duplicate 风控事件 | 返回当前订单状态，不重复 append。 | Done |
 
 ### risk rejected
 
 | 场景 | 预期 | 状态 |
 |---|---|---|
-| `CREATED` 风控拒绝 | 迁移到 `REJECTED_BY_RISK`，append `RISK` 事件。 | Phase 2.3+ |
+| `CREATED` 风控拒绝 | 迁移到 `REJECTED_BY_RISK`，append `RISK` 事件。 | Done |
 | `RISK_CHECKING` 风控拒绝 | 迁移到 `REJECTED_BY_RISK`，append `RISK` 事件。 | Phase 2.3+ |
-| 风控拒绝后重复事件 | 返回当前终态，不重复 append。 | Phase 2.3+ |
+| 风控拒绝后重复事件 | 返回当前终态，不重复 append。 | Done |
 | 风控拒绝后交易所事件 | 终态不得回退；拒绝应用或诊断，不调用 EMS/Exchange。 | Phase 2.3+ |
 
 ### duplicate event
 
 | 场景 | 预期 | 状态 |
 |---|---|---|
-| 同 `event_source + external_event_id` | 不更新状态，不 append，返回当前订单。 | Phase 2.3+ |
+| 同 `event_source + external_event_id` | 不更新状态，不 append，返回当前订单。 | Done |
 | duplicate 但 payload 不同 | 仍按 duplicate 处理；不得重复应用，诊断策略后续由 audit schema 承接。 | Phase 2.3+ |
 | duplicate 指向终态订单 | 终态保持不变。 | Phase 2.3+ |
 | duplicate 订单不存在 | 抛订单不存在或数据一致性错误，不凭事件重建订单。 | Phase 2.3+ |
@@ -117,10 +117,10 @@ Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界
 
 | 场景 | 预期 | 状态 |
 |---|---|---|
-| `previous_status` 一致 | 正常迁移。 | Phase 2.3+ |
-| mismatch 但 duplicate | duplicate 优先，忽略。 | Phase 2.3+ |
+| `previous_status` 一致 | 正常迁移。 | Done |
+| mismatch 但 duplicate | duplicate 优先，忽略。 | Done |
 | mismatch 且明显旧事件 | 不回退，按 old event 忽略或记录诊断。 | Phase 2.3+ |
-| mismatch 无法判断 | 进入 `UNKNOWN` 或拒绝应用；若进入必须写诊断事件。 | Phase 2.3+ |
+| mismatch 无法判断 | 进入 `UNKNOWN` 或拒绝应用；若进入必须写诊断事件。 | Done |
 | `previous_status` 缺失 | 拒绝应用或进入 `UNKNOWN`，不得直接普通应用。 | Phase 2.3+ |
 
 ### old event
@@ -128,7 +128,7 @@ Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界
 | 场景 | 预期 | 状态 |
 |---|---|---|
 | `ACKED` 后到 `SUBMITTED` | 不回退。 | Phase 2.3+ |
-| `FILLED` 后到 `PARTIALLY_FILLED` | 终态不回退。 | Phase 2.3+ |
+| `FILLED` 后到 `PARTIALLY_FILLED` | 终态不回退。 | Done |
 | `CANCELED` 后到 `ACKED` | 终态不回退；无法证明时拒绝或诊断。 | Phase 2.3+ |
 | 旧事件携带不可验证事实 | 不把 `raw_payload` 当 source-of-truth。 | Phase 2.3+ |
 
@@ -137,11 +137,11 @@ Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界
 | 场景 | 预期 | 状态 |
 |---|---|---|
 | 无法归类回报 | 若状态机允许，迁移到 `UNKNOWN`，append 诊断事件。 | Phase 2.3+ |
-| 矛盾回报 | 进入 `UNKNOWN` 或拒绝应用，不回退。 | Phase 2.3+ |
+| 矛盾回报 | 进入 `UNKNOWN` 或拒绝应用，不回退。 | Done |
 | submit timeout 后不完整回报 | 进入 `UNKNOWN`，保留诊断 payload。 | Phase 2.3+ |
 | 事件顺序缺口 | 进入 `UNKNOWN` 或拒绝应用。 | Phase 2.3+ |
 | UNKNOWN 恢复到允许状态 | 迁移到允许目标，append 恢复事件。 | Phase 2.3+ |
-| UNKNOWN 恢复到禁止状态 | 拒绝恢复，保持 `UNKNOWN`。 | Phase 2.3+ |
+| UNKNOWN 恢复到禁止状态 | 拒绝恢复，保持 `UNKNOWN`。 | Done |
 | UNKNOWN 收到重复旧事件 | 不恢复，不重复 append。 | Phase 2.3+ |
 
 ### recovery
@@ -149,19 +149,19 @@ Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界
 | 场景 | 预期 | 状态 |
 |---|---|---|
 | 重启恢复 open orders | 对每笔调用 `recover_order`，不处理终态订单。 | Phase 2.3+ |
-| 事件流一致 | 返回当前订单，不写额外事件。 | Phase 2.3+ |
-| 事件流不一致 | 进入 `UNKNOWN` 或保持 `UNKNOWN`，append 诊断事件。 | Phase 2.3+ |
-| 缺少初始事件 | 进入 `UNKNOWN`。 | Phase 2.3+ |
+| 事件流一致 | 返回当前订单，不写额外事件。 | Done |
+| 事件流不一致 | 进入 `UNKNOWN` 或保持 `UNKNOWN`，append 诊断事件。 | Done |
+| 缺少初始事件 | 进入 `UNKNOWN`。 | Done |
 | UNKNOWN 可恢复 | 写恢复事件并迁移到目标状态。 | Phase 2.3+ |
 | UNKNOWN 不可恢复 | 保持 `UNKNOWN`。 | Phase 2.3+ |
-| 终态恢复保护 | 不进入自动恢复集合，不回退状态。 | Phase 2.3+ |
+| 终态恢复保护 | 不进入自动恢复集合，不回退状态。 | Done |
 | 恢复事件重复 | 不重复 append，不重复状态更新。 | Phase 2.3+ |
 
 ### 事务与并发
 
 | 场景 | 预期 | 状态 |
 |---|---|---|
-| 状态更新成功但事件 append 失败 | rollback，订单状态不变。 | Phase 2.3+ |
+| 状态更新成功但事件 append 失败 | rollback，订单状态不变。 | Done |
 | 事件 append 成功但状态更新失败 | rollback，事件不可见。 | Phase 2.3+ |
 | 乐观锁失败 | 抛类型化错误，不写状态事件。 | Phase 2.3+ |
 | 并发 duplicate event | 只有一个事件成功 append，另一路按 duplicate 返回。 | Phase 2.3+ |
@@ -171,11 +171,11 @@ Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界
 
 | 场景 | 预期 | 状态 |
 |---|---|---|
-| OMSService 构造依赖检查 | 只依赖 UnitOfWork factory 和 clock。 | Phase 2.3+ |
-| 不注入 Risk Engine | 服务不调用 `check_order`。 | Phase 2.3+ |
-| 不注入 EMS | 服务不调用 `submit` 或 `cancel`。 | Phase 2.3+ |
-| 不注入 Mock Exchange | 服务不调用撮合、查询或结算接口。 | Phase 2.3+ |
-| 不触碰 Position/Margin/PnL/Settlement | 相关模块无调用、无状态写入。 | Phase 2.3+ |
+| OMSService 构造依赖检查 | 只依赖 UnitOfWork factory 和 clock。 | Done |
+| 不注入 Risk Engine | 服务不调用 `check_order`。 | Done |
+| 不注入 EMS | 服务不调用 `submit` 或 `cancel`。 | Done |
+| 不注入 Mock Exchange | 服务不调用撮合、查询或结算接口。 | Done |
+| 不触碰 Position/Margin/PnL/Settlement | 相关模块无调用、无状态写入。 | Done |
 
 ## 状态迁移测试
 
