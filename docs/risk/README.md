@@ -11,7 +11,7 @@ Risk 当前仍保持 pure Risk：不接 OMS，不写 DB，不写 `risk_events`�
 ## 文档入口
 
 - `RISK_CONTRACT.md`：Risk 职责边界、输入输出、规则范围、配置边界和禁止事项。
-- `RISK_TEST_MATRIX.md`：pure Risk 必测矩阵和 Phase 3.2+ 后续项。
+- `RISK_TEST_MATRIX.md`：pure Risk 必测矩阵和 Phase 3.3+ 后续项。
 
 Risk 只维护上述两份主文档。后续新增 Risk 设计优先合并进这两份文档，不为单个规则新增独立文档。
 
@@ -24,4 +24,4 @@ Risk 只维护上述两份主文档。后续新增 Risk 设计优先合并进这
 - Risk 不进入 EMS、Mock Exchange、Position、Margin、PnL 或 Settlement。
 - 不得新增真实交易接口、CTP、SimNow 或 broker adapter。
 
-不得提前把 Phase 3.2+ 风控规则、字段、接口或行为写成当前事实。
+不得提前把 Phase 3.3+ 风控规则、字段、接口或行为写成当前事实。

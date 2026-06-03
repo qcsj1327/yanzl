@@ -120,7 +120,7 @@ margin / position 均为 input-only skeleton：
 - 不保证与真实账户、真实仓位一致。
 - `required_margin` 和 `projected_position` 的来源不属于 Phase 3.0。
 - RiskEngine 不使用 `current_position` 计算 `projected_position`；`projected_position` 必须由构造配置或规则参数直接提供。
-- Phase 3.1+ 再接真实上下文。
+- Phase 3.3+ 再接真实上下文。
 
 ## Phase 3.0 最小规则范围
 
@@ -169,7 +169,7 @@ close_today / close_yesterday basic offset validation skeleton：
 - 只验证 `Signal.offset` 是否在 `allowed_offsets` 配置集合中。
 - 不验证今仓 / 昨仓可用数量。
 - 不处理交易所平今 / 平昨优先级。
-- 交易所特定平今 / 平昨细则进入 Phase 3.1+。
+- 交易所特定平今 / 平昨细则进入 Phase 3.3+。
 
 input-only margin availability skeleton：
 
@@ -205,7 +205,7 @@ Risk 不得依赖 `raw`、`metadata`、`details` 或 `raw_payload` 作为 source
 
 如果未来需要扩展风控字段，必须通过明确配置对象或 Domain migration 进入契约，不得塞入诊断 payload。
 
-现有 DB schema 中即使存在 `risk_events`，也不属于 Phase 3.0 / Phase 3.1 pure Risk 可用依赖。RiskEngine 不得 import `futures_mvp.db.*`，不得 import `RiskEvent` ORM，不得写 `risk_events`。
+现有 DB schema 中即使存在 `risk_events`，也不属于 pure Risk 可用依赖。RiskEngine 不得 import `futures_mvp.db.*`，不得 import `RiskEvent` ORM，不得写 `risk_events`。
 
 ## Decimal 规则
 
@@ -247,7 +247,7 @@ Phase 3.0 采用以下错误语义：
 
 - Phase 3.0 采用 first rejection wins。
 - 第一个拒绝规则决定 `RiskResult.decision` 和 `rule_name`，并建议填写 `reason`。
-- 聚合多个拒绝原因属于 Phase 3.1+。
+- 聚合多个拒绝原因属于 Phase 3.3+。
 
 ## Phase 3 禁止事项
 
@@ -264,7 +264,7 @@ Phase 3.0 禁止：
 - broker adapter。
 - live / production / remote / KMS / cloud 流程。
 
-## Phase 3.1+ 后续候选
+## Phase 3.3+ 后续候选
 
 以下不是 Phase 3.0 当前事实：
 

@@ -6,9 +6,9 @@
 
 - `Done`
 - `Pending`
-- `Phase 3.2+`
+- `Phase 3.3+`
 
-实现完成并有真实测试覆盖后，才能标记为 `Done`。未实现或后续集成范围保持 `Pending` / `Phase 3.2+`。
+实现完成并有真实测试覆盖后，才能标记为 `Done`。未实现或后续集成范围保持 `Pending` / `Phase 3.3+`。
 
 ## Phase 3.0 必测项
 
@@ -86,9 +86,9 @@
 | 不 import `futures_mvp.db.*` | RiskEngine 不 import DB 包或 ORM model。 | Done |
 | 不 import `RiskEvent` ORM | 现有 `risk_events` schema 不属于 pure Risk 可用依赖。 | Done |
 | 不新增 Domain 字段 | Phase 3.0 Risk 实现不得为规则上下文新增 Domain 字段。 | Done |
-| 不新增 DB schema / migration | Phase 3.0 Risk 实现不得新增 schema 或 Alembic migration。 | Done |
+| 不新增 DB schema / migration | 由 Structure Gate 验证；pure Risk 实现不得新增 schema 或 Alembic migration。 | Done |
 | 不依赖 raw / metadata / details | Risk 不得把 `raw`、`metadata`、`details` 或 `raw_payload` 当作 source-of-truth。 | Done |
-| 不新增 live / production / remote / KMS / cloud 文件 | Phase 3.0 不新增生产、远程、密钥或云流程文档 / 配置。 | Done |
+| 不新增 live / production / remote / KMS / cloud 文件 | 由 Structure Gate 验证；pure Risk 不新增生产、远程、密钥或云流程文档 / 配置。 | Done |
 
 ## Phase 3.2 Hardening 测试
 
@@ -102,17 +102,18 @@
 | `check_order` 签名 | `PureFuturesRiskEngine.check_order` 除 `self` 外只接收 `signal`。 | Done |
 | AST import graph 边界 | 使用 AST 验证 Risk module 不 import OMS / DB / Repository / UoW / ORM。 | Done |
 | 真实交易关键字补充检查 | 源码补充检查不出现 CTP / SimNow / broker 等真实交易接入痕迹。 | Done |
+| engine config 构造参数类型 | `PureFuturesRiskEngine(config=非 RiskConfig)` 抛 `RiskConfigurationError`。 | Done |
 
-## Phase 3.2+ 后续项
+## Phase 3.3+ 后续项
 
 以下不是当前事实，不阻塞 pure Risk：
 
 | 场景 | 预期 | 状态 |
 |---|---|---|
-| real position context | 引入真实持仓上下文前必须先定义输入契约。 | Phase 3.2+ |
-| real margin engine | 引入真实保证金引擎前必须先定义模块边界。 | Phase 3.2+ |
-| exchange-specific close_today / close_yesterday | 交易所特定平今 / 平昨细则后续实现。 | Phase 3.2+ |
-| trading calendar integration | 如需接交易日历，必须先定义纯输入或独立集成边界。 | Phase 3.2+ |
-| `risk_events` repository | 持久化 risk_events 前必须先设计 Repository / UnitOfWork。 | Phase 3.2+ |
-| Risk -> OMS application orchestration | 未来上层编排负责把 `RiskResult` 交给 `OMSService.apply_risk_result`。 | Phase 3.2+ |
-| 多规则拒绝聚合 | first rejection wins 之外的聚合策略后续定义。 | Phase 3.2+ |
+| real position context | 引入真实持仓上下文前必须先定义输入契约。 | Phase 3.3+ |
+| real margin engine | 引入真实保证金引擎前必须先定义模块边界。 | Phase 3.3+ |
+| exchange-specific close_today / close_yesterday | 交易所特定平今 / 平昨细则后续实现。 | Phase 3.3+ |
+| trading calendar integration | 如需接交易日历，必须先定义纯输入或独立集成边界。 | Phase 3.3+ |
+| `risk_events` repository | 持久化 risk_events 前必须先设计 Repository / UnitOfWork。 | Phase 3.3+ |
+| Risk -> OMS application orchestration | 未来上层编排负责把 `RiskResult` 交给 `OMSService.apply_risk_result`。 | Phase 3.3+ |
+| 多规则拒绝聚合 | first rejection wins 之外的聚合策略后续定义。 | Phase 3.3+ |

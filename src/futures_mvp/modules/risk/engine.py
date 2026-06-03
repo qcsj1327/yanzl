@@ -43,6 +43,8 @@ class RiskConfig:
 
 class PureFuturesRiskEngine:
     def __init__(self, config: RiskConfig | None = None) -> None:
+        if config is not None and not isinstance(config, RiskConfig):
+            raise RiskConfigurationError("config must be RiskConfig")
         self._config = config or RiskConfig()
 
     def check_order(self, signal: Signal) -> RiskResult:

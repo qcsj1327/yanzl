@@ -235,6 +235,11 @@ def test_config_rejects_invalid_container_and_bool_types(kwargs: dict[str, objec
         RiskConfig(**kwargs)
 
 
+def test_engine_rejects_non_risk_config_object() -> None:
+    with pytest.raises(RiskConfigurationError):
+        PureFuturesRiskEngine(config=object())  # type: ignore[arg-type]
+
+
 def test_signal_float_bypass_raises_configuration_error() -> None:
     signal = Signal.model_construct(
         signal_id="sig-1",
@@ -278,18 +283,41 @@ def test_check_order_signature_accepts_only_signal_argument() -> None:
 def test_risk_module_does_not_import_forbidden_dependencies() -> None:
     imports = _risk_module_imports()
 
-    forbidden_import_prefixes = [
+    forbidden_import_names = {
+        "EMS",
+        "Margin",
+        "MarginEngine",
+        "MockExchange",
+        "MockFuturesExchange",
+        "PnL",
+        "PnLEngine",
+        "Position",
+        "PositionManager",
+        "RiskEvent",
+        "Settlement",
+        "SettlementEngine",
+        "CTP",
+        "SimNow",
+        "risk_events",
+    }
+    forbidden_import_prefixes = {
+        "adapter",
+        "broker",
+        "ctp",
         "futures_mvp.db",
-        "futures_mvp.interfaces.repositories",
         "futures_mvp.db.repositories",
         "futures_mvp.db.unit_of_work",
+        "futures_mvp.interfaces.repositories",
         "futures_mvp.modules.oms",
+        "simnow",
         "sqlalchemy",
-    ]
+    }
 
     for imported_name in imports:
+        parts = imported_name.split(".")
+        assert forbidden_import_names.isdisjoint(parts)
         assert not any(
-            imported_name == prefix or imported_name.startswith(f"{prefix}.")
+            imported_name.lower() == prefix or imported_name.lower().startswith(f"{prefix}.")
             for prefix in forbidden_import_prefixes
         )
 
