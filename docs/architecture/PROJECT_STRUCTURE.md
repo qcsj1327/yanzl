@@ -36,6 +36,7 @@
 - `tests/unit/environment/`：本地 uv/Python 环境验证测试。
 - `tests/unit/interfaces/`：模块接口边界测试。
 - `tests/unit/oms/`：OMS 纯函数和后续 OMS 单元测试。
+- `tests/unit/risk/`：RiskEngine pure rules、config 语义和边界守卫测试。
 - `tests/integration/db/`：ORM、Alembic 和数据库 schema 契约测试。
 - `tests/integration/mock_exchange/`：Mock Exchange 场景契约测试。
 

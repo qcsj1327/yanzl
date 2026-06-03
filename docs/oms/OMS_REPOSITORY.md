@@ -728,10 +728,10 @@ UNKNOWN 恢复流程：
 
 ### Phase 3 Risk 边界
 
-Phase 3 Risk 仍是后续阶段，不是当前 OMS 当前事实。
+Phase 3 pure Risk 已完成，但 Risk -> OMS 编排仍是后续阶段，不是当前 OMS 当前事实。
 
-- Phase 3 最小版只允许实现 pure Risk Engine。
-- Phase 3 最小版不写 `risk_events`。
-- Phase 3 最小版不接 `OMSService`。
-- Phase 3 最小版不调用 Repository、UnitOfWork、ORM 或 DB。
+- Phase 3 pure Risk 只允许实现 pure Risk Engine。
+- Phase 3 pure Risk 不写 `risk_events`。
+- Phase 3 pure Risk 不接 `OMSService`。
+- Phase 3 pure Risk 不调用 Repository、UnitOfWork、ORM 或 DB。
 - 未来如果需要持久化 `risk_events`，必须先设计 `RiskEventRepository` / UnitOfWork 端口，再进入实现。

@@ -274,6 +274,29 @@ def test_signal_quantity_float_bypass_raises_configuration_error() -> None:
         PureFuturesRiskEngine().check_order(signal)
 
 
+def test_raw_metadata_details_payload_do_not_drive_risk_decision() -> None:
+    signal = Signal.model_construct(
+        signal_id="sig-1",
+        account_id="acct-1",
+        instrument_id="rb2610",
+        exchange="SHFE",
+        direction=Direction.BUY,
+        offset=Offset.OPEN,
+        limit_price=Decimal("3500"),
+        quantity=Decimal("1"),
+        created_at=datetime.now(UTC),
+        raw={"disabled_instrument": True},
+        metadata={"max_order_quantity": Decimal("0")},
+        details={"limit_up": Decimal("1")},
+        raw_payload={"decision": RiskDecision.REJECTED},
+    )
+
+    result = PureFuturesRiskEngine().check_order(signal)
+
+    assert result.decision == RiskDecision.ACCEPTED
+    assert result.rule_name == "all_pass"
+
+
 def test_check_order_signature_accepts_only_signal_argument() -> None:
     signature = inspect.signature(PureFuturesRiskEngine.check_order)
 
@@ -322,6 +345,97 @@ def test_risk_module_does_not_import_forbidden_dependencies() -> None:
         )
 
 
+def test_risk_module_does_not_use_dynamic_imports_or_forbidden_import_strings() -> None:
+    forbidden_module_fragments = {
+        "adapter",
+        "broker",
+        "ctp",
+        "futures_mvp.db",
+        "futures_mvp.modules.oms",
+        "httpx",
+        "importlib",
+        "redis",
+        "requests",
+        "simnow",
+        "socket",
+        "sqlalchemy",
+        "subprocess",
+        "urllib",
+    }
+
+    for tree in _risk_module_trees():
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                call_name = _call_name(node.func)
+                assert call_name not in {"__import__", "importlib.import_module"}
+                for arg in node.args:
+                    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                        arg_value = arg.value.lower()
+                        assert not any(
+                            fragment in arg_value for fragment in forbidden_module_fragments
+                        )
+
+
+def test_risk_module_does_not_read_files_env_or_call_external_services() -> None:
+    forbidden_calls = {
+        "open",
+        "os.getenv",
+        "Path.open",
+        "Path.read_bytes",
+        "Path.read_text",
+        "pathlib.Path.open",
+        "pathlib.Path.read_bytes",
+        "pathlib.Path.read_text",
+    }
+    forbidden_import_prefixes = {
+        "httpx",
+        "redis",
+        "requests",
+        "socket",
+        "subprocess",
+        "urllib",
+    }
+
+    for imported_name in _risk_module_imports():
+        imported_lower = imported_name.lower()
+        assert not any(
+            imported_lower == prefix or imported_lower.startswith(f"{prefix}.")
+            for prefix in forbidden_import_prefixes
+        )
+
+    for tree in _risk_module_trees():
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                assert _call_name(node.func) not in forbidden_calls
+            if isinstance(node, ast.Attribute):
+                assert _call_name(node) != "os.environ"
+
+
+def test_risk_module_does_not_read_raw_metadata_details_payload() -> None:
+    forbidden_source_of_truth_names = {
+        "details",
+        "metadata",
+        "raw",
+        "raw_payload",
+    }
+
+    for tree in _risk_module_trees():
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute):
+                assert node.attr not in forbidden_source_of_truth_names
+            if isinstance(node, ast.Subscript):
+                subscript_name = _constant_subscript_name(node.slice)
+                assert subscript_name not in forbidden_source_of_truth_names
+            if (
+                isinstance(node, ast.Call)
+                and _call_name(node.func) == "getattr"
+                and len(node.args) >= 2
+                and isinstance(node.args[1], ast.Constant)
+                and isinstance(node.args[1].value, str)
+            ):
+                assert node.args[1].value not in forbidden_source_of_truth_names
+
+
 def test_risk_module_source_has_no_forbidden_trading_or_service_symbols() -> None:
     source = "\n".join(path.read_text() for path in _risk_module_files())
 
@@ -342,9 +456,6 @@ def test_risk_module_source_has_no_forbidden_trading_or_service_symbols() -> Non
         "CTP",
         "SimNow",
         "broker",
-        "getenv",
-        "environ",
-        "open(",
         "Redis",
         "requests",
         "httpx",
@@ -387,20 +498,74 @@ def test_risk_config_does_not_add_domain_fields() -> None:
 
 def _risk_module_files() -> list[Path]:
     risk_module_dir = Path(risk_engine_module.__file__).parent
-    return sorted(path for path in risk_module_dir.glob("*.py") if path.is_file())
+    return sorted(path for path in risk_module_dir.rglob("*.py") if path.is_file())
+
+
+def _risk_module_trees() -> list[ast.Module]:
+    return [
+        ast.parse(path.read_text(), filename=str(path))
+        for path in _risk_module_files()
+    ]
 
 
 def _risk_module_imports() -> set[str]:
     imports: set[str] = set()
     for path in _risk_module_files():
         tree = ast.parse(path.read_text(), filename=str(path))
+        module_name = _module_name_for_path(path)
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 imports.update(alias.name for alias in node.names)
-            if isinstance(node, ast.ImportFrom) and node.module is not None:
-                imports.add(node.module)
-                imports.update(f"{node.module}.{alias.name}" for alias in node.names)
+            if isinstance(node, ast.ImportFrom):
+                imported_module = _resolve_import_from_module(module_name, node)
+                if imported_module is not None:
+                    imports.add(imported_module)
+                    imports.update(
+                        f"{imported_module}.{alias.name}" for alias in node.names
+                    )
     return imports
+
+
+def _module_name_for_path(path: Path) -> str:
+    risk_module_dir = Path(risk_engine_module.__file__).parent
+    relative_path = path.relative_to(risk_module_dir)
+    module_parts = ["futures_mvp", "modules", "risk", *relative_path.with_suffix("").parts]
+    if module_parts[-1] == "__init__":
+        module_parts.pop()
+    return ".".join(module_parts)
+
+
+def _resolve_import_from_module(module_name: str, node: ast.ImportFrom) -> str | None:
+    if node.level == 0:
+        return node.module
+
+    package_parts = module_name.split(".")
+    if not module_name.endswith(".__init__") and package_parts[-1] != "risk":
+        package_parts = package_parts[:-1]
+    if node.level > len(package_parts):
+        return node.module
+
+    base_parts = package_parts[: len(package_parts) - node.level + 1]
+    if node.module:
+        base_parts.extend(node.module.split("."))
+    return ".".join(base_parts)
+
+
+def _call_name(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parent_name = _call_name(node.value)
+        if parent_name:
+            return f"{parent_name}.{node.attr}"
+        return node.attr
+    return ""
+
+
+def _constant_subscript_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
 
 
 def _signal(

@@ -81,13 +81,13 @@
 | 不调用 PositionManager | position skeleton 只比较 input-only Decimal 值。 | Done |
 | 不调用 Position / Margin / PnL / Settlement | Phase 3.0 只消费纯输入上下文。 | Done |
 | 不调用真实交易接口 / CTP / SimNow / broker adapter | RiskEngine 不 import、不实例化、不调用任何真实交易接入或适配器。 | Done |
-| 不读取环境变量 / 文件 | 配置来自纯内存对象或规则参数。 | Done |
-| 不调用外部服务 | 不调用 HTTP / RPC / Redis / broker。 | Done |
+| 不读取环境变量 / 文件 | 配置来自纯内存对象或规则参数；由 AST gate 禁止 env / file 读取调用。 | Done |
+| 不调用外部服务 | 不调用 HTTP / RPC / Redis / broker；由 AST gate 禁止外部服务 import / call。 | Done |
 | 不 import `futures_mvp.db.*` | RiskEngine 不 import DB 包或 ORM model。 | Done |
 | 不 import `RiskEvent` ORM | 现有 `risk_events` schema 不属于 pure Risk 可用依赖。 | Done |
 | 不新增 Domain 字段 | Phase 3.0 Risk 实现不得为规则上下文新增 Domain 字段。 | Done |
 | 不新增 DB schema / migration | 由 Structure Gate 验证；pure Risk 实现不得新增 schema 或 Alembic migration。 | Done |
-| 不依赖 raw / metadata / details | Risk 不得把 `raw`、`metadata`、`details` 或 `raw_payload` 当作 source-of-truth。 | Done |
+| 不依赖 raw / metadata / details | Risk 不得把 `raw`、`metadata`、`details` 或 `raw_payload` 当作 source-of-truth；由 AST gate 和行为测试证明。 | Done |
 | 不新增 live / production / remote / KMS / cloud 文件 | 由 Structure Gate 验证；pure Risk 不新增生产、远程、密钥或云流程文档 / 配置。 | Done |
 
 ## Phase 3.2 Hardening 测试
@@ -100,8 +100,9 @@
 | bool 字段类型硬化 | `is_trading_session_allowed` 非 bool 时抛 `RiskConfigurationError`。 | Done |
 | Signal `quantity` float bypass | 绕过 Domain validator 的 float quantity 仍抛 `RiskConfigurationError`。 | Done |
 | `check_order` 签名 | `PureFuturesRiskEngine.check_order` 除 `self` 外只接收 `signal`。 | Done |
-| AST import graph 边界 | 使用 AST 验证 Risk module 不 import OMS / DB / Repository / UoW / ORM。 | Done |
-| 真实交易关键字补充检查 | 源码补充检查不出现 CTP / SimNow / broker 等真实交易接入痕迹。 | Done |
+| AST import graph 边界 | 使用递归 AST 验证 Risk module 不 import OMS / DB / Repository / UoW / ORM，并解析相对导入。 | Done |
+| 动态 import / IO / 外部调用边界 | 使用 AST 验证 Risk module 不动态导入、不读 env / file、不调用外部服务。 | Done |
+| 真实交易关键字补充检查 | 源码补充检查不出现 CTP / SimNow / broker 等真实交易接入痕迹，仅作为 AST gate 补充。 | Done |
 | engine config 构造参数类型 | `PureFuturesRiskEngine(config=非 RiskConfig)` 抛 `RiskConfigurationError`。 | Done |
 
 ## Phase 3.3+ 后续项

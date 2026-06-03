@@ -1,6 +1,6 @@
-# 系统 MVP 骨架
+# 系统 MVP
 
-第一阶段只提供项目骨架、核心领域模型、模块接口、数据库表设计和测试计划。本项目禁止连接真实期货柜台、CTP、SimNow 或任何真实交易接口，只允许使用 `MockFuturesExchange`。
+当前项目已完成基础骨架、核心领域模型、模块接口、数据库表设计、Phase 2 OMS 最小 Application Service，以及 Phase 3 pure Risk Engine。本项目禁止连接真实期货柜台、CTP、SimNow 或任何真实交易接口，只允许使用 `MockFuturesExchange`。
 
 目标链路：
 
@@ -89,6 +89,7 @@ uv run pytest
 - `tests/unit/environment`
 - `tests/unit/interfaces`
 - `tests/unit/oms`
+- `tests/unit/risk`
 - `tests/integration/db`
 - `tests/integration/mock_exchange`
 
@@ -127,7 +128,7 @@ Phase 3 Risk 实现前必须先阅读：
 - `docs/risk/RISK_CONTRACT.md`
 - `docs/risk/RISK_TEST_MATRIX.md`
 
-Phase 3 首阶段只允许 pure Risk Engine，不接 `OMSService`，不写 `risk_events`，不访问 DB / Repository / UnitOfWork，不进入 EMS、Mock Exchange、Position、Margin、PnL 或 Settlement。
+Phase 3 pure Risk Engine 已实现并完成 hardening。Risk 仍不接 `OMSService`，不写 `risk_events`，不访问 DB / Repository / UnitOfWork，不进入 EMS、Mock Exchange、Position、Margin、PnL 或 Settlement。
 
 ## Demo 策略
 
@@ -139,10 +140,10 @@ uv run futures-demo
 
 ## 当前阶段范围
 
-已规划但不在第一阶段实现完整业务逻辑：
+已规划但当前仍未实现完整业务逻辑：
 
 - 撮合与成交模拟
-- 完整风控计算
+- 真实上下文风控 / Position / Margin / Risk -> OMS 集成
 - PnL 和保证金计算
 - 每日结算
 - 今仓转昨仓

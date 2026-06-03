@@ -5,6 +5,7 @@ Phase 3 当前状态：
 - Phase 3.0 Contract Gate：已完成。
 - Phase 3.1 Pure Risk Engine：已实现。
 - Phase 3.2 Risk Hardening：已完成配置类型校验、错误收敛和边界测试硬化。
+- Phase 3.3 Risk Boundary Finalization：已完成边界收敛和冻结审查修复。
 
 Risk 当前仍保持 pure Risk：不接 OMS，不写 DB，不写 `risk_events`。
 
