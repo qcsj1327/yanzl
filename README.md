@@ -87,7 +87,7 @@ uv run pytest
 
 每次 Domain 字段或 schema 变更都必须审查：
 
-- `docs/DOMAIN_FREEZE.md` 中的 enum 与 `src/futures_mvp/domain/enums.py` 一致
+- `docs/domain/DOMAIN_FREEZE.md` 中的 enum 与 `src/futures_mvp/domain/enums.py` 一致
 - 文档模型字段与 `src/futures_mvp/domain/models.py` 一致
 - 文档接口边界与 `src/futures_mvp/interfaces/engines.py` 一致
 - 文档数据库约束与 ORM/Alembic 一致
@@ -105,9 +105,9 @@ uv run mypy src
 
 Phase 2 OMS 实现前必须先阅读：
 
-- `docs/OMS_STATE_MACHINE.md`
-- `docs/OMS_TEST_MATRIX.md`
-- `docs/OMS_REPOSITORY.md`
+- `docs/oms/OMS_STATE_MACHINE.md`
+- `docs/oms/OMS_TEST_MATRIX.md`
+- `docs/oms/OMS_REPOSITORY.md`
 
 当前阶段只定义 OMS 契约、状态机、幂等、事件语义和测试矩阵，不实现 OMS 业务逻辑。
 
