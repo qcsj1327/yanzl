@@ -104,6 +104,15 @@ Risk 禁止：
 | `projected_position` | `Decimal | None` | 默认 `None`。 | 与 `max_position` 同为 `None` 时禁用 max position skeleton；任一单边存在都是配置错误。 | 二者均非 `None` 时启用。 |
 | `max_position` | `Decimal | None` | 默认 `None`。 | 与 `projected_position` 同为 `None` 时禁用 max position skeleton；任一单边存在都是配置错误。 | 二者均非 `None` 时启用。 |
 
+Phase 3.2 类型硬化：
+
+- `disabled_instruments` 必须是 `set[str]`。
+- `allowed_offsets` 必须是 `set[Offset]`。
+- `contract_multiplier_by_instrument`、`limit_up_by_instrument`、`limit_down_by_instrument` 必须是 `dict[str, Decimal]`。
+- `is_trading_session_allowed` 必须是 `bool`。
+- 所有 Decimal 配置字段必须是 `Decimal | None`。
+- 所有配置类型错误统一抛 `RiskConfigurationError`，不得向调用方泄漏 `AttributeError`、`TypeError` 或 `ValueError`。
+
 margin / position 均为 input-only skeleton：
 
 - 不调用 `MarginEngine`。

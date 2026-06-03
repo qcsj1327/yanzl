@@ -1,3 +1,5 @@
+import ast
+import inspect
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -212,6 +214,27 @@ def test_config_rejects_float_values(kwargs: dict[str, object]) -> None:
         RiskConfig(**kwargs)
 
 
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"disabled_instruments": ["rb2610"]},
+        {"disabled_instruments": {1}},
+        {"allowed_offsets": ["OPEN"]},
+        {"allowed_offsets": {"OPEN"}},
+        {"contract_multiplier_by_instrument": [("rb2610", Decimal("10"))]},
+        {"contract_multiplier_by_instrument": {1: Decimal("10")}},
+        {"limit_up_by_instrument": [("rb2610", Decimal("3500"))]},
+        {"limit_up_by_instrument": {1: Decimal("3500")}},
+        {"limit_down_by_instrument": [("rb2610", Decimal("3500"))]},
+        {"limit_down_by_instrument": {1: Decimal("3500")}},
+        {"is_trading_session_allowed": 1},
+    ],
+)
+def test_config_rejects_invalid_container_and_bool_types(kwargs: dict[str, object]) -> None:
+    with pytest.raises(RiskConfigurationError):
+        RiskConfig(**kwargs)
+
+
 def test_signal_float_bypass_raises_configuration_error() -> None:
     signal = Signal.model_construct(
         signal_id="sig-1",
@@ -229,16 +252,63 @@ def test_signal_float_bypass_raises_configuration_error() -> None:
         PureFuturesRiskEngine().check_order(signal)
 
 
-def test_risk_engine_module_does_not_import_forbidden_dependencies() -> None:
-    source = Path(risk_engine_module.__file__).read_text()
+def test_signal_quantity_float_bypass_raises_configuration_error() -> None:
+    signal = Signal.model_construct(
+        signal_id="sig-1",
+        account_id="acct-1",
+        instrument_id="rb2610",
+        exchange="SHFE",
+        direction=Direction.BUY,
+        offset=Offset.OPEN,
+        limit_price=Decimal("3500"),
+        quantity=1.0,
+        created_at=datetime.now(UTC),
+    )
 
-    forbidden_fragments = [
+    with pytest.raises(RiskConfigurationError):
+        PureFuturesRiskEngine().check_order(signal)
+
+
+def test_check_order_signature_accepts_only_signal_argument() -> None:
+    signature = inspect.signature(PureFuturesRiskEngine.check_order)
+
+    assert list(signature.parameters) == ["self", "signal"]
+
+
+def test_risk_module_does_not_import_forbidden_dependencies() -> None:
+    imports = _risk_module_imports()
+
+    forbidden_import_prefixes = [
         "futures_mvp.db",
         "futures_mvp.interfaces.repositories",
         "futures_mvp.db.repositories",
         "futures_mvp.db.unit_of_work",
         "futures_mvp.modules.oms",
+        "sqlalchemy",
+    ]
+
+    for imported_name in imports:
+        assert not any(
+            imported_name == prefix or imported_name.startswith(f"{prefix}.")
+            for prefix in forbidden_import_prefixes
+        )
+
+
+def test_risk_module_source_has_no_forbidden_trading_or_service_symbols() -> None:
+    source = "\n".join(path.read_text() for path in _risk_module_files())
+
+    forbidden_fragments = [
         "OMSService",
+        "Repository",
+        "UnitOfWork",
+        "risk_events",
+        "RiskEvent",
+        "EMS",
+        "MockExchange",
+        "PositionManager",
+        "MarginEngine",
+        "PnLEngine",
+        "SettlementEngine",
         "risk_events",
         "RiskEvent",
         "CTP",
@@ -285,6 +355,24 @@ def test_risk_config_does_not_add_domain_fields() -> None:
     assert "max_order_quantity" not in Signal.model_fields
     assert "available_margin" not in Signal.model_fields
     assert "projected_position" not in Signal.model_fields
+
+
+def _risk_module_files() -> list[Path]:
+    risk_module_dir = Path(risk_engine_module.__file__).parent
+    return sorted(path for path in risk_module_dir.glob("*.py") if path.is_file())
+
+
+def _risk_module_imports() -> set[str]:
+    imports: set[str] = set()
+    for path in _risk_module_files():
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imports.update(alias.name for alias in node.names)
+            if isinstance(node, ast.ImportFrom) and node.module is not None:
+                imports.add(node.module)
+                imports.update(f"{node.module}.{alias.name}" for alias in node.names)
+    return imports
 
 
 def _signal(

@@ -23,14 +23,17 @@ class RiskConfig:
     max_position: Decimal | None = None
 
     def __post_init__(self) -> None:
+        _require_str_set("disabled_instruments", self.disabled_instruments)
         _require_decimal_or_none("max_order_quantity", self.max_order_quantity)
         _require_decimal_or_none("max_notional", self.max_notional)
-        _require_decimal_map(
+        _require_decimal_dict(
             "contract_multiplier_by_instrument",
             self.contract_multiplier_by_instrument,
         )
-        _require_decimal_map("limit_up_by_instrument", self.limit_up_by_instrument)
-        _require_decimal_map("limit_down_by_instrument", self.limit_down_by_instrument)
+        _require_decimal_dict("limit_up_by_instrument", self.limit_up_by_instrument)
+        _require_decimal_dict("limit_down_by_instrument", self.limit_down_by_instrument)
+        _require_bool("is_trading_session_allowed", self.is_trading_session_allowed)
+        _require_offset_set("allowed_offsets", self.allowed_offsets)
         _require_decimal_or_none("available_margin", self.available_margin)
         _require_decimal_or_none("required_margin", self.required_margin)
         _require_decimal_or_none("current_position", self.current_position)
@@ -129,12 +132,37 @@ def _require_signal_decimals(signal: Signal) -> None:
     _require_decimal("signal.quantity", signal.quantity)
 
 
-def _require_decimal_map(name: str, values: dict[str, Decimal]) -> None:
+def _require_str_set(name: str, values: object) -> None:
+    if not isinstance(values, set):
+        raise RiskConfigurationError(f"{name} must be set[str]")
+    for value in values:
+        if not isinstance(value, str):
+            raise RiskConfigurationError(f"{name} must contain only str values")
+
+
+def _require_offset_set(name: str, values: object) -> None:
+    if not isinstance(values, set):
+        raise RiskConfigurationError(f"{name} must be set[Offset]")
+    for value in values:
+        if not isinstance(value, Offset):
+            raise RiskConfigurationError(f"{name} must contain only Offset values")
+
+
+def _require_bool(name: str, value: object) -> None:
+    if not isinstance(value, bool):
+        raise RiskConfigurationError(f"{name} must be bool")
+
+
+def _require_decimal_dict(name: str, values: object) -> None:
+    if not isinstance(values, dict):
+        raise RiskConfigurationError(f"{name} must be dict[str, Decimal]")
     for key, value in values.items():
+        if not isinstance(key, str):
+            raise RiskConfigurationError(f"{name} keys must be str")
         _require_decimal(f"{name}[{key!r}]", value)
 
 
-def _require_decimal_or_none(name: str, value: Decimal | None) -> None:
+def _require_decimal_or_none(name: str, value: object) -> None:
     if value is not None:
         _require_decimal(name, value)
 
