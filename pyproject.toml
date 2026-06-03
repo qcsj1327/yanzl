@@ -1,0 +1,48 @@
+[project]
+name = "futures-mvp"
+version = "0.1.0"
+description = "MVP skeleton for a domestic futures quantitative trading system using only a mock exchange."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "alembic>=1.16.0",
+    "psycopg[binary]>=3.2.0",
+    "pydantic>=2.11.0",
+    "pydantic-settings>=2.9.0",
+    "redis>=6.0.0",
+    "sqlalchemy>=2.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.15.0",
+    "pytest>=8.3.0",
+    "pytest-cov>=6.1.0",
+    "ruff>=0.11.0",
+]
+
+[project.scripts]
+futures-demo = "futures_mvp.demo.run_demo:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["futures_mvp"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
