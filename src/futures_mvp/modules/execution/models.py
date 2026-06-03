@@ -77,7 +77,7 @@ class ExchangeReport:
 class MappingContext:
     current_order_status: OrderStatus | None = None
     expected_previous_status: OrderStatus | None = None
-    known_exchange_report_ids: frozenset[str] | None = None
+    known_exchange_report_ids: set[str] | None = None
     operation: ExecutionOperation | str | None = None
     allow_status_only_fill: bool = True
 

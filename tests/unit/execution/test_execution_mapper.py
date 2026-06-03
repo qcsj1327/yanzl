@@ -48,7 +48,7 @@ def context(
     *,
     current_order_status: OrderStatus | None = OrderStatus.SUBMITTING,
     expected_previous_status: OrderStatus | None = None,
-    known_exchange_report_ids: frozenset[str] | None = frozenset(),
+    known_exchange_report_ids: set[str] | None = None,
     operation: ExecutionOperation | str | None = None,
     allow_status_only_fill: bool = True,
 ) -> MappingContext:
@@ -346,7 +346,7 @@ def test_operation_can_come_from_mapping_context_for_timeout() -> None:
 def test_duplicate_report_does_not_generate_order_event() -> None:
     result = map_exchange_report(
         report(ExchangeReportType.ACK, exchange_report_id="dup-1"),
-        context(known_exchange_report_ids=frozenset({"dup-1"})),
+        context(known_exchange_report_ids={"dup-1"}),
     )
 
     assert result.status is MappingResultStatus.DUPLICATE_REPORT
@@ -394,6 +394,34 @@ def test_missing_previous_status_context_returns_insufficient_context() -> None:
     ("exchange_report", "current_status"),
     [
         (
+            report(ExchangeReportType.ACK),
+            OrderStatus.ACKED,
+        ),
+        (
+            report(ExchangeReportType.CANCELED, operation=ExecutionOperation.CANCEL),
+            OrderStatus.CANCELED,
+        ),
+        (
+            report(ExchangeReportType.FULL_FILL),
+            OrderStatus.FILLED,
+        ),
+        (
+            report(ExchangeReportType.EXPIRED),
+            OrderStatus.EXPIRED,
+        ),
+        (
+            report(ExchangeReportType.REJECTED),
+            OrderStatus.REJECTED_BY_EXCHANGE,
+        ),
+        (
+            report(
+                ExchangeReportType.EXCHANGE_UNAVAILABLE,
+                operation=ExecutionOperation.SUBMIT,
+                delivery_phase=DeliveryPhase.PRE_SEND,
+            ),
+            OrderStatus.SUBMIT_FAILED,
+        ),
+        (
             report(ExchangeReportType.TIMEOUT, operation=ExecutionOperation.SUBMIT),
             OrderStatus.SUBMIT_TIMEOUT,
         ),
@@ -435,6 +463,18 @@ def test_same_status_guard_requires_current_order_status() -> None:
     assert result.status is MappingResultStatus.INSUFFICIENT_CONTEXT
     assert result.error is not None
     assert result.error.reason is MappingErrorReason.MISSING_CURRENT_ORDER_STATUS
+
+
+def test_partially_filled_same_status_remains_mappable() -> None:
+    result = map_exchange_report(
+        report(ExchangeReportType.PARTIAL_FILL),
+        context(current_order_status=OrderStatus.PARTIALLY_FILLED),
+    )
+
+    assert result.status is MappingResultStatus.MAPPED_ORDER_EVENT
+    assert result.order_event is not None
+    assert result.order_event.previous_status is OrderStatus.PARTIALLY_FILLED
+    assert result.order_event.new_status is OrderStatus.PARTIALLY_FILLED
 
 
 @pytest.mark.parametrize(

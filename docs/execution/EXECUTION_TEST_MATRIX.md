@@ -86,6 +86,8 @@
 
 ## Existing Mock Exchange XFail Mapping
 
+本表的 `Phase 4.1` 只表示 pure mapper 已覆盖对应回报语义，不表示 `tests/integration/mock_exchange` 场景已解除 xfail 或 MockFuturesExchange skeleton 已实现。
+
 | xfail 场景 | 契约归属 | 状态 |
 |---|---|---|
 | `partial_fill` | Phase 4.1 status-only `PARTIAL_FILL` mapper；真实成交事实后移。 | Phase 4.1 |

@@ -68,12 +68,14 @@ _FILL_REPORT_TYPES = frozenset(
     }
 )
 
-_SAME_STATUS_GUARD_TARGETS = frozenset(
+_CONTEXT_REQUIRED_SAME_STATUS_TARGETS = frozenset(
     {
         OrderStatus.SUBMIT_TIMEOUT,
         OrderStatus.CANCEL_FAILED,
     }
 )
+
+_SAME_STATUS_ALLOWED_TARGETS = frozenset({OrderStatus.PARTIALLY_FILLED})
 
 
 def map_exchange_report(report: ExchangeReport, context: MappingContext) -> MappingResult:
@@ -164,7 +166,7 @@ def map_exchange_report(report: ExchangeReport, context: MappingContext) -> Mapp
         return _mapping_error(target_status, "ExchangeReport cannot be mapped to OrderStatus.")
 
     if (
-        target_status in _SAME_STATUS_GUARD_TARGETS
+        target_status in _CONTEXT_REQUIRED_SAME_STATUS_TARGETS
         and context.current_order_status is None
     ):
         return _insufficient_context(
@@ -174,7 +176,7 @@ def map_exchange_report(report: ExchangeReport, context: MappingContext) -> Mapp
 
     if (
         context.current_order_status == target_status
-        and target_status in _SAME_STATUS_GUARD_TARGETS
+        and target_status not in _SAME_STATUS_ALLOWED_TARGETS
     ):
         return MappingResult(
             status=MappingResultStatus.IGNORED_REPORT,
