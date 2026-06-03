@@ -1,6 +1,6 @@
 # OMS Repository / UnitOfWork 设计契约
 
-本文档定义 Phase 2.2A 的 OMS Repository 与 UnitOfWork 设计契约。本文档只定义设计边界和测试矩阵，不实现 Repository，不修改 DB schema。
+本文档定义 OMS Repository 与 UnitOfWork 设计契约。Phase 2.2C-B 只定义抽象端口，不实现 SQLAlchemy Repository，不实现 OMSService。
 
 ## Repository 边界
 
@@ -26,6 +26,23 @@
 
 状态迁移判断属于 OMS application/service 层，应调用 `state_machine.validate_transition(...)`。Repository 只保存已经由上层确认的结果。
 
+当前抽象端口签名：
+
+```python
+class OrderRepository(Protocol):
+    def create_order(self, order_request: OrderRequest, *, client_order_id: str) -> OrderState: ...
+    def get_by_id(self, order_id: str) -> OrderState | None: ...
+    def get_by_client_order_id(self, client_order_id: str) -> OrderState | None: ...
+    def update_status(
+        self,
+        order_id: str,
+        new_status: OrderStatus,
+        *,
+        expected_version: int | None = None,
+    ) -> OrderState: ...
+    def list_open_orders(self) -> list[OrderState]: ...
+```
+
 ### OrderEventRepository
 
 `OrderEventRepository` 只负责事件持久化相关操作：
@@ -44,6 +61,19 @@
 
 重复事件、乱序事件、`previous_status` mismatch 和 `UNKNOWN` 策略属于 OMS application/service 层。
 
+当前抽象端口签名：
+
+```python
+class OrderEventRepository(Protocol):
+    def append_event(self, event: OrderEvent) -> OrderEvent: ...
+    def get_by_event_key(
+        self,
+        event_source: EventSource,
+        external_event_id: str,
+    ) -> OrderEvent | None: ...
+    def list_by_order_id(self, order_id: str) -> list[OrderEvent]: ...
+```
+
 ## UnitOfWork / Transaction Boundary
 
 Phase 2.2 后续实现必须使用统一事务边界：
@@ -59,10 +89,24 @@ Phase 2.2 后续实现必须使用统一事务边界：
 建议边界：
 
 - OMS application/service 打开 UnitOfWork。
-- UnitOfWork 提供同一个 SQLAlchemy session。
-- `OrderRepository` 和 `OrderEventRepository` 共享该 session。
+- UnitOfWork 在具体实现内部管理同一个事务上下文。
+- 抽象端口不暴露 SQLAlchemy session 或具体 DB session。
+- `OrderRepository` 和 `OrderEventRepository` 共享同一个 UnitOfWork 事务边界。
 - application/service 完成状态机判断、幂等判断和事件语义判断。
 - UnitOfWork 原子提交或回滚。
+
+当前抽象端口签名：
+
+```python
+class UnitOfWork(Protocol):
+    orders: OrderRepository
+    order_events: OrderEventRepository
+
+    def commit(self) -> None: ...
+    def rollback(self) -> None: ...
+    def __enter__(self) -> UnitOfWork: ...
+    def __exit__(self, exc_type, exc, tb) -> bool | None: ...
+```
 
 ## order_id 映射
 
