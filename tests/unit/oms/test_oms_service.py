@@ -26,7 +26,6 @@ from futures_mvp.interfaces.repositories import (
     OrderNotFoundError,
 )
 from futures_mvp.modules.oms import OMSService
-from futures_mvp.modules.oms.errors import InvalidOrderTransition
 
 NOW = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -462,7 +461,7 @@ def test_apply_risk_result_duplicate_key_for_different_order_is_collision() -> N
     assert len(uow.order_events.events) == before_events
 
 
-def test_apply_risk_result_illegal_transition_rolls_back_without_success_event() -> None:
+def test_apply_risk_result_accepted_illegal_transition_returns_typed_rejection() -> None:
     uow = FakeUnitOfWork()
     service = _service(uow)
     order = service.create_order(_order_request(), client_order_id="client-1")
@@ -471,20 +470,47 @@ def test_apply_risk_result_illegal_transition_rolls_back_without_success_event()
         _risk_result(RiskDecision.REJECTED),
         external_event_id="risk-rejected-1",
     )
+    before_events = len(uow.order_events.events)
 
-    with pytest.raises(InvalidOrderTransition):
-        service.apply_risk_result(
-            order.order_id,
-            _risk_result(RiskDecision.ACCEPTED),
-            external_event_id="risk-accepted-1",
-        )
+    result = service.apply_risk_result(
+        order.order_id,
+        _risk_result(RiskDecision.ACCEPTED),
+        external_event_id="risk-accepted-1",
+    )
 
+    assert result.status == EventApplicationStatus.MISMATCH_REJECTED
+    assert result.order.status == OrderStatus.REJECTED_BY_RISK
     assert uow.orders.get_by_id(order.order_id).status == OrderStatus.REJECTED_BY_RISK  # type: ignore[union-attr]
-    assert [event.external_event_id for event in uow.order_events.events] == [
-        "oms:create:1",
-        "risk-rejected-1",
+    assert len(uow.order_events.events) == before_events
+    assert "risk-accepted-1" not in [
+        event.external_event_id for event in uow.order_events.events
     ]
-    assert uow.rollback_count == 1
+
+
+def test_apply_risk_result_rejected_illegal_transition_returns_typed_rejection() -> None:
+    uow = FakeUnitOfWork()
+    service = _service(uow)
+    order = service.create_order(_order_request(), client_order_id="client-1")
+    service.apply_risk_result(
+        order.order_id,
+        _risk_result(RiskDecision.ACCEPTED),
+        external_event_id="risk-accepted-1",
+    )
+    before_events = len(uow.order_events.events)
+
+    result = service.apply_risk_result(
+        order.order_id,
+        _risk_result(RiskDecision.REJECTED),
+        external_event_id="risk-rejected-1",
+    )
+
+    assert result.status == EventApplicationStatus.MISMATCH_REJECTED
+    assert result.order.status == OrderStatus.RISK_ACCEPTED
+    assert uow.orders.get_by_id(order.order_id).status == OrderStatus.RISK_ACCEPTED  # type: ignore[union-attr]
+    assert len(uow.order_events.events) == before_events
+    assert "risk-rejected-1" not in [
+        event.external_event_id for event in uow.order_events.events
+    ]
 
 
 def test_apply_order_event_previous_status_match_updates_status_and_appends() -> None:
@@ -570,7 +596,49 @@ def test_apply_order_event_duplicate_key_for_different_order_is_collision() -> N
     assert len(uow.order_events.events) == before_events
 
 
-def test_apply_order_event_terminal_order_does_not_regress_to_old_event() -> None:
+def test_apply_order_event_terminal_same_status_late_event_is_old_ignored() -> None:
+    uow = FakeUnitOfWork()
+    service = _service(uow)
+    order = service.create_order(_order_request(), client_order_id="client-1")
+    uow.orders.update_status(order.order_id, OrderStatus.FILLED)
+    before_count = len(uow.order_events.events)
+
+    result = service.apply_order_event(
+        _event(
+            order.order_id,
+            previous_status=OrderStatus.ACKED,
+            new_status=OrderStatus.FILLED,
+        )
+    )
+
+    assert result.status == EventApplicationStatus.OLD_IGNORED
+    current = result.order
+    assert current.status == OrderStatus.FILLED
+    assert len(uow.order_events.events) == before_count
+
+
+def test_apply_order_event_terminal_conflicting_terminal_event_is_rejected() -> None:
+    uow = FakeUnitOfWork()
+    service = _service(uow)
+    order = service.create_order(_order_request(), client_order_id="client-1")
+    uow.orders.update_status(order.order_id, OrderStatus.CANCELED)
+    before_count = len(uow.order_events.events)
+
+    result = service.apply_order_event(
+        _event(
+            order.order_id,
+            previous_status=OrderStatus.ACKED,
+            new_status=OrderStatus.FILLED,
+        )
+    )
+
+    assert result.status == EventApplicationStatus.MISMATCH_REJECTED
+    assert result.order.status == OrderStatus.CANCELED
+    assert uow.orders.get_by_id(order.order_id).status == OrderStatus.CANCELED  # type: ignore[union-attr]
+    assert len(uow.order_events.events) == before_count
+
+
+def test_apply_order_event_terminal_non_terminal_late_event_is_ignored() -> None:
     uow = FakeUnitOfWork()
     service = _service(uow)
     order = service.create_order(_order_request(), client_order_id="client-1")
@@ -585,9 +653,30 @@ def test_apply_order_event_terminal_order_does_not_regress_to_old_event() -> Non
         )
     )
 
+    assert result.status == EventApplicationStatus.IGNORED_TERMINAL
+    assert result.order.status == OrderStatus.FILLED
+    assert uow.orders.get_by_id(order.order_id).status == OrderStatus.FILLED  # type: ignore[union-attr]
+    assert len(uow.order_events.events) == before_count
+
+
+def test_apply_order_event_non_terminal_old_process_event_is_ignored() -> None:
+    uow = FakeUnitOfWork()
+    service = _service(uow)
+    order = service.create_order(_order_request(), client_order_id="client-1")
+    uow.orders.update_status(order.order_id, OrderStatus.SUBMITTED)
+    before_count = len(uow.order_events.events)
+
+    result = service.apply_order_event(
+        _event(
+            order.order_id,
+            previous_status=OrderStatus.RISK_ACCEPTED,
+            new_status=OrderStatus.SUBMITTING,
+        )
+    )
+
     assert result.status == EventApplicationStatus.OLD_IGNORED
-    current = result.order
-    assert current.status == OrderStatus.FILLED
+    assert result.order.status == OrderStatus.SUBMITTED
+    assert uow.orders.get_by_id(order.order_id).status == OrderStatus.SUBMITTED  # type: ignore[union-attr]
     assert len(uow.order_events.events) == before_count
 
 

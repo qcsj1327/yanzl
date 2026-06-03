@@ -162,6 +162,9 @@ class OMSService:
             if existing_event is not None:
                 return self._duplicate_or_collision_result(uow, order, existing_event)
 
+            if is_terminal(order.status):
+                return self._terminal_order_event_result(order, event)
+
             if order.status == OrderStatus.UNKNOWN:
                 if event.previous_status == OrderStatus.UNKNOWN and self._is_unknown_recovery(
                     order.status,
@@ -281,7 +284,10 @@ class OMSService:
     ) -> OrderEventApplicationResult:
         current = order
         if current.status == OrderStatus.CREATED:
-            validate_transition(OrderStatus.CREATED, OrderStatus.RISK_CHECKING)
+            if not can_transition(OrderStatus.CREATED, OrderStatus.RISK_CHECKING):
+                return self._invalid_transition_result(current)
+            if not can_transition(OrderStatus.RISK_CHECKING, OrderStatus.RISK_ACCEPTED):
+                return self._invalid_transition_result(current)
             risk_checking_event_id = f"{external_event_id}:risk_checking"
             current = uow.orders.update_status(
                 current.order_id,
@@ -299,7 +305,8 @@ class OMSService:
                 )
             )
 
-        validate_transition(current.status, OrderStatus.RISK_ACCEPTED)
+        if not can_transition(current.status, OrderStatus.RISK_ACCEPTED):
+            return self._invalid_transition_result(current)
         accepted = uow.orders.update_status(
             current.order_id,
             OrderStatus.RISK_ACCEPTED,
@@ -326,7 +333,8 @@ class OMSService:
         external_event_id: str,
         occurred_at: datetime,
     ) -> OrderEventApplicationResult:
-        validate_transition(order.status, OrderStatus.REJECTED_BY_RISK)
+        if not can_transition(order.status, OrderStatus.REJECTED_BY_RISK):
+            return self._invalid_transition_result(order)
         rejected = uow.orders.update_status(
             order.order_id,
             OrderStatus.REJECTED_BY_RISK,
@@ -558,6 +566,36 @@ class OMSService:
     ) -> OrderEventApplicationResult:
         return OrderEventApplicationResult(status=status, order=order, reason=reason)
 
+    def _invalid_transition_result(self, order: OrderState) -> OrderEventApplicationResult:
+        return self._result(
+            EventApplicationStatus.MISMATCH_REJECTED,
+            order,
+            reason="invalid_transition_rejected",
+        )
+
+    def _terminal_order_event_result(
+        self,
+        order: OrderState,
+        event: OrderEvent,
+    ) -> OrderEventApplicationResult:
+        if event.new_status == order.status:
+            return self._result(
+                EventApplicationStatus.OLD_IGNORED,
+                order,
+                reason="terminal_same_status_late_event_ignored",
+            )
+        if is_terminal(event.new_status):
+            return self._result(
+                EventApplicationStatus.MISMATCH_REJECTED,
+                order,
+                reason="terminal_conflict_rejected",
+            )
+        return self._result(
+            EventApplicationStatus.IGNORED_TERMINAL,
+            order,
+            reason="terminal_order_event_ignored",
+        )
+
     def _replay_status(self, events: Sequence[OrderEvent]) -> OrderStatus | None:
         if not events:
             return None
@@ -637,8 +675,6 @@ class OMSService:
         current_status: OrderStatus,
         event_status: OrderStatus,
     ) -> bool:
-        if is_terminal(current_status):
-            return current_status != event_status
         return _STATUS_PRECEDENCE[current_status] > _STATUS_PRECEDENCE[event_status]
 
     def _is_unknown_recovery(

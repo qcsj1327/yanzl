@@ -486,9 +486,10 @@ class OMSService:
 - 先按 `event_source=RISK + external_event_id` 查询既有事件；既有事件属于同一订单时返回 `DUPLICATE`，属于其他订单时返回 `EVENT_KEY_COLLISION`。
 - 若 `RiskDecision.ACCEPTED`，目标状态为 `RISK_ACCEPTED`。
 - 若 `RiskDecision.REJECTED`，目标状态为 `REJECTED_BY_RISK`。
-- 当前状态为 `CREATED` 且风控通过时，必须先调用 `validate_transition(CREATED, RISK_CHECKING)`，再调用 `validate_transition(RISK_CHECKING, RISK_ACCEPTED)`。
-- 当前状态为 `RISK_CHECKING` 且风控通过时，调用 `validate_transition(RISK_CHECKING, RISK_ACCEPTED)`。
-- 当前状态为 `CREATED` 或 `RISK_CHECKING` 且风控拒绝时，调用对应的 `validate_transition(..., REJECTED_BY_RISK)`。
+- 当前状态为 `CREATED` 且风控通过时，必须先确认 `can_transition(CREATED, RISK_CHECKING)` 和 `can_transition(RISK_CHECKING, RISK_ACCEPTED)`，再执行桥接更新。
+- 当前状态为 `RISK_CHECKING` 且风控通过时，必须先确认 `can_transition(RISK_CHECKING, RISK_ACCEPTED)`。
+- 当前状态为 `CREATED` 或 `RISK_CHECKING` 且风控拒绝时，必须先确认 `can_transition(..., REJECTED_BY_RISK)`。
+- 风控目标迁移非法时，返回 `MISMATCH_REJECTED`，不调用 `update_status`，不 append 成功风控事件，不泄漏 `InvalidOrderTransition`。
 - 在同一事务内更新订单状态并 append 风控事件。
 - 如果风控通过路径需要从 `CREATED` 桥接到 `RISK_CHECKING`，必须在同一事务内 append `RISK_CHECKING` 事件和 `RISK_ACCEPTED` 事件，且最终返回 `RISK_ACCEPTED`。
 - 事件来源为 `RISK`。
@@ -585,7 +586,7 @@ old event 是已经被当前订单状态覆盖、不会改变事实的迟到事�
 
 可忽略条件：
 
-- 当前订单已在终态，事件目标状态不是该终态，且事件无法合法推进终态。
+- 当前订单已在终态，事件目标状态等于当前终态。
 - 当前订单状态已经位于事件目标状态之后，且事件不携带新的类型化事实。
 - `previous_status` 指向较早状态，事件目标状态不会改变当前状态、终态或恢复判断。
 
@@ -594,6 +595,13 @@ old event 是已经被当前订单状态覆盖、不会改变事实的迟到事�
 - 不回退订单状态。
 - 不重复 append 原业务事件作为状态变更事件。
 - 可以在未来审计表或诊断事件中记录；当前没有专用 audit schema 时，不得伪造状态事件。
+
+终态订单事件分类：
+
+- 目标状态等于当前终态：返回 `OLD_IGNORED`。
+- 目标状态是另一个终态：返回 `MISMATCH_REJECTED`。
+- 目标状态是非终态：返回 `IGNORED_TERMINAL`。
+- 终态订单不得进入 `UNKNOWN`，不得回退，不得 append 新状态事件。
 
 无法证明为 old event 时，不得强行忽略；应进入 `UNKNOWN` 或拒绝应用。
 
@@ -655,7 +663,7 @@ old event 是已经被当前订单状态覆盖、不会改变事实的迟到事�
 
 重启恢复流程候选：
 
-1. Phase 2.6 当前批量重启恢复入口由调用方通过 `OrderRepository.list_open_orders()` 找到 open/recovery orders 后逐笔调用 `recover_order(order_id)`。
+1. Phase 2.7 当前批量重启恢复入口由调用方通过 `OrderRepository.list_open_orders()` 找到 open/recovery orders 后逐笔调用 `recover_order(order_id)`。
 2. 当前阶段不新增 `OMSService.recover_open_orders()` 批量 API。
 3. `recover_order` 读取当前订单和按 `order_events.id` 升序排列的事件流。
 4. 从订单创建事件开始重放状态迁移。
@@ -665,7 +673,7 @@ old event 是已经被当前订单状态覆盖、不会改变事实的迟到事�
 8. 重放结果与 `orders.status` 不一致且无法证明为可接受恢复差异时，进入或保持 `UNKNOWN`。
 9. 终态订单恢复返回 `IGNORED_TERMINAL`，不自动恢复、不回退。
 
-open/recovery 状态集合沿用 Repository 契约：
+open/recovery 状态集合沿用 Repository 契约，批量入口由调用方逐笔调用 `recover_order` 并对每笔结果进行判断：
 
 - `SUBMITTING`
 - `SUBMIT_TIMEOUT`
@@ -678,7 +686,9 @@ open/recovery 状态集合沿用 Repository 契约：
 
 处理约束：
 
-- `SUBMITTING`、`SUBMIT_TIMEOUT`、`SUBMITTED`、`CANCEL_PENDING`、`CANCEL_FAILED` 只能通过本地事件重放确认当前状态。
+- `SUBMITTING`、`SUBMIT_TIMEOUT`、`SUBMITTED`、`ACKED`、`PARTIALLY_FILLED`、`CANCEL_PENDING`、`CANCEL_FAILED` 只能通过本地事件重放确认当前状态。
+- 事件流一致时返回 `APPLIED`，不新增恢复事件，不降级到 `UNKNOWN`。
+- `UNKNOWN` 事件流一致时保持 `UNKNOWN` 并返回 `APPLIED`；可重放到稳定允许目标时才写恢复事件并返回 `RECOVERED_FROM_UNKNOWN`。
 - 本阶段不发起 EMS 或 Mock Exchange 查询。
 - 需要外部权威查询时，只保留为后续阶段接口，不在 Phase 2.3 实现。
 

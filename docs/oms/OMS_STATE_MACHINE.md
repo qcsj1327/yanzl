@@ -109,6 +109,7 @@ OMS 禁止负责：
 - `REJECTED_BY_EXCHANGE` 不得进入成交或撤单状态。
 - `EXPIRED` 不得进入成交或撤单状态。
 - `previous_status` 与当前状态不一致时，不得直接按普通事件应用。
+- `apply_risk_result` 遇到当前状态无法迁移到风控目标状态时，必须返回 `MISMATCH_REJECTED`，不得泄漏状态机异常。
 - `apply_order_event` 收到 `previous_status` 与当前状态一致、但目标状态不在合法迁移矩阵内的事件时，必须返回 `MISMATCH_REJECTED`，不得泄漏状态机异常。
 - 非法迁移不得更新订单状态，不得 append 成功状态事件，不得自动进入 `UNKNOWN`，除非事件语义另有明确 UNKNOWN 进入规则。
 
@@ -186,6 +187,9 @@ event_source + external_event_id
 - `previous_status` 与当前状态不一致，且无法判断：进入 `UNKNOWN` 或拒绝应用。
 - 旧事件不得回退订单状态，返回 `OLD_IGNORED`。
 - 终态订单不得自动恢复或回退，恢复入口返回 `IGNORED_TERMINAL`。
+- 终态订单收到目标状态等于当前终态的迟到事件时，返回 `OLD_IGNORED`，不重复 append，不更新状态。
+- 终态订单收到另一个终态目标时，返回 `MISMATCH_REJECTED`，不得误标为 `OLD_IGNORED`。
+- 终态订单收到非终态目标时，返回 `IGNORED_TERMINAL`，不得进入 `UNKNOWN`，不得回退。
 - 乱序事件不得破坏订单状态单调性。
 - 乱序事件不得让终态订单回退。
 - `raw_payload` 只用于诊断，不承载 source-of-truth 字段。
