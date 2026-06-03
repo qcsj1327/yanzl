@@ -4,10 +4,11 @@
 
 - `Contract Done`
 - `Phase 4.1`
+- `Execution Runtime`
 - `Phase 4.2+`
 - `Later Phase`
 
-`Contract Done` 表示 Phase 4.0 文档契约已冻结，不表示实现完成。`Phase 4.1` 表示当前 execution 模块应实现并用单元测试覆盖。
+`Contract Done` 表示 Phase 4.0 文档契约已冻结，不表示实现完成。`Phase 4.1` 表示 pure mapper 阶段已实现并用单元测试覆盖。`Execution Runtime` 表示当前 Command/Report Runtime Layer 已实现并用单元测试覆盖。
 
 ## Contract Done
 
@@ -112,6 +113,24 @@
 | application orchestrator skeleton | 编排 OMS pre-state、EMS command、report mapper、OMS apply。 | Phase 4.2+ |
 | UNKNOWN_REPORT integration | 等待 OMS public UNKNOWN entry 后接入。 | Phase 4.2+ |
 | ENTER_UNKNOWN_CANDIDATE application | future application layer 调 OMS UNKNOWN public entry。 | Phase 4.2+ |
+
+## Execution Runtime
+
+| 场景 | 预期 | 状态 |
+|---|---|---|
+| `ExchangeCommandPort` | 定义 submit / cancel command port，方法返回 `None`。 | Execution Runtime |
+| `ExecutionReportSink` | 定义当前 local / in-memory report surface，只承载 `ExchangeReport`。 | Execution Runtime |
+| report sink behavior | `append` / `list_reports` / `drain_reports` 可用于当前内存实现和单元测试。 | Execution Runtime |
+| no production event bus | report sink 不代表 Kafka / Redis / Celery，不作为生产事件总线。 | Execution Runtime |
+| EMS command boundary | EMS 只依赖 `ExchangeCommandPort`，不依赖具体 MockFuturesExchange。 | Execution Runtime |
+| MockFuturesExchange skeleton | 可配置 MockExchange 实现 command port，command 产生 typed `ExchangeReport`。 | Execution Runtime |
+| submit reports | 支持 ACK / REJECTED / TIMEOUT / EXCHANGE_UNAVAILABLE PRE_SEND / POST_SEND_UNCERTAIN。 | Execution Runtime |
+| cancel reports | 支持 CANCELED / CANCEL_REJECTED / TIMEOUT / EXCHANGE_UNAVAILABLE PRE_SEND / POST_SEND_UNCERTAIN。 | Execution Runtime |
+| deterministic report id | 默认 deterministic counter，可注入固定 id generator 用于 duplicate replay。 | Execution Runtime |
+| report handler | `ExecutionReportHandler.handle(...)` 只调用 mapper 并原样返回 `MappingResult`。 | Execution Runtime |
+| no application routing | 当前 handler 不 split、不调 OMS、不应用 `OrderEvent`。 | Execution Runtime |
+| no current UNKNOWN application | 不新增 OMS UNKNOWN entry，不消费 UNKNOWN candidate。 | Execution Runtime |
+| runtime boundary | EMS / MockExchange / report layer 不 import OMS / Risk / DB / Settlement / real adapter / Kafka / Redis / Celery。 | Execution Runtime |
 
 ## Later Phase
 

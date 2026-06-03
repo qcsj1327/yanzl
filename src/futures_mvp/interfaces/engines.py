@@ -11,6 +11,7 @@ from futures_mvp.domain.models import (
     Signal,
     Trade,
 )
+from futures_mvp.modules.execution.models import ExchangeReport
 
 
 class MarketDataMock(Protocol):
@@ -52,7 +53,25 @@ class EMS(Protocol):
     def cancel(self, order: OrderState) -> None: ...
 
 
-class MockFuturesExchange(Protocol):
+class ExchangeCommandPort(Protocol):
+    """Execution venue command port; reports are delivered through a separate sink."""
+
+    def submit_limit_order(self, order: OrderState) -> None: ...
+
+    def cancel_order(self, order: OrderState) -> None: ...
+
+
+class ExecutionReportSink(Protocol):
+    """Local in-memory report surface for the current execution runtime layer."""
+
+    def append(self, report: ExchangeReport) -> None: ...
+
+    def list_reports(self) -> list[ExchangeReport]: ...
+
+    def drain_reports(self) -> list[ExchangeReport]: ...
+
+
+class MockFuturesExchange(ExchangeCommandPort, Protocol):
     """Mock exchange command port only; methods do not return exchange reports."""
 
     def submit_limit_order(self, order: OrderState) -> None: ...

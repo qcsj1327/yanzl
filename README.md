@@ -167,7 +167,7 @@ Phase 4 Execution 实现前必须先阅读：
 - `docs/execution/EXECUTION_CONTRACT.md`
 - `docs/execution/EXECUTION_TEST_MATRIX.md`
 
-Phase 4.0 冻结 EMS、MockFuturesExchange command port、ExchangeReport、ExchangeReport -> OrderEvent 映射和执行回报语义。Phase 4.1 已实现 DTO、MappingContext、MappingResult、MappingError 和 pure mapper。当前阶段不实现 EMS / Mock Exchange，不连接真实交易接口，不进入 Position、Margin、PnL 或 Settlement。当前 `MockFuturesExchange` Protocol 只承载 submit / cancel command port，不承载 report surface。
+Phase 4.0 冻结 EMS、MockFuturesExchange command port、ExchangeReport、ExchangeReport -> OrderEvent 映射和执行回报语义。Phase 4.1 已实现 DTO、MappingContext、MappingResult、MappingError 和 pure mapper。当前 Execution Command/Report Runtime Layer 已实现 `ExchangeCommandPort`、本地 in-memory `ExecutionReportSink`、EMS command boundary、ConfigurableMockFuturesExchange 和 mapper wrapper。当前 `MockFuturesExchange` Protocol 只承载 submit / cancel command port，方法返回 `None`；report surface 与 command port 分离，不连接真实交易接口，不进入 Position、Margin、PnL 或 Settlement。
 
 ## Demo 策略
 
@@ -182,7 +182,9 @@ uv run futures-demo
 已规划但当前仍未实现完整业务逻辑：
 
 - 撮合与成交模拟
-- EMS / Mock Exchange implementation、report surface 和 application orchestrator
+- Application Execution Orchestrator
+- OMS public UNKNOWN entry / UNKNOWN_REPORT application
+- 生产事件总线或 Kafka / Redis / Celery adapter
 - 真实上下文风控 / Position / Margin / Risk -> OMS 集成
 - PnL 和保证金计算
 - 每日结算
