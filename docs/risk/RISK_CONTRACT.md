@@ -1,6 +1,6 @@
 # Risk 冻结契约
 
-本文档定义 Phase 3.0 pure Risk 的冻结契约。Phase 3.0 只定义 Risk 职责边界、输入输出、规则范围、配置边界和禁止事项，不实现 RiskEngine。
+本文档定义 pure Risk 的冻结契约。Phase 3.0 定义 Risk 职责边界、输入输出、规则范围、配置边界和禁止事项；Phase 3.1 在该契约下实现 pure RiskEngine。
 
 ## 当前事实来源
 
@@ -98,11 +98,11 @@ Risk 禁止：
 | `limit_down_by_instrument` | `dict[str, Decimal]` | 默认空字典；缺失视为空字典。 | 缺 key 表示禁用该 instrument 的跌停检查；非缺 key 时价格低于跌停价拒绝。 | instrument 有 key 时启用。 |
 | `is_trading_session_allowed` | `bool` | 默认 `True`。 | `True` 表示通过交易时段 flag；`False` 表示拒绝。Phase 3.0 不计算 calendar/session。 | 始终启用，只消费布尔值。 |
 | `allowed_offsets` | `set[Offset]` | 默认所有当前 `Offset` enum values；缺失使用默认全量。 | 空集合表示不允许任何 offset；`Signal.offset` 不在集合中时拒绝。 | 始终启用。 |
-| `available_margin` | `Decimal | None` | 默认 `None`。 | 与 `required_margin` 同为 `None` 时禁用 margin skeleton；非 `None` 时要求 `required_margin` 非 `None`。 | 二者均非 `None` 时启用。 |
-| `required_margin` | `Decimal | None` | 默认 `None`。 | 若 `available_margin is None` 且 `required_margin is None`，禁用 margin skeleton；若 `available_margin is not None` 且 `required_margin is None`，是配置错误。 | 二者均非 `None` 时启用。 |
+| `available_margin` | `Decimal | None` | 默认 `None`。 | 与 `required_margin` 同为 `None` 时禁用 margin skeleton；任一单边存在都是配置错误。 | 二者均非 `None` 时启用。 |
+| `required_margin` | `Decimal | None` | 默认 `None`。 | 与 `available_margin` 同为 `None` 时禁用 margin skeleton；任一单边存在都是配置错误。 | 二者均非 `None` 时启用。 |
 | `current_position` | `Decimal | None` | 默认 `None`。 | 仅作透传 / 诊断。Phase 3.0 不用它推导 `projected_position`。 | 不启用任何规则。 |
-| `projected_position` | `Decimal | None` | 默认 `None`。 | `None` 表示禁用 max position skeleton；若 `max_position is not None` 且缺失，是配置错误。 | 与 `max_position` 均非 `None` 时启用。 |
-| `max_position` | `Decimal | None` | 默认 `None`。 | `None` 表示禁用 max position skeleton；非 `None` 时 `projected_position > max_position` 拒绝。 | 与 `projected_position` 均非 `None` 时启用。 |
+| `projected_position` | `Decimal | None` | 默认 `None`。 | 与 `max_position` 同为 `None` 时禁用 max position skeleton；任一单边存在都是配置错误。 | 二者均非 `None` 时启用。 |
+| `max_position` | `Decimal | None` | 默认 `None`。 | 与 `projected_position` 同为 `None` 时禁用 max position skeleton；任一单边存在都是配置错误。 | 二者均非 `None` 时启用。 |
 
 margin / position 均为 input-only skeleton：
 
@@ -228,8 +228,10 @@ Phase 3.0 采用以下错误语义：
 配置错误包括：
 
 - `max_notional` 启用但缺少 `contract_multiplier_by_instrument[signal.instrument_id]`。
-- `available_margin` 已提供但 `required_margin` 缺失。
-- `max_position` 已提供但 `projected_position` 缺失。
+- `available_margin is None` 且 `required_margin is not None`。
+- `available_margin is not None` 且 `required_margin is None`。
+- `projected_position is None` 且 `max_position is not None`。
+- `projected_position is not None` 且 `max_position is None`。
 - 非 `Decimal` 数值进入核心风控计算。
 
 多规则命中策略：
