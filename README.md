@@ -118,7 +118,7 @@ Phase 2 OMS 实现前必须先阅读：
 - `docs/oms/OMS_TEST_MATRIX.md`
 - `docs/oms/OMS_REPOSITORY.md`
 
-当前阶段只定义 OMS 契约、状态机、幂等、事件语义和测试矩阵，不实现 OMS 业务逻辑。
+Phase 2.3A 已引入最小 OMS Application Service 编排。OMS 仍只负责订单状态、幂等、事件持久化和恢复边界，不实现风控计算、EMS、Mock Exchange、持仓、保证金、PnL 或结算。
 
 ## Demo 策略
 

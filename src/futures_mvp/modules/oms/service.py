@@ -3,7 +3,11 @@ from datetime import datetime
 
 from futures_mvp.domain.enums import EventSource, OrderStatus, RiskDecision
 from futures_mvp.domain.models import OrderEvent, OrderRequest, OrderState, RiskResult
-from futures_mvp.interfaces.repositories import OrderNotFoundError, UnitOfWork
+from futures_mvp.interfaces.repositories import (
+    EventAlreadyExistsError,
+    OrderNotFoundError,
+    UnitOfWork,
+)
 from futures_mvp.modules.oms.state_machine import (
     UNKNOWN_RECOVERY_TARGETS,
     can_transition,
@@ -62,17 +66,24 @@ class OMSService:
             ):
                 return order
 
-            uow.order_events.append_event(
-                self._event(
-                    order_id=order.order_id,
-                    previous_status=None,
-                    new_status=OrderStatus.CREATED,
-                    event_source=EventSource.OMS,
-                    external_event_id=initial_event_id,
-                    raw_payload={"reason": "order_created"},
-                    occurred_at=self._clock(),
+            try:
+                uow.order_events.append_event(
+                    self._event(
+                        order_id=order.order_id,
+                        previous_status=None,
+                        new_status=OrderStatus.CREATED,
+                        event_source=EventSource.OMS,
+                        external_event_id=initial_event_id,
+                        raw_payload={"reason": "order_created"},
+                        occurred_at=self._clock(),
+                    )
                 )
-            )
+            except EventAlreadyExistsError:
+                return self._duplicate_after_rollback(
+                    uow,
+                    EventSource.OMS,
+                    initial_event_id,
+                )
             uow.commit()
             return order
 
@@ -95,21 +106,29 @@ class OMSService:
             order = self._require_order(uow, order_id)
             event_time = occurred_at or self._clock()
 
-            if risk_result.decision == RiskDecision.ACCEPTED:
-                return self._apply_risk_accepted(
+            try:
+                if risk_result.decision == RiskDecision.ACCEPTED:
+                    return self._apply_risk_accepted(
+                        uow,
+                        order,
+                        risk_result,
+                        external_event_id,
+                        event_time,
+                    )
+                if risk_result.decision == RiskDecision.REJECTED:
+                    return self._apply_risk_rejected(
+                        uow,
+                        order,
+                        risk_result,
+                        external_event_id,
+                        event_time,
+                    )
+            except EventAlreadyExistsError:
+                return self._duplicate_after_rollback(
                     uow,
-                    order,
-                    risk_result,
+                    EventSource.RISK,
                     external_event_id,
-                    event_time,
-                )
-            if risk_result.decision == RiskDecision.REJECTED:
-                return self._apply_risk_rejected(
-                    uow,
-                    order,
-                    risk_result,
-                    external_event_id,
-                    event_time,
+                    fallback_external_event_ids=(f"{external_event_id}:risk_checking",),
                 )
             raise ValueError(f"unsupported risk decision: {risk_result.decision}")
 
@@ -123,6 +142,11 @@ class OMSService:
                 return self._require_order(uow, existing_event.order_id)
 
             order = self._require_order(uow, event.order_id)
+
+            if order.status == OrderStatus.UNKNOWN:
+                if self._is_unknown_recovery(order.status, event.new_status):
+                    return self._apply_validated_event(uow, order, event)
+                return order
 
             if event.previous_status == order.status:
                 return self._apply_validated_event(uow, order, event)
@@ -163,6 +187,17 @@ class OMSService:
             events = uow.order_events.list_by_order_id(order_id)
             replayed_status = self._replay_status(events)
             if replayed_status == order.status:
+                return order
+            if (
+                order.status == OrderStatus.UNKNOWN
+                and replayed_status in UNKNOWN_RECOVERY_TARGETS
+            ):
+                return self._recover_unknown(
+                    uow,
+                    order,
+                    replayed_status,
+                )
+            if order.status == OrderStatus.UNKNOWN:
                 return order
 
             return self._enter_unknown(
@@ -253,7 +288,14 @@ class OMSService:
     ) -> OrderState:
         validate_transition(order.status, event.new_status)
         updated = uow.orders.update_status(order.order_id, event.new_status)
-        uow.order_events.append_event(event)
+        try:
+            uow.order_events.append_event(event)
+        except EventAlreadyExistsError:
+            return self._duplicate_after_rollback(
+                uow,
+                event.event_source,
+                event.external_event_id,
+            )
         uow.commit()
         return updated
 
@@ -278,19 +320,84 @@ class OMSService:
             return self._require_order(uow, existing.order_id)
 
         unknown = uow.orders.update_status(order.order_id, OrderStatus.UNKNOWN)
-        uow.order_events.append_event(
-            self._event(
-                order_id=order.order_id,
-                previous_status=order.status,
-                new_status=OrderStatus.UNKNOWN,
-                event_source=EventSource.OMS,
-                external_event_id=external_event_id,
-                raw_payload=raw_payload,
-                occurred_at=occurred_at,
+        try:
+            uow.order_events.append_event(
+                self._event(
+                    order_id=order.order_id,
+                    previous_status=order.status,
+                    new_status=OrderStatus.UNKNOWN,
+                    event_source=EventSource.OMS,
+                    external_event_id=external_event_id,
+                    raw_payload=raw_payload,
+                    occurred_at=occurred_at,
+                )
             )
-        )
+        except EventAlreadyExistsError:
+            return self._duplicate_after_rollback(
+                uow,
+                EventSource.OMS,
+                external_event_id,
+            )
         uow.commit()
         return unknown
+
+    def _recover_unknown(
+        self,
+        uow: UnitOfWork,
+        order: OrderState,
+        recovered_status: OrderStatus,
+    ) -> OrderState:
+        validate_transition(OrderStatus.UNKNOWN, recovered_status)
+        external_event_id = (
+            f"oms:recovery:resolved:{order.order_id}:"
+            f"{recovered_status.value}:{self._clock().isoformat()}"
+        )
+        recovered = uow.orders.update_status(order.order_id, recovered_status)
+        try:
+            uow.order_events.append_event(
+                self._event(
+                    order_id=order.order_id,
+                    previous_status=OrderStatus.UNKNOWN,
+                    new_status=recovered_status,
+                    event_source=EventSource.OMS,
+                    external_event_id=external_event_id,
+                    raw_payload={
+                        "reason": "replay_recovered",
+                        "order_id": order.order_id,
+                        "recovered_status": recovered_status.value,
+                    },
+                    occurred_at=self._clock(),
+                )
+            )
+        except EventAlreadyExistsError:
+            return self._duplicate_after_rollback(
+                uow,
+                EventSource.OMS,
+                external_event_id,
+            )
+        uow.commit()
+        return recovered
+
+    def _duplicate_after_rollback(
+        self,
+        uow: UnitOfWork,
+        event_source: EventSource,
+        external_event_id: str,
+        *,
+        fallback_external_event_ids: Sequence[str] = (),
+    ) -> OrderState:
+        uow.rollback()
+        for candidate_event_id in (external_event_id, *fallback_external_event_ids):
+            existing_event = uow.order_events.get_by_event_key(
+                event_source,
+                candidate_event_id,
+            )
+            if existing_event is not None:
+                return self._require_order(uow, existing_event.order_id)
+        raise EventAlreadyExistsError(
+            f"order event already exists but cannot be loaded: "
+            f"{event_source}/{external_event_id}"
+        )
 
     def _replay_status(self, events: Sequence[OrderEvent]) -> OrderStatus | None:
         if not events:

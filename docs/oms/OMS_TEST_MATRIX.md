@@ -50,13 +50,14 @@ Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界
 | 事件插入失败 rollback | `orders.status` 不变。 | Done |
 | 订单更新失败 rollback | `order_events` 不残留。 | Done |
 
-### Phase 2.3+ 后续项
+### Phase 2.3A 当前覆盖摘要
 
 | 场景 | 预期 | 状态 |
 |---|---|---|
-| OMSService 调用 Repository 后的状态迁移与事件写入编排 | 状态更新和事件写入处于同一 UnitOfWork 边界。 | Phase 2.3+ |
-| OMSService 对乱序事件、`previous_status` mismatch 和 `UNKNOWN` 的策略 | 不回退终态，不破坏状态机矩阵。 | Phase 2.3+ |
-| OMSService 从 `orders + order_events` 重放恢复 | 能恢复一致状态，无法恢复时进入或保持 `UNKNOWN`。 | Phase 2.3+ |
+| OMSService 调用 Repository 后的状态迁移与事件写入编排 | 状态更新和事件写入处于同一 UnitOfWork 边界。 | Done |
+| OMSService 对 duplicate、`previous_status` mismatch 和 `UNKNOWN` 的最小策略 | 不回退终态，不破坏状态机矩阵。 | Done |
+| OMSService 从 `orders + order_events` 单笔重放恢复 | 能恢复一致状态，无法恢复时进入或保持 `UNKNOWN`。 | Done |
+| OMSService 服务级 `expected_version` 并发保护 | `OrderState.version` 尚未暴露，服务无法安全传 `expected_version`。 | Phase 2.4 blocker |
 
 ## Phase 2.3 OMS Service Tests
 
@@ -91,7 +92,7 @@ Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界
 | 场景 | 预期 | 状态 |
 |---|---|---|
 | `CREATED` 风控通过 | 同事务内按 `CREATED -> RISK_CHECKING -> RISK_ACCEPTED` 迁移，append 对应 `RISK` 事件，最终返回 `RISK_ACCEPTED`。 | Done |
-| `RISK_CHECKING` 风控通过 | 迁移到 `RISK_ACCEPTED`，append `RISK` 事件。 | Phase 2.3+ |
+| `RISK_CHECKING` 风控通过 | 迁移到 `RISK_ACCEPTED`，append `RISK` 事件。 | Done |
 | 非法状态风控通过 | 拒绝迁移，不修改订单，不写状态事件。 | Done |
 | duplicate 风控事件 | 返回当前订单状态，不重复 append。 | Done |
 
@@ -100,7 +101,7 @@ Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界
 | 场景 | 预期 | 状态 |
 |---|---|---|
 | `CREATED` 风控拒绝 | 迁移到 `REJECTED_BY_RISK`，append `RISK` 事件。 | Done |
-| `RISK_CHECKING` 风控拒绝 | 迁移到 `REJECTED_BY_RISK`，append `RISK` 事件。 | Phase 2.3+ |
+| `RISK_CHECKING` 风控拒绝 | 迁移到 `REJECTED_BY_RISK`，append `RISK` 事件。 | Done |
 | 风控拒绝后重复事件 | 返回当前终态，不重复 append。 | Done |
 | 风控拒绝后交易所事件 | 终态不得回退；拒绝应用或诊断，不调用 EMS/Exchange。 | Phase 2.3+ |
 
@@ -109,6 +110,7 @@ Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界
 | 场景 | 预期 | 状态 |
 |---|---|---|
 | 同 `event_source + external_event_id` | 不更新状态，不 append，返回当前订单。 | Done |
+| append 阶段唯一约束 duplicate | append 抛 `EventAlreadyExistsError` 时 rollback 并按 duplicate 返回当前订单。 | Done |
 | duplicate 但 payload 不同 | 仍按 duplicate 处理；不得重复应用，诊断策略后续由 audit schema 承接。 | Phase 2.3+ |
 | duplicate 指向终态订单 | 终态保持不变。 | Phase 2.3+ |
 | duplicate 订单不存在 | 抛订单不存在或数据一致性错误，不凭事件重建订单。 | Phase 2.3+ |
@@ -140,7 +142,7 @@ Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界
 | 矛盾回报 | 进入 `UNKNOWN` 或拒绝应用，不回退。 | Done |
 | submit timeout 后不完整回报 | 进入 `UNKNOWN`，保留诊断 payload。 | Phase 2.3+ |
 | 事件顺序缺口 | 进入 `UNKNOWN` 或拒绝应用。 | Phase 2.3+ |
-| UNKNOWN 恢复到允许状态 | 迁移到允许目标，append 恢复事件。 | Phase 2.3+ |
+| UNKNOWN 恢复到允许状态 | 迁移到允许目标，append 恢复事件。 | Done |
 | UNKNOWN 恢复到禁止状态 | 拒绝恢复，保持 `UNKNOWN`。 | Done |
 | UNKNOWN 收到重复旧事件 | 不恢复，不重复 append。 | Phase 2.3+ |
 
@@ -148,11 +150,11 @@ Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界
 
 | 场景 | 预期 | 状态 |
 |---|---|---|
-| 重启恢复 open orders | 对每笔调用 `recover_order`，不处理终态订单。 | Phase 2.3+ |
+| 重启恢复 open orders | 批量入口留到 Phase 2.4；Phase 2.3A 只覆盖单笔 `recover_order`。 | Phase 2.4 blocker |
 | 事件流一致 | 返回当前订单，不写额外事件。 | Done |
 | 事件流不一致 | 进入 `UNKNOWN` 或保持 `UNKNOWN`，append 诊断事件。 | Done |
 | 缺少初始事件 | 进入 `UNKNOWN`。 | Done |
-| UNKNOWN 可恢复 | 写恢复事件并迁移到目标状态。 | Phase 2.3+ |
+| UNKNOWN 可恢复 | 写恢复事件并迁移到目标状态。 | Done |
 | UNKNOWN 不可恢复 | 保持 `UNKNOWN`。 | Phase 2.3+ |
 | 终态恢复保护 | 不进入自动恢复集合，不回退状态。 | Done |
 | 恢复事件重复 | 不重复 append，不重复状态更新。 | Phase 2.3+ |
@@ -165,7 +167,7 @@ Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界
 | 事件 append 成功但状态更新失败 | rollback，事件不可见。 | Phase 2.3+ |
 | 乐观锁失败 | 抛类型化错误，不写状态事件。 | Phase 2.3+ |
 | 并发 duplicate event | 只有一个事件成功 append，另一路按 duplicate 返回。 | Phase 2.3+ |
-| 并发状态推进 | 只有符合 expected version 的更新成功，失败路径不写伪造事件。 | Phase 2.3+ |
+| 并发状态推进 | 只有符合 expected version 的更新成功，失败路径不写伪造事件。 | Phase 2.4 blocker |
 
 ### 边界防回归
 

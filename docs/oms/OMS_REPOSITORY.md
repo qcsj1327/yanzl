@@ -1,6 +1,6 @@
 # OMS Repository / UnitOfWork 设计契约
 
-本文档定义 OMS Repository 与 UnitOfWork 设计契约。Phase 2.2D 已提供 SQLAlchemy Repository skeleton、UnitOfWork skeleton 和 ORM <-> Domain mapper，但仍不实现 OMSService、风控接入或事件乱序处理。
+本文档定义 OMS Repository、UnitOfWork 与 OMS Application Service 设计契约。Phase 2.3A 已落地最小 OMSService 编排，但仍不实现风控计算、EMS 接入、Mock Exchange、持仓、保证金、PnL 或结算。
 
 ## Repository 边界
 
@@ -332,7 +332,7 @@ open/recovery 状态集合：
 
 ## OMS Application Service
 
-本节定义 Phase 2.3 OMS Application Service 的边界和接口草案。本文档只冻结设计，不实现 OMSService，不修改 Repository、Domain、Alembic 或状态机矩阵。
+本节定义 Phase 2.3A 已落地的最小 OMS Application Service 边界。OMSService 只做应用层编排，不修改 Repository、Domain、Alembic 或状态机矩阵。
 
 ### Service 职责
 
@@ -390,7 +390,7 @@ Repository 负责持久化事实：
 
 ### OMSService 接口草案
 
-以下是 Phase 2.3 允许出现的服务契约草案。它是接口设计，不是实现要求。
+以下是 Phase 2.3A 已落地的最小服务 API。
 
 ```python
 from collections.abc import Callable
@@ -438,7 +438,8 @@ class OMSService:
 - 构造函数只允许依赖 `UnitOfWork` factory 和时间源。
 - 不允许依赖 Risk Engine、EMS、Mock Exchange、Position Manager、Margin Engine、PnL Engine 或 Settlement Engine。
 - 本阶段不暴露批量提交、撤单、撮合、成交、持仓或结算接口。
-- 当前 `OrderState` 未暴露 `version` 字段，Phase 2.3 最小实现不向 `update_status` 传 `expected_version`。服务级乐观锁编排需要后续先冻结版本读取契约。
+- 当前 `OrderState` 未暴露 `version` 字段，Phase 2.3A 最小实现不向 `update_status` 传 `expected_version`。
+- 这意味着服务级 lost update 风险尚未解决；Risk 集成前必须在 Phase 2.4 或专门 hardening 阶段冻结版本读取契约，并让生产状态更新路径传入 `expected_version`。
 
 ### create_order 契约
 
@@ -628,15 +629,16 @@ old event 是已经被当前订单状态覆盖、不会改变事实的迟到事�
 - `orders`
 - `order_events`
 
-重启恢复流程：
+重启恢复流程候选：
 
-1. 调用 `OrderRepository.list_open_orders()`。
-2. 对每笔 open/recovery order 调用 `recover_order(order_id)`。
+1. Phase 2.3A 只实现单笔 `recover_order(order_id)`。
+2. 批量重启恢复入口留到 Phase 2.4，通过 `OrderRepository.list_open_orders()` 找到 open/recovery orders 后逐笔调用 `recover_order(order_id)`。
 3. `recover_order` 读取当前订单和按 `order_events.id` 升序排列的事件流。
 4. 从订单创建事件开始重放状态迁移。
 5. 每一步使用状态机校验迁移。
 6. 重放结果与 `orders.status` 一致时，返回当前订单。
-7. 重放结果与 `orders.status` 不一致且无法证明为可接受恢复差异时，进入 `UNKNOWN`。
+7. `UNKNOWN` 订单如能从事件流恢复到 `UNKNOWN_RECOVERY_TARGETS` 中的稳定状态，写入恢复事件并更新订单状态。
+8. 重放结果与 `orders.status` 不一致且无法证明为可接受恢复差异时，进入或保持 `UNKNOWN`。
 
 open/recovery 状态集合沿用 Repository 契约：
 
