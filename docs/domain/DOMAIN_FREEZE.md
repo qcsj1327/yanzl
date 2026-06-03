@@ -9,11 +9,14 @@
 - `src/futures_mvp/domain/enums.py`
 - `src/futures_mvp/domain/models.py`
 - `src/futures_mvp/interfaces/engines.py`
+- `src/futures_mvp/interfaces/repositories.py`
 - `src/futures_mvp/db/models.py`
 - `alembic/versions/0001_initial_schema.py`
 - `alembic/versions/0002_oms_repository_support.py`
 
 `DOMAIN_FREEZE.md` 不得遗漏当前 Domain 契约中已经存在的字段。新增字段、删除字段、字段重命名或字段语义变化，必须通过 domain migration，并同步更新本文档。
+
+`DOMAIN_FREEZE.md` 只冻结接口契约边界，不复制 Repository / UnitOfWork 的详细设计。Repository / UnitOfWork 的职责、事务边界、幂等行为和持久化细节以 `docs/oms/OMS_REPOSITORY.md` 为准。
 
 ## 冻结规则
 
@@ -330,7 +333,9 @@ OMS 是订单状态唯一事实来源。
 
 ## 当前数据库契约
 
-所有价格、数量、金额、PnL 和保证金字段均使用 SQL `NUMERIC(28, 8)`，并映射为 Python `Decimal`。
+类型化 source-of-truth 数值字段使用 SQL `NUMERIC(28, 8)`，并映射为 Python `Decimal`。
+
+快照 JSON 字段，例如 `settlement_snapshots.settlement_prices`，用于快照 payload，不是 live source-of-truth 数值字段。JSON payload 不得作为交易主链 source-of-truth。
 
 ### instruments
 
@@ -604,7 +609,7 @@ uv run pytest
 
 - 文档中的 enum 与 `domain/enums.py` 一致。
 - 文档中的 model 字段与 `domain/models.py` 一致。
-- 文档中的接口边界与 `interfaces/engines.py` 一致。
+- 文档中的接口边界与 `interfaces/engines.py`、`interfaces/repositories.py` 一致。
 - 文档中的 model 字段不得遗漏当前字段。
 - 文档不得定义当前代码中不存在的字段。
 - 未来字段只能出现在 Known Deviations 或 Future Migration 中。
