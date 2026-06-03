@@ -45,15 +45,17 @@ Risk 禁止负责：
 
 ## Phase 3.0 输入输出
 
-Phase 3.0 只消费 `Signal`。
+`check_order` 方法参数只接收 `Signal`。
+
+非 `Signal` 风控上下文只能通过构造时注入的纯内存配置或规则参数提供。RiskEngine 本身仍保持 pure computation。
 
 当前不直接消费 `OrderRequest`。如果后续需要 Risk 直接消费 `OrderRequest`，必须先做 domain/interface migration，并同步更新契约、测试和文档。
 
 Phase 3.0 返回 `RiskResult`：
 
 - `RiskResult.decision` 只能是 `RiskDecision.ACCEPTED` 或 `RiskDecision.REJECTED`。
-- `RiskResult.rule_name` 表示命中的规则名。
-- `RiskResult.reason` 表示接受或拒绝原因。
+- `RiskResult.rule_name` 表示产生该结果的规则或汇总规则。接受时可使用 `all_pass` 或 `accepted`；拒绝时使用 first rejection rule。
+- `RiskResult.reason` 类型为 `str | None`，是可选风控说明。拒绝时建议填写 reason；接受时可为空，也可写 `all_pass` 或 `accepted`。
 
 不得把 future fields 写成当前事实。
 
@@ -67,8 +69,46 @@ Risk 禁止：
 
 - import `OMSService`。
 - import Repository / UnitOfWork / ORM。
+- 查询 DB。
+- 调用 OMS、Position、Margin 或 Calendar 模块。
 - 读取或写入 `orders`、`order_events`、`risk_events`。
 - 通过 `raw_payload`、`metadata`、`raw` 或 `details` 承载 source-of-truth 字段。
+
+## Phase 3.0 Pure Risk Config / Context
+
+以下字段是 Phase 3.0 pure Risk 的最小内存配置 / 上下文形状。
+
+这些字段：
+
+- 不是 Domain 字段。
+- 不是 DB schema。
+- 不是 interface method 参数。
+- 只能通过构造时注入的纯内存配置或规则参数提供。
+- 不允许 Risk 通过 DB、OMS、Position、Margin、Calendar 或外部服务自行获取。
+
+| 字段 | 类型 | 用途 |
+|---|---|---|
+| `disabled_instruments` | `set[str]` | 禁用合约检查。 |
+| `max_order_quantity` | `Decimal | None` | 最大单笔数量。 |
+| `max_notional` | `Decimal | None` | 最大单笔名义金额。 |
+| `contract_multiplier_by_instrument` | `dict[str, Decimal]` | 名义金额计算乘数。 |
+| `limit_up_by_instrument` | `dict[str, Decimal]` | 涨停价。 |
+| `limit_down_by_instrument` | `dict[str, Decimal]` | 跌停价。 |
+| `is_trading_session_allowed` | `bool` | 当前是否允许交易。Phase 3.0 不计算交易日历，只消费布尔值。 |
+| `allowed_offsets` | `set[Offset]` | Phase 3.0 offset skeleton 只检查 offset 是否在配置允许集合中。 |
+| `available_margin` | `Decimal | None` | 可用保证金输入值。 |
+| `required_margin` | `Decimal | None` | 本次请求所需保证金输入值。 |
+| `current_position` | `Decimal | None` | 当前输入持仓数量。 |
+| `projected_position` | `Decimal | None` | 本次交易后预计持仓数量。 |
+| `max_position` | `Decimal | None` | 最大持仓限制。 |
+
+margin / position 均为 input-only skeleton：
+
+- 不调用 `MarginEngine`。
+- 不调用 `PositionManager`。
+- 不保证与真实账户、真实仓位一致。
+- `required_margin` 和 `projected_position` 的来源不属于 Phase 3.0。
+- Phase 3.1+ 再接真实上下文。
 
 ## Phase 3.0 最小规则范围
 
@@ -82,8 +122,8 @@ Phase 3.0 只定义纯规则。所有上下文必须通过纯输入对象或内�
 - price limit up / down。
 - trading session allowed flag。
 - close_today / close_yesterday basic offset validation skeleton。
-- margin availability skeleton。
-- max position skeleton。
+- input-only margin availability skeleton。
+- input-only max position skeleton。
 
 保证金、持仓、交易时段如需上下文，必须通过纯输入对象或配置传入。
 
@@ -114,17 +154,22 @@ trading session allowed flag：
 
 close_today / close_yesterday basic offset validation skeleton：
 
-- 只做基础 offset 合法性骨架校验。
+- 只验证 `Signal.offset` 是否在 `allowed_offsets` 配置集合中。
+- 不验证今仓 / 昨仓可用数量。
+- 不处理交易所平今 / 平昨优先级。
 - 交易所特定平今 / 平昨细则进入 Phase 3.1+。
 
-margin availability skeleton：
+input-only margin availability skeleton：
 
-- 只做输入字段存在性和简单 Decimal 比较。
+- 只比较调用方提供的 Decimal 值，例如 `available_margin >= required_margin`。
+- 不计算真实 margin。
+- 不读取 `margin_rate`。
 - 不接真实账户资金引擎。
 
-max position skeleton：
+input-only max position skeleton：
 
-- 只做输入字段比较。
+- 只比较调用方提供的 Decimal 值，例如 `projected_position <= max_position`。
+- 不更新或推导真实持仓。
 - 不接 PositionManager。
 
 ## 配置边界
@@ -162,7 +207,7 @@ Risk 禁止：
 多规则命中策略：
 
 - Phase 3.0 采用 first rejection wins。
-- 第一个拒绝规则决定 `RiskResult.decision`、`rule_name` 和 `reason`。
+- 第一个拒绝规则决定 `RiskResult.decision` 和 `rule_name`，并建议填写 `reason`。
 - 聚合多个拒绝原因属于 Phase 3.1+。
 
 ## Phase 3 禁止事项

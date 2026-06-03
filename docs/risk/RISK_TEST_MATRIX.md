@@ -21,11 +21,12 @@ Phase 3.0 进入实现前，以下 Phase 3.0 项默认为 `Pending`。实现完�
 | price above limit up reject | 委托限价高于涨停价时拒绝。 | Pending |
 | price below limit down reject | 委托限价低于跌停价时拒绝。 | Pending |
 | trading session closed reject | 输入上下文标记不可交易时拒绝。 | Pending |
-| offset invalid reject skeleton | 基础 offset 校验失败时拒绝。 | Pending |
-| margin insufficient reject skeleton | 可用保证金输入不足时拒绝。 | Pending |
-| max position reject skeleton | 输入持仓超过上限时拒绝。 | Pending |
+| offset invalid reject skeleton | `Signal.offset` 不在 `allowed_offsets` 时拒绝。 | Pending |
+| margin insufficient reject skeleton | `available_margin < required_margin` 时拒绝。 | Pending |
+| max position reject skeleton | `projected_position > max_position` 时拒绝。 | Pending |
 | first rejection wins | 多条规则同时失败时，返回第一条拒绝规则。 | Pending |
 | Decimal no float | 风控计算不得接受或产生 `float`。 | Pending |
+| pure config/context 字段存在性与默认值 | 内存配置包含 Phase 3.0 最小字段表；可选字段允许 `None`。 | Pending |
 | RiskEngine 不 import OMS/db/repository | RiskEngine 不依赖 `OMSService`、Repository / UnitOfWork / ORM / DB。 | Pending |
 | RiskEngine 不写 `risk_events` | Phase 3.0 不写 `risk_events`，不触碰 DB。 | Pending |
 
@@ -33,11 +34,12 @@ Phase 3.0 进入实现前，以下 Phase 3.0 项默认为 `Pending`。实现完�
 
 | 场景 | 预期 | 状态 |
 |---|---|---|
-| `FuturesRiskEngine.check_order` 输入 | 当前接口只接收 `Signal`。 | Pending |
+| `FuturesRiskEngine.check_order` 输入 | 方法签名只接收 `Signal`；非 Signal 上下文通过构造时注入。 | Pending |
 | `FuturesRiskEngine.check_order` 输出 | 当前接口只返回 `RiskResult`。 | Pending |
 | `RiskResult.decision` | 只能是 `ACCEPTED` 或 `REJECTED`。 | Pending |
-| `RiskResult.rule_name` | 返回命中的规则名。 | Pending |
-| `RiskResult.reason` | 返回接受或拒绝原因。 | Pending |
+| accepted rule_name | 接受路径允许 `all_pass` 或 `accepted`。 | Pending |
+| rejected rule_name | 拒绝路径使用 first rejection rule。 | Pending |
+| `RiskResult.reason` 可选 | `reason` 类型为 `str | None`；接受路径可为空，拒绝路径建议填写。 | Pending |
 | 正常拒绝不抛异常 | 规则拒绝通过 `RiskResult` 表达。 | Pending |
 | 系统错误才抛异常 | 输入缺失、类型错误或配置错误可抛异常。 | Pending |
 
@@ -49,7 +51,10 @@ Phase 3.0 进入实现前，以下 Phase 3.0 项默认为 `Pending`。实现完�
 | 不调用 Repository / UnitOfWork | RiskEngine 不访问持久化端口。 | Pending |
 | 不调用 ORM / DB | RiskEngine 不 import SQLAlchemy，不读写数据库。 | Pending |
 | 不调用 EMS / Mock Exchange | RiskEngine 不提交订单，不撮合，不查询交易接口。 | Pending |
+| 不调用 MarginEngine | margin skeleton 只比较 input-only Decimal 值。 | Pending |
+| 不调用 PositionManager | position skeleton 只比较 input-only Decimal 值。 | Pending |
 | 不调用 Position / Margin / PnL / Settlement | Phase 3.0 只消费纯输入上下文。 | Pending |
+| 不调用真实交易接口 / CTP / SimNow / broker adapter | RiskEngine 不 import、不实例化、不调用任何真实交易接入或适配器。 | Pending |
 | 不读取环境变量 / 文件 | 配置来自纯内存对象或规则参数。 | Pending |
 | 不调用外部服务 | 不调用 HTTP / RPC / Redis / broker。 | Pending |
 
