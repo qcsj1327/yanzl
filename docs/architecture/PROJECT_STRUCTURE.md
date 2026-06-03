@@ -5,7 +5,7 @@
 ## 顶层目录约束
 
 - `src/`：项目源码，按 `domain`、`interfaces`、`db`、`modules`、`demo` 分层。
-- `tests/`：测试代码，按 `unit` 和 `integration` 分层。
+- `tests/`：测试代码，按 `unit` 和 `integration` 分层，并在其下继续按模块职责分组。
 - `alembic/`：数据库 migration。
 - `docs/`：中文设计契约、测试矩阵和项目规则。
 - `docker-compose.yml`：本地 PostgreSQL 和 Redis 基础设施。
@@ -27,6 +27,21 @@
 - `operations/`：本地开发、验证、排障等非业务实现文档。
 
 除 `docs/README.md` 外，不得随意在 `docs/` 根目录新增文件。新模块文档必须进入对应职能目录。
+
+## tests 分类规则
+
+`tests/` 当前测试目录结构为：
+
+- `tests/unit/domain/`：Domain enum、模型、Decimal 和领域契约测试。
+- `tests/unit/environment/`：本地 uv/Python 环境验证测试。
+- `tests/unit/interfaces/`：模块接口边界测试。
+- `tests/unit/oms/`：OMS 纯函数和后续 OMS 单元测试。
+- `tests/integration/db/`：ORM、Alembic 和数据库 schema 契约测试。
+- `tests/integration/mock_exchange/`：Mock Exchange 场景契约测试。
+
+不得随意在 `tests/unit/` 或 `tests/integration/` 根目录新增测试文件。新测试必须进入对应模块目录。
+
+不新增空测试模块目录，不使用 `.gitkeep` 占位。只有出现真实测试文件时，才创建对应目录。
 
 ## 禁止事项
 

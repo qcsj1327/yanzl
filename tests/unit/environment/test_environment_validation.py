@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 def test_environment_validation_uses_project_venv_python() -> None:
-    project_root = Path(__file__).resolve().parents[2]
+    project_root = Path(__file__).resolve().parents[3]
     expected = project_root / ".venv" / "bin" / "python"
 
     assert Path(sys.executable).resolve() == expected.resolve()

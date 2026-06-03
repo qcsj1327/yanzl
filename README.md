@@ -83,6 +83,15 @@ uv run pytest
 
 核心契约测试不使用 `xfail`。只有尚未实现的 Mock Exchange 场景测试允许 `xfail`。
 
+测试目录按职能分层：
+
+- `tests/unit/domain`
+- `tests/unit/environment`
+- `tests/unit/interfaces`
+- `tests/unit/oms`
+- `tests/integration/db`
+- `tests/integration/mock_exchange`
+
 ### Domain Freeze Consistency Review
 
 每次 Domain 字段或 schema 变更都必须审查：
