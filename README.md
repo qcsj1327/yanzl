@@ -101,6 +101,15 @@ uv run ruff check .
 uv run mypy src
 ```
 
+### Phase 2 OMS Contract Gate
+
+Phase 2 OMS 实现前必须先阅读：
+
+- `docs/OMS_STATE_MACHINE.md`
+- `docs/OMS_TEST_MATRIX.md`
+
+当前阶段只定义 OMS 契约、状态机、幂等、事件语义和测试矩阵，不实现 OMS 业务逻辑。
+
 ## Demo 策略
 
 当前 demo 只提供骨架入口，不执行完整交易链路：
