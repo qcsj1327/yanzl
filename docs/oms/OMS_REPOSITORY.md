@@ -151,16 +151,29 @@ canonical payload 字段固定为：
 比较规则：
 
 - Enum 按 `.value` 比较。
-- Decimal 按规范化后的 Decimal 值比较，不按输入字符串格式比较。
+- Decimal 直接按 `Decimal` 等值语义比较。
+- 禁止用 `str(Decimal)` 比较，避免 `Decimal("1.0")` 与 `Decimal("1.00")` 被误判为不同。
 - 只比较上述类型化字段，不依赖 `raw_payload`。
+- 不比较 `metadata`、`created_at`、`status`、`filled_quantity`。
 
 幂等规则：
 
 - 同 `client_order_id` + canonical payload 相同：返回已有订单。
-- 同 `client_order_id` + canonical payload 不同：拒绝创建，返回幂等冲突。
-- 并发重复创建必须依赖 DB unique constraint + `IntegrityError` 后查询已有订单，而不是 `SELECT -> INSERT`。
+- 同 `client_order_id` + canonical payload 不同：抛出 `IdempotencyConflictError`。
 - 幂等冲突不得创建第二笔订单。
+- 幂等冲突不得修改已有订单。
+- 幂等冲突不得伪造 `order_event` 表达冲突。
 - 幂等冲突不得调用 EMS、Mock Exchange 或真实交易接口。
+
+当前 SQLAlchemy Repository 实现语义：
+
+- `create_order(...)` 先按 `client_order_id` 查询已有订单。
+- 已有订单 payload 相同时直接返回已有订单，不修改订单状态，不新增 `order_event`。
+- 已有订单 payload 不同时抛出 `IdempotencyConflictError`。
+- 新订单 insert 使用 nested transaction / savepoint 捕获 DB unique constraint 的 `IntegrityError`。
+- `IntegrityError` 只回滚当前 insert savepoint，不回滚 UnitOfWork 外层事务。
+- `IntegrityError` 后必须重新查询 `client_order_id`。
+- 重新查询到相同 payload 时返回已有订单；payload 不同时抛出 `IdempotencyConflictError`；仍查不到时抛出 `RepositoryError`。
 
 ## 幂等冲突审计
 
@@ -298,4 +311,4 @@ open/recovery 状态集合：
 - `raw_payload` 不承载 source-of-truth 字段。
 - `occurred_at` 必须持久化业务事件发生时间。
 
-并发创建测试如果不在 Phase 2.2 落地，必须明确记录为后续项；后续验收必须证明并发相同 `client_order_id` 最终只创建一笔订单。
+并发创建测试仍是后续项；后续验收必须证明并发相同 `client_order_id` 最终只创建一笔订单，并覆盖真实 `IntegrityError` 后重新查询分支。

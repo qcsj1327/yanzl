@@ -1,11 +1,11 @@
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
 
 import pytest
 from alembic.config import Config
-from sqlalchemy import create_engine, delete, select
+from sqlalchemy import create_engine, delete, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from alembic import command
@@ -19,7 +19,11 @@ from futures_mvp.db.repositories import (
 from futures_mvp.db.unit_of_work import SQLAlchemyUnitOfWork
 from futures_mvp.domain.enums import Direction, EventSource, Offset, OrderStatus, OrderType
 from futures_mvp.domain.models import OrderEvent, OrderRequest
-from futures_mvp.interfaces.repositories import OptimisticLockError, RepositoryError
+from futures_mvp.interfaces.repositories import (
+    IdempotencyConflictError,
+    OptimisticLockError,
+    RepositoryError,
+)
 
 
 @pytest.fixture(scope="session")
@@ -49,17 +53,24 @@ def _client_order_id() -> str:
     return f"client-{uuid4()}"
 
 
-def _order_request(client_order_id: str | None = None) -> OrderRequest:
+def _order_request(
+    client_order_id: str | None = None,
+    *,
+    account_id: str = "account-1",
+    instrument_id: str = "rb2601",
+    limit_price: Decimal = Decimal("3500"),
+    quantity: Decimal = Decimal("2"),
+) -> OrderRequest:
     return OrderRequest(
         client_order_id=client_order_id or _client_order_id(),
-        account_id="account-1",
-        instrument_id="rb2601",
+        account_id=account_id,
+        instrument_id=instrument_id,
         exchange="SHFE",
         direction=Direction.BUY,
         offset=Offset.OPEN,
         order_type=OrderType.LIMIT,
-        limit_price=Decimal("3500"),
-        quantity=Decimal("2"),
+        limit_price=limit_price,
+        quantity=quantity,
     )
 
 
@@ -85,6 +96,14 @@ def _create_order(session: Session, client_order_id: str | None = None) -> str:
     return repository.create_order(request, client_order_id=request.client_order_id).order_id
 
 
+def _order_count(session: Session) -> int:
+    return session.scalar(select(func.count()).select_from(Order)) or 0
+
+
+def _order_event_count(session: Session) -> int:
+    return session.scalar(select(func.count()).select_from(OrderEventOrm)) or 0
+
+
 def test_create_order_then_get_by_client_order_id(
     db_session_factory: sessionmaker[Session],
 ) -> None:
@@ -99,6 +118,107 @@ def test_create_order_then_get_by_client_order_id(
     assert loaded is not None
     assert loaded.request.limit_price == Decimal("3500")
     assert loaded.request.quantity == Decimal("2")
+
+
+def test_create_order_same_client_order_id_and_same_payload_returns_existing_order(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        client_order_id = _client_order_id()
+        request = _order_request(client_order_id)
+        repository = SQLAlchemyOrderRepository(session)
+
+        first = repository.create_order(request, client_order_id=client_order_id)
+        second = repository.create_order(request, client_order_id=client_order_id)
+
+        assert second == first
+        assert _order_count(session) == 1
+
+
+def test_create_order_same_payload_does_not_rewrite_existing_status(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        client_order_id = _client_order_id()
+        request = _order_request(client_order_id)
+        repository = SQLAlchemyOrderRepository(session)
+
+        created = repository.create_order(request, client_order_id=client_order_id)
+        repository.update_status(created.order_id, OrderStatus.SUBMITTED)
+        repeated = repository.create_order(request, client_order_id=client_order_id)
+
+    assert repeated.status is OrderStatus.SUBMITTED
+
+
+def test_create_order_decimal_equivalent_payload_is_idempotent(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        client_order_id = _client_order_id()
+        first_request = _order_request(
+            client_order_id,
+            limit_price=Decimal("1.0"),
+            quantity=Decimal("2.0"),
+        )
+        second_request = _order_request(
+            client_order_id,
+            limit_price=Decimal("1.00"),
+            quantity=Decimal("2.00"),
+        )
+        repository = SQLAlchemyOrderRepository(session)
+
+        first = repository.create_order(first_request, client_order_id=client_order_id)
+        second = repository.create_order(second_request, client_order_id=client_order_id)
+
+        assert second.order_id == first.order_id
+        assert _order_count(session) == 1
+
+
+@pytest.mark.parametrize(
+    "changed_request",
+    [
+        pytest.param(
+            lambda client_order_id: _order_request(client_order_id, account_id="account-2"),
+            id="different_account_id",
+        ),
+        pytest.param(
+            lambda client_order_id: _order_request(client_order_id, instrument_id="cu2601"),
+            id="different_instrument_id",
+        ),
+        pytest.param(
+            lambda client_order_id: _order_request(client_order_id, limit_price=Decimal("3501")),
+            id="different_limit_price",
+        ),
+        pytest.param(
+            lambda client_order_id: _order_request(client_order_id, quantity=Decimal("3")),
+            id="different_quantity",
+        ),
+    ],
+)
+def test_create_order_same_client_order_id_different_payload_raises_conflict(
+    db_session_factory: sessionmaker[Session],
+    changed_request: Callable[[str], OrderRequest],
+) -> None:
+    with db_session_factory.begin() as session:
+        client_order_id = _client_order_id()
+        repository = SQLAlchemyOrderRepository(session)
+        created = repository.create_order(
+            _order_request(client_order_id),
+            client_order_id=client_order_id,
+        )
+        event_repository = SQLAlchemyOrderEventRepository(session)
+        event_repository.append_event(_order_event(created.order_id))
+        order_count_before = _order_count(session)
+        event_count_before = _order_event_count(session)
+
+        with pytest.raises(IdempotencyConflictError):
+            repository.create_order(
+                changed_request(client_order_id),
+                client_order_id=client_order_id,
+            )
+
+        assert _order_count(session) == order_count_before
+        assert _order_event_count(session) == event_count_before
 
 
 def test_get_by_id_accepts_string_db_id(db_session_factory: sessionmaker[Session]) -> None:
