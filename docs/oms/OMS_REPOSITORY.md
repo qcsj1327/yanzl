@@ -438,8 +438,8 @@ class OMSService:
 - 构造函数只允许依赖 `UnitOfWork` factory 和时间源。
 - 不允许依赖 Risk Engine、EMS、Mock Exchange、Position Manager、Margin Engine、PnL Engine 或 Settlement Engine。
 - 本阶段不暴露批量提交、撤单、撮合、成交、持仓或结算接口。
-- 当前 `OrderState` 未暴露 `version` 字段，Phase 2.3A 最小实现不向 `update_status` 传 `expected_version`。
-- 这意味着服务级 lost update 风险尚未解决；Risk 集成前必须在 Phase 2.4 或专门 hardening 阶段冻结版本读取契约，并让生产状态更新路径传入 `expected_version`。
+- Phase 2.4 起，`OrderState.version` 暴露 `orders.version`，OMSService 生产状态更新路径必须向 `update_status` 传 `expected_version=order.version`。
+- 多段状态迁移必须使用上一次 `update_status` 返回的新 `OrderState.version`，不得复用旧版本。
 
 ### create_order 契约
 

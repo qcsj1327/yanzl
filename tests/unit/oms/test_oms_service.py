@@ -18,7 +18,11 @@ from futures_mvp.domain.enums import (
     RiskDecision,
 )
 from futures_mvp.domain.models import OrderEvent, OrderRequest, OrderState, RiskResult
-from futures_mvp.interfaces.repositories import IdempotencyConflictError, OrderNotFoundError
+from futures_mvp.interfaces.repositories import (
+    IdempotencyConflictError,
+    OptimisticLockError,
+    OrderNotFoundError,
+)
 from futures_mvp.modules.oms import OMSService
 from futures_mvp.modules.oms.errors import InvalidOrderTransition
 
@@ -75,6 +79,8 @@ class FakeOrderRepository:
         self.orders_by_id: dict[str, OrderState] = {}
         self.client_index: dict[str, str] = {}
         self.next_id = 1
+        self.force_stale_read = False
+        self.update_expected_versions: list[int | None] = []
 
     def create_order(self, order_request: OrderRequest, *, client_order_id: str) -> OrderState:
         existing_id = self.client_index.get(client_order_id)
@@ -86,14 +92,17 @@ class FakeOrderRepository:
                 )
             return existing
 
-        order = OrderState(order_id=str(self.next_id), request=order_request)
+        order = OrderState(order_id=str(self.next_id), request=order_request, version=0)
         self.next_id += 1
         self.orders_by_id[order.order_id] = order
         self.client_index[client_order_id] = order.order_id
         return order
 
     def get_by_id(self, order_id: str) -> OrderState | None:
-        return self.orders_by_id.get(order_id)
+        order = self.orders_by_id.get(order_id)
+        if order is not None and self.force_stale_read:
+            return order.model_copy(update={"version": max(order.version - 1, 0)})
+        return order
 
     def get_by_client_order_id(self, client_order_id: str) -> OrderState | None:
         order_id = self.client_index.get(client_order_id)
@@ -108,11 +117,15 @@ class FakeOrderRepository:
         *,
         expected_version: int | None = None,
     ) -> OrderState:
-        del expected_version
         order = self.orders_by_id.get(order_id)
         if order is None:
             raise OrderNotFoundError(order_id)
-        updated = order.model_copy(update={"status": new_status})
+        self.update_expected_versions.append(expected_version)
+        if expected_version is not None and expected_version != order.version:
+            raise OptimisticLockError(
+                f"order {order_id} version mismatch: expected {expected_version}"
+            )
+        updated = order.model_copy(update={"status": new_status, "version": order.version + 1})
         self.orders_by_id[order_id] = updated
         return updated
 
@@ -123,6 +136,8 @@ class FakeOrderRepository:
         self.orders_by_id = deepcopy(snapshot.orders_by_id)
         self.client_index = deepcopy(snapshot.client_index)
         self.next_id = snapshot.next_id
+        self.force_stale_read = snapshot.force_stale_read
+        self.update_expected_versions = deepcopy(snapshot.update_expected_versions)
 
     def clone(self) -> FakeOrderRepository:
         clone = FakeOrderRepository()
@@ -262,6 +277,7 @@ def test_create_order_new_order_appends_initial_event_and_commits() -> None:
     order = _service(uow).create_order(request, client_order_id=request.client_order_id)
 
     assert order.status == OrderStatus.CREATED
+    assert order.version == 0
     assert len(uow.orders.orders_by_id) == 1
     assert len(uow.order_events.events) == 1
     assert uow.order_events.events[0].previous_status is None
@@ -326,6 +342,8 @@ def test_apply_risk_result_accepted_bridges_created_to_risk_accepted() -> None:
     )
 
     assert accepted.status == OrderStatus.RISK_ACCEPTED
+    assert accepted.version == 2
+    assert uow.orders.update_expected_versions == [0, 1]
     assert [event.new_status for event in uow.order_events.events] == [
         OrderStatus.CREATED,
         OrderStatus.RISK_CHECKING,
@@ -353,6 +371,7 @@ def test_apply_risk_result_accepted_from_risk_checking() -> None:
     service = _service(uow)
     order = service.create_order(_order_request(), client_order_id="client-1")
     uow.orders.update_status(order.order_id, OrderStatus.RISK_CHECKING)
+    uow.orders.update_expected_versions.clear()
 
     accepted = service.apply_risk_result(
         order.order_id,
@@ -361,6 +380,8 @@ def test_apply_risk_result_accepted_from_risk_checking() -> None:
     )
 
     assert accepted.status == OrderStatus.RISK_ACCEPTED
+    assert accepted.version == 2
+    assert uow.orders.update_expected_versions == [1]
     assert uow.order_events.events[-1].previous_status == OrderStatus.RISK_CHECKING
     assert uow.order_events.events[-1].new_status == OrderStatus.RISK_ACCEPTED
 
@@ -370,6 +391,7 @@ def test_apply_risk_result_rejected_from_risk_checking() -> None:
     service = _service(uow)
     order = service.create_order(_order_request(), client_order_id="client-1")
     uow.orders.update_status(order.order_id, OrderStatus.RISK_CHECKING)
+    uow.orders.update_expected_versions.clear()
 
     rejected = service.apply_risk_result(
         order.order_id,
@@ -378,6 +400,8 @@ def test_apply_risk_result_rejected_from_risk_checking() -> None:
     )
 
     assert rejected.status == OrderStatus.REJECTED_BY_RISK
+    assert rejected.version == 2
+    assert uow.orders.update_expected_versions == [1]
     assert uow.order_events.events[-1].previous_status == OrderStatus.RISK_CHECKING
     assert uow.order_events.events[-1].new_status == OrderStatus.REJECTED_BY_RISK
 
@@ -446,6 +470,8 @@ def test_apply_order_event_previous_status_match_updates_status_and_appends() ->
     )
 
     assert updated.status == OrderStatus.SUBMITTING
+    assert updated.version == 3
+    assert uow.orders.update_expected_versions[-1] == 2
     assert uow.order_events.events[-1].external_event_id == "exchange-event-1"
 
 
@@ -647,6 +673,31 @@ def test_rollback_atomicity_when_order_event_append_fails_after_status_update() 
         )
 
     assert uow.orders.get_by_id(order.order_id).status == OrderStatus.RISK_ACCEPTED  # type: ignore[union-attr]
+    assert all(event.new_status != OrderStatus.SUBMITTING for event in uow.order_events.events)
+    assert uow.rollback_count == 1
+
+
+def test_optimistic_lock_failure_rolls_back_without_success_event() -> None:
+    uow = FakeUnitOfWork()
+    service = _service(uow)
+    order = service.create_order(_order_request(), client_order_id="client-1")
+    service.apply_risk_result(
+        order.order_id,
+        _risk_result(RiskDecision.ACCEPTED),
+        external_event_id="risk-accepted-1",
+    )
+    uow.orders.force_stale_read = True
+
+    with pytest.raises(OptimisticLockError):
+        service.apply_order_event(
+            _event(
+                order.order_id,
+                previous_status=OrderStatus.RISK_ACCEPTED,
+                new_status=OrderStatus.SUBMITTING,
+            )
+        )
+
+    assert uow.orders.orders_by_id[order.order_id].status == OrderStatus.RISK_ACCEPTED
     assert all(event.new_status != OrderStatus.SUBMITTING for event in uow.order_events.events)
     assert uow.rollback_count == 1
 

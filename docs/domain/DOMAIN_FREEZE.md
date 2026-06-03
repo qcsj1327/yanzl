@@ -182,8 +182,11 @@
 | `status` | `OrderStatus` | `OrderStatus.CREATED` | 当前 OMS 订单状态。 |
 | `filled_quantity` | `Decimal` | `Decimal("0")` | 累计成交数量。 |
 | `reject_reason` | `str \| None` | `None` | 拒绝原因。 |
+| `version` | `int` | `0` | 来自 `orders.version`，用于 OMS 状态更新乐观锁。 |
 
 OMS 是订单状态唯一事实来源。
+
+`OrderState.version` 只表示 `orders.version` 乐观锁版本。每次 Repository `update_status` 成功后递增。它不表示业务事件序号，不表示交易所版本，也不替代 `order_events.id`、`order_events.occurred_at` 或 `external_event_id`。
 
 ### RiskResult
 
@@ -387,7 +390,7 @@ OMS 是订单状态唯一事实来源。
 - `account_id` 索引
 - `instrument_id` 索引
 - `exchange` 索引
-- `version` 是 OMS Repository 状态更新的乐观并发版本字段，当前默认值为 `0`，不得用于表达业务订单状态。
+- `version` 是 OMS Repository 状态更新的乐观并发版本字段，当前默认值为 `0`，不得用于表达业务订单状态、事件序号或交易所版本。
 
 ### order_events
 

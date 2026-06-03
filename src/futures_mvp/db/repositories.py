@@ -57,6 +57,7 @@ def order_to_domain(order: Order) -> OrderState:
         status=OrderStatus(order.status),
         filled_quantity=order.filled_quantity,
         reject_reason=order.reject_reason,
+        version=order.version,
     )
 
 

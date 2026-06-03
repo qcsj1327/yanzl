@@ -57,7 +57,7 @@ Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界
 | OMSService 调用 Repository 后的状态迁移与事件写入编排 | 状态更新和事件写入处于同一 UnitOfWork 边界。 | Done |
 | OMSService 对 duplicate、`previous_status` mismatch 和 `UNKNOWN` 的最小策略 | 不回退终态，不破坏状态机矩阵。 | Done |
 | OMSService 从 `orders + order_events` 单笔重放恢复 | 能恢复一致状态，无法恢复时进入或保持 `UNKNOWN`。 | Done |
-| OMSService 服务级 `expected_version` 并发保护 | `OrderState.version` 尚未暴露，服务无法安全传 `expected_version`。 | Phase 2.4 blocker |
+| OMSService 服务级 `expected_version` 并发保护 | `OrderState.version` 已暴露，服务状态更新传 `expected_version`。 | Done |
 
 ## Phase 2.3 OMS Service Tests
 
@@ -165,9 +165,9 @@ Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界
 |---|---|---|
 | 状态更新成功但事件 append 失败 | rollback，订单状态不变。 | Done |
 | 事件 append 成功但状态更新失败 | rollback，事件不可见。 | Phase 2.3+ |
-| 乐观锁失败 | 抛类型化错误，不写状态事件。 | Phase 2.3+ |
+| 乐观锁失败 | 抛类型化错误，不写状态事件。 | Done |
 | 并发 duplicate event | 只有一个事件成功 append，另一路按 duplicate 返回。 | Phase 2.3+ |
-| 并发状态推进 | 只有符合 expected version 的更新成功，失败路径不写伪造事件。 | Phase 2.4 blocker |
+| 并发状态推进 | 只有符合 expected version 的更新成功，失败路径不写伪造事件。 | Done |
 
 ### 边界防回归
 

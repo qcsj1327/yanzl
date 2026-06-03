@@ -59,6 +59,7 @@ class OrderState(DomainModel):
     status: OrderStatus = OrderStatus.CREATED
     filled_quantity: Decimal = Field(default=Decimal("0"))
     reject_reason: str | None = None
+    version: int = 0
 
     @field_validator("filled_quantity", mode="before")
     @classmethod

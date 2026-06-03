@@ -230,7 +230,11 @@ class OMSService:
         if current.status == OrderStatus.CREATED:
             validate_transition(OrderStatus.CREATED, OrderStatus.RISK_CHECKING)
             risk_checking_event_id = f"{external_event_id}:risk_checking"
-            current = uow.orders.update_status(current.order_id, OrderStatus.RISK_CHECKING)
+            current = uow.orders.update_status(
+                current.order_id,
+                OrderStatus.RISK_CHECKING,
+                expected_version=current.version,
+            )
             uow.order_events.append_event(
                 self._risk_event(
                     current,
@@ -243,7 +247,11 @@ class OMSService:
             )
 
         validate_transition(current.status, OrderStatus.RISK_ACCEPTED)
-        accepted = uow.orders.update_status(current.order_id, OrderStatus.RISK_ACCEPTED)
+        accepted = uow.orders.update_status(
+            current.order_id,
+            OrderStatus.RISK_ACCEPTED,
+            expected_version=current.version,
+        )
         uow.order_events.append_event(
             self._risk_event(
                 accepted,
@@ -266,7 +274,11 @@ class OMSService:
         occurred_at: datetime,
     ) -> OrderState:
         validate_transition(order.status, OrderStatus.REJECTED_BY_RISK)
-        rejected = uow.orders.update_status(order.order_id, OrderStatus.REJECTED_BY_RISK)
+        rejected = uow.orders.update_status(
+            order.order_id,
+            OrderStatus.REJECTED_BY_RISK,
+            expected_version=order.version,
+        )
         uow.order_events.append_event(
             self._risk_event(
                 rejected,
@@ -287,7 +299,11 @@ class OMSService:
         event: OrderEvent,
     ) -> OrderState:
         validate_transition(order.status, event.new_status)
-        updated = uow.orders.update_status(order.order_id, event.new_status)
+        updated = uow.orders.update_status(
+            order.order_id,
+            event.new_status,
+            expected_version=order.version,
+        )
         try:
             uow.order_events.append_event(event)
         except EventAlreadyExistsError:
@@ -319,7 +335,11 @@ class OMSService:
         if existing is not None:
             return self._require_order(uow, existing.order_id)
 
-        unknown = uow.orders.update_status(order.order_id, OrderStatus.UNKNOWN)
+        unknown = uow.orders.update_status(
+            order.order_id,
+            OrderStatus.UNKNOWN,
+            expected_version=order.version,
+        )
         try:
             uow.order_events.append_event(
                 self._event(
@@ -352,7 +372,11 @@ class OMSService:
             f"oms:recovery:resolved:{order.order_id}:"
             f"{recovered_status.value}:{self._clock().isoformat()}"
         )
-        recovered = uow.orders.update_status(order.order_id, recovered_status)
+        recovered = uow.orders.update_status(
+            order.order_id,
+            recovered_status,
+            expected_version=order.version,
+        )
         try:
             uow.order_events.append_event(
                 self._event(

@@ -191,6 +191,7 @@ def test_create_order_then_get_by_client_order_id(
     assert loaded is not None
     assert loaded.request.limit_price == Decimal("3500")
     assert loaded.request.quantity == Decimal("2")
+    assert loaded.version == 0
 
 
 def test_create_order_same_client_order_id_and_same_payload_returns_existing_order(
@@ -374,7 +375,30 @@ def test_update_status_updates_status_and_version(
         version = db_order.version if db_order else None
 
     assert updated.status is OrderStatus.RISK_CHECKING
+    assert updated.version == 1
     assert version == 1
+
+
+def test_update_status_returns_incremented_versions(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        order_id = _create_order(session)
+        repository = SQLAlchemyOrderRepository(session)
+
+        first = repository.update_status(
+            order_id,
+            OrderStatus.RISK_CHECKING,
+            expected_version=0,
+        )
+        second = repository.update_status(
+            order_id,
+            OrderStatus.RISK_ACCEPTED,
+            expected_version=first.version,
+        )
+
+    assert first.version == 1
+    assert second.version == 2
 
 
 def test_update_status_expected_version_mismatch_raises_optimistic_lock(

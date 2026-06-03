@@ -12,7 +12,7 @@ from alembic import command
 from futures_mvp.db.config import settings
 from futures_mvp.db.models import Order
 from futures_mvp.db.models import OrderEvent as OrderEventOrm
-from futures_mvp.db.repositories import SQLAlchemyOrderEventRepository
+from futures_mvp.db.repositories import SQLAlchemyOrderEventRepository, SQLAlchemyOrderRepository
 from futures_mvp.db.unit_of_work import SQLAlchemyUnitOfWork
 from futures_mvp.domain.enums import (
     Direction,
@@ -22,7 +22,8 @@ from futures_mvp.domain.enums import (
     OrderType,
     RiskDecision,
 )
-from futures_mvp.domain.models import OrderEvent, OrderRequest, RiskResult
+from futures_mvp.domain.models import OrderEvent, OrderRequest, OrderState, RiskResult
+from futures_mvp.interfaces.repositories import OptimisticLockError
 from futures_mvp.modules.oms import OMSService
 
 NOW = datetime(2026, 1, 1, tzinfo=UTC)
@@ -123,6 +124,7 @@ def test_service_create_order_commits_order_and_initial_event(
         events = session.scalars(select(OrderEventOrm)).all()
 
     assert len(events) == 1
+    assert order.version == 0
     assert events[0].event_source == EventSource.OMS.value
     assert events[0].new_status == OrderStatus.CREATED.value
 
@@ -150,6 +152,7 @@ def test_service_apply_risk_result_accepted_commits_status_and_events(
         ]
 
     assert accepted.status == OrderStatus.RISK_ACCEPTED
+    assert accepted.version == 2
     assert statuses == [
         OrderStatus.CREATED.value,
         OrderStatus.RISK_CHECKING.value,
@@ -175,6 +178,7 @@ def test_service_apply_risk_result_rejected_commits_status_and_event(
         assert _event_count(session) == 2
 
     assert rejected.status == OrderStatus.REJECTED_BY_RISK
+    assert rejected.version == 1
 
 
 def test_service_apply_order_event_append_unique_conflict_returns_current_order(
@@ -288,6 +292,58 @@ def test_service_apply_order_event_append_failure_rolls_back_status(
         assert _event_count(session) == 3
 
 
+def test_service_optimistic_lock_failure_rolls_back_without_event(
+    db_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _service(db_session_factory)
+    request = _order_request()
+    order = service.create_order(request, client_order_id=request.client_order_id)
+    service.apply_risk_result(
+        order.order_id,
+        _risk_result(RiskDecision.ACCEPTED),
+        external_event_id="risk-accepted-1",
+    )
+    with SQLAlchemyUnitOfWork(session_factory=db_session_factory) as stale_uow:
+        stale_order = stale_uow.orders.get_by_id(order.order_id)
+        assert stale_order is not None
+
+    service.apply_order_event(
+        _event(
+            order.order_id,
+            previous_status=OrderStatus.RISK_ACCEPTED,
+            new_status=OrderStatus.SUBMITTING,
+            external_event_id="exchange-event-1",
+        )
+    )
+
+    original_get_by_id = SQLAlchemyOrderRepository.get_by_id
+
+    def stale_get_by_id(
+        self: SQLAlchemyOrderRepository,
+        order_id: str,
+    ) -> OrderState | None:
+        if order_id == stale_order.order_id:
+            return stale_order
+        return original_get_by_id(self, order_id)
+
+    monkeypatch.setattr(SQLAlchemyOrderRepository, "get_by_id", stale_get_by_id)
+
+    with pytest.raises(OptimisticLockError):
+        service.apply_order_event(
+            _event(
+                order.order_id,
+                previous_status=OrderStatus.RISK_ACCEPTED,
+                new_status=OrderStatus.SUBMITTING,
+                external_event_id="exchange-event-2",
+            )
+        )
+
+    with db_session_factory() as session:
+        assert _order_status(session, order.order_id) == OrderStatus.SUBMITTING.value
+        assert _event_count(session) == 4
+
+
 def test_service_recover_order_terminal_status_is_protected(
     db_session_factory: sessionmaker[Session],
 ) -> None:
@@ -305,4 +361,3 @@ def test_service_recover_order_terminal_status_is_protected(
         assert _order_status(session, order.order_id) == OrderStatus.FILLED.value
 
     assert recovered.status == OrderStatus.FILLED
-

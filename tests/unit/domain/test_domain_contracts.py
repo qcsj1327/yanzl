@@ -5,7 +5,7 @@ import pytest
 
 from futures_mvp.domain.enums import Direction, EventSource, Offset, OrderStatus, OrderType
 from futures_mvp.domain.errors import DecimalRequiredError
-from futures_mvp.domain.models import OrderEvent, OrderRequest, Position, Signal, Trade
+from futures_mvp.domain.models import OrderEvent, OrderRequest, OrderState, Position, Signal, Trade
 
 
 def test_order_status_complete_state_machine() -> None:
@@ -89,6 +89,26 @@ def test_order_event_requires_idempotency_fields_and_raw_payload() -> None:
 
     assert event.external_event_id == "exchange-report-1"
     assert event.raw_payload == {"raw": "payload"}
+
+
+def test_order_state_version_defaults_to_zero_for_optimistic_locking() -> None:
+    state = OrderState(order_id="order-1", request=_order_request())
+
+    assert state.version == 0
+
+
+def _order_request() -> OrderRequest:
+    return OrderRequest(
+        client_order_id="coid-1",
+        account_id="acct-1",
+        instrument_id="rb2610",
+        exchange="SHFE",
+        direction=Direction.BUY,
+        offset=Offset.OPEN,
+        order_type=OrderType.LIMIT,
+        limit_price=Decimal("3500"),
+        quantity=Decimal("1"),
+    )
 
 
 def test_trade_identity_uses_account_exchange_and_exchange_trade_id() -> None:
