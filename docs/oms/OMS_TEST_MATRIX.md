@@ -1,6 +1,20 @@
 # OMS 测试矩阵
 
-本文档定义 Phase 2 后续必须落地的非 xfail OMS 测试矩阵。本文档只定义测试计划，不新增测试代码。
+本文档定义 OMS 测试矩阵和 Phase 2 final freeze 的测试口径。本文档只定义测试计划，不新增测试代码。
+
+Phase 2 final freeze 只覆盖：
+
+- OMS 状态机。
+- OMS Repository / UnitOfWork。
+- OMSService 最小编排。
+- `EventApplicationStatus` 语义。
+- duplicate / collision。
+- `previous_status` mismatch。
+- `UNKNOWN` 恢复规则。
+- open/recovery orders 批量恢复入口。
+- PostgreSQL 关键事务、rollback、幂等和乐观锁集成测试。
+
+`Done` 只能用于已经有真实测试覆盖的当前事实。`Phase 2.8+` 和 `Phase 3+` 是后续阶段项目，不阻塞 `phase-2-complete`，不得写成当前事实。
 
 ## 测试分类
 
@@ -84,7 +98,7 @@ Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界
 | 新订单创建 | 创建 `CREATED` 订单，append 初始 OMS 事件，同事务 commit。 | Done |
 | 相同 payload 幂等 | 返回既有订单，不新增订单，不新增事件。 | Done |
 | 不同 payload 冲突 | 抛出幂等冲突，不修改订单，不写伪造事件。 | Done |
-| Repository 创建失败 | rollback，不留下半条订单或半条事件。 | Phase 2.3+ |
+| Repository 创建失败 | rollback，不留下半条订单或半条事件。 | Phase 2.8+ Repository Fault Injection |
 | 初始事件写入失败 | rollback，新订单不可见。 | Done |
 
 ### risk accepted
@@ -103,7 +117,7 @@ Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界
 | `CREATED` 风控拒绝 | 迁移到 `REJECTED_BY_RISK`，append `RISK` 事件。 | Done |
 | `RISK_CHECKING` 风控拒绝 | 迁移到 `REJECTED_BY_RISK`，append `RISK` 事件。 | Done |
 | 风控拒绝后重复事件 | 返回当前终态，不重复 append。 | Done |
-| 风控拒绝后交易所事件 | 终态不得回退；拒绝应用或诊断，不调用 EMS/Exchange。 | Phase 2.3+ |
+| 风控拒绝后交易所事件 | 终态不得回退；拒绝应用或诊断，不调用 EMS/Exchange。 | Phase 3+ Risk/Exchange Integration |
 
 ### duplicate event
 
@@ -113,9 +127,9 @@ Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界
 | append 阶段唯一约束 duplicate | append 抛 `EventAlreadyExistsError` 时 rollback 并按 duplicate 返回当前订单。 | Done |
 | duplicate 指向同一订单 | 返回 `DUPLICATE`，不重复 append，不重复应用。 | Done |
 | duplicate 指向其他订单 | 返回 `EVENT_KEY_COLLISION`，不得返回其他订单状态，不得修改当前订单。 | Done |
-| duplicate 但 payload 不同 | 仍按 duplicate 处理；不得重复应用，诊断策略后续由 audit schema 承接。 | Phase 2.3+ |
-| duplicate 指向终态订单 | 终态保持不变。 | Phase 2.3+ |
-| duplicate 订单不存在 | 抛订单不存在或数据一致性错误，不凭事件重建订单。 | Phase 2.3+ |
+| duplicate 但 payload 不同 | 仍按 duplicate 处理；不得重复应用，诊断策略后续由 audit schema 承接。 | Phase 2.8+ Edge Case |
+| duplicate 指向终态订单 | 终态保持不变。 | Phase 2.8+ Terminal Edge Case |
+| duplicate 订单不存在 | 抛订单不存在或数据一致性错误，不凭事件重建订单。 | Phase 2.8+ Recovery/Audit Edge Case |
 
 ### previous_status mismatch
 
@@ -131,22 +145,22 @@ Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界
 
 | 场景 | 预期 | 状态 |
 |---|---|---|
-| `ACKED` 后到 `SUBMITTED` | 不回退。 | Phase 2.3+ |
+| `ACKED` 后到 `SUBMITTED` | 不回退。 | Phase 2.8+ Old Event Edge Case |
 | `FILLED` 后到 `PARTIALLY_FILLED` | 终态不回退。 | Done |
-| `CANCELED` 后到 `ACKED` | 终态不回退；无法证明时拒绝或诊断。 | Phase 2.3+ |
+| `CANCELED` 后到 `ACKED` | 终态不回退；无法证明时拒绝或诊断。 | Phase 2.8+ Terminal Edge Case |
 | 旧事件携带不可验证事实 | 不把 `raw_payload` 当 source-of-truth。 | Done |
 
 ### UNKNOWN
 
 | 场景 | 预期 | 状态 |
 |---|---|---|
-| 无法归类回报 | 若状态机允许，迁移到 `UNKNOWN`，append 诊断事件。 | Phase 2.3+ |
+| 无法归类回报 | 若状态机允许，迁移到 `UNKNOWN`，append 诊断事件。 | Phase 2.8+ Unknown Edge Case |
 | 矛盾回报 | 进入 `UNKNOWN` 或拒绝应用，不回退。 | Done |
-| submit timeout 后不完整回报 | 进入 `UNKNOWN`，保留诊断 payload。 | Phase 2.3+ |
-| 事件顺序缺口 | 进入 `UNKNOWN` 或拒绝应用。 | Phase 2.3+ |
+| submit timeout 后不完整回报 | 进入 `UNKNOWN`，保留诊断 payload。 | Phase 2.8+ Unknown Edge Case |
+| 事件顺序缺口 | 进入 `UNKNOWN` 或拒绝应用。 | Phase 2.8+ Event Ordering Edge Case |
 | UNKNOWN 恢复到允许状态 | 迁移到允许目标，append 恢复事件。 | Done |
 | UNKNOWN 恢复到禁止状态 | 拒绝恢复，保持 `UNKNOWN`。 | Done |
-| UNKNOWN 收到重复旧事件 | 不恢复，不重复 append。 | Phase 2.6+ |
+| UNKNOWN 收到重复旧事件 | 不恢复，不重复 append。 | Phase 2.8+ Unknown Edge Case |
 
 ### recovery
 
@@ -159,7 +173,7 @@ Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界
 | UNKNOWN 可恢复 | 写恢复事件并迁移到目标状态。 | Done |
 | UNKNOWN 不可恢复 | 保持 `UNKNOWN`。 | Done |
 | 终态恢复保护 | 不进入自动恢复集合，不回退状态。 | Done |
-| 恢复事件重复 | 不重复 append，不重复状态更新。 | Phase 2.3+ |
+| 恢复事件重复 | 不重复 append，不重复状态更新。 | Phase 2.8+ Recovery/Audit Edge Case |
 
 ### 事务与并发
 
@@ -208,6 +222,10 @@ Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界
 | 完整乱序撮合语义 | 不在 Phase 2.7 实现。 | Phase 2.8+ |
 | 外部查询恢复 | 不在 Phase 2.7 实现。 | Phase 3+ |
 | `risk_events` 持久化 | Phase 3 最小版禁止写；未来必须先设计 RiskEventRepository/UoW。 | Phase 3+ |
+
+## 后续测试目录
+
+以下章节是 OMS 后续测试目录和语义索引，不作为 Phase 2 final freeze 的 `Done` 清单。Phase 2 final freeze 的已完成项以上方带状态列且标记为 `Done` 的条目为准。
 
 ## 状态迁移测试
 
