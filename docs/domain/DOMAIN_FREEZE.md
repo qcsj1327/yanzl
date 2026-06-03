@@ -323,7 +323,6 @@ OMS 是订单状态唯一事实来源。
 - `UNIQUE(instrument_id)`
 - `product_id` 索引
 - `exchange` 索引
-- `version` 是 OMS Repository 状态更新的乐观并发版本字段，当前默认值为 `0`，不得用于表达业务订单状态。
 
 ### trading_calendars
 
@@ -388,6 +387,7 @@ OMS 是订单状态唯一事实来源。
 - `account_id` 索引
 - `instrument_id` 索引
 - `exchange` 索引
+- `version` 是 OMS Repository 状态更新的乐观并发版本字段，当前默认值为 `0`，不得用于表达业务订单状态。
 
 ### order_events
 

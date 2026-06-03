@@ -1,11 +1,13 @@
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from decimal import Decimal
+from threading import Barrier, Thread
 from uuid import uuid4
 
 import pytest
 from alembic.config import Config
 from sqlalchemy import create_engine, delete, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from alembic import command
@@ -130,6 +132,51 @@ def _order_event_count_by_external_event_id(session: Session, external_event_id:
     )
 
 
+def _order_status_and_version(session: Session, order_id: str) -> tuple[str, int]:
+    order = session.get(Order, int(order_id))
+    assert order is not None
+    return order.status, order.version
+
+
+def _run_concurrent_create_order(
+    db_session_factory: sessionmaker[Session],
+    first_request: OrderRequest,
+    second_request: OrderRequest,
+) -> tuple[list[str], list[BaseException]]:
+    barrier = Barrier(2)
+    order_ids: list[str] = []
+    errors: list[BaseException] = []
+
+    def create_in_thread(order_request: OrderRequest) -> None:
+        session = db_session_factory()
+        try:
+            repository = SQLAlchemyOrderRepository(session)
+            barrier.wait()
+            order = repository.create_order(
+                order_request,
+                client_order_id=order_request.client_order_id,
+            )
+            session.commit()
+            order_ids.append(order.order_id)
+        except BaseException as exc:
+            session.rollback()
+            errors.append(exc)
+        finally:
+            session.close()
+
+    first_thread = Thread(target=create_in_thread, args=(first_request,))
+    second_thread = Thread(target=create_in_thread, args=(second_request,))
+    first_thread.start()
+    second_thread.start()
+    first_thread.join(timeout=10)
+    second_thread.join(timeout=10)
+
+    if first_thread.is_alive() or second_thread.is_alive():
+        raise AssertionError("concurrent create_order test threads did not finish")
+
+    return order_ids, errors
+
+
 def test_create_order_then_get_by_client_order_id(
     db_session_factory: sessionmaker[Session],
 ) -> None:
@@ -247,6 +294,51 @@ def test_create_order_same_client_order_id_different_payload_raises_conflict(
         assert _order_event_count(session) == event_count_before
 
 
+def test_concurrent_create_order_same_payload_returns_single_order(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    client_order_id = _client_order_id()
+    first_request = _order_request(client_order_id)
+    second_request = _order_request(client_order_id)
+
+    order_ids, errors = _run_concurrent_create_order(
+        db_session_factory,
+        first_request,
+        second_request,
+    )
+
+    with db_session_factory() as verification_session:
+        persisted_count = _order_count_by_client_order_id(verification_session, client_order_id)
+
+    assert errors == []
+    assert len(order_ids) == 2
+    assert len(set(order_ids)) == 1
+    assert persisted_count == 1
+
+
+def test_concurrent_create_order_different_payload_raises_idempotency_conflict(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    client_order_id = _client_order_id()
+    first_request = _order_request(client_order_id)
+    second_request = _order_request(client_order_id, instrument_id="cu2601")
+
+    order_ids, errors = _run_concurrent_create_order(
+        db_session_factory,
+        first_request,
+        second_request,
+    )
+
+    with db_session_factory() as verification_session:
+        persisted_count = _order_count_by_client_order_id(verification_session, client_order_id)
+
+    assert len(order_ids) == 1
+    assert len(errors) == 1
+    assert isinstance(errors[0], IdempotencyConflictError)
+    assert not isinstance(errors[0], IntegrityError)
+    assert persisted_count == 1
+
+
 def test_get_by_id_accepts_string_db_id(db_session_factory: sessionmaker[Session]) -> None:
     with db_session_factory.begin() as session:
         order_id = _create_order(session)
@@ -294,6 +386,44 @@ def test_update_status_expected_version_mismatch_raises_optimistic_lock(
 
         with pytest.raises(OptimisticLockError):
             repository.update_status(order_id, OrderStatus.RISK_CHECKING, expected_version=99)
+
+
+def test_update_status_uses_atomic_expected_version_check(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as setup_session:
+        order_id = _create_order(setup_session)
+
+    session_a = db_session_factory()
+    session_b = db_session_factory()
+    try:
+        order_a = session_a.get(Order, int(order_id))
+        order_b = session_b.get(Order, int(order_id))
+        assert order_a is not None
+        assert order_b is not None
+        version_a = order_a.version
+        version_b = order_b.version
+        assert version_a == 0
+        assert version_b == 0
+
+        repository_a = SQLAlchemyOrderRepository(session_a)
+        repository_b = SQLAlchemyOrderRepository(session_b)
+
+        repository_a.update_status(order_id, OrderStatus.SUBMITTED, expected_version=version_a)
+        session_a.commit()
+
+        with pytest.raises(OptimisticLockError):
+            repository_b.update_status(order_id, OrderStatus.ACKED, expected_version=version_b)
+        session_b.rollback()
+    finally:
+        session_a.close()
+        session_b.close()
+
+    with db_session_factory() as verification_session:
+        status, version = _order_status_and_version(verification_session, order_id)
+
+    assert status == OrderStatus.SUBMITTED.value
+    assert version == 1
 
 
 def test_append_event_then_list_by_order_id(db_session_factory: sessionmaker[Session]) -> None:
@@ -359,6 +489,51 @@ def test_duplicate_event_raises_and_does_not_add_row(
             repository.append_event(event)
 
         assert _order_event_count(session) == event_count_before
+
+
+def test_concurrent_duplicate_event_raises_event_already_exists(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as setup_session:
+        order_id = _create_order(setup_session)
+
+    event_id = "concurrent-duplicate-event"
+    barrier = Barrier(2)
+    successes: list[OrderEvent] = []
+    errors: list[BaseException] = []
+
+    def append_in_thread() -> None:
+        session = db_session_factory()
+        try:
+            repository = SQLAlchemyOrderEventRepository(session)
+            barrier.wait()
+            event = repository.append_event(_order_event(order_id, external_event_id=event_id))
+            session.commit()
+            successes.append(event)
+        except BaseException as exc:
+            session.rollback()
+            errors.append(exc)
+        finally:
+            session.close()
+
+    first_thread = Thread(target=append_in_thread)
+    second_thread = Thread(target=append_in_thread)
+    first_thread.start()
+    second_thread.start()
+    first_thread.join(timeout=10)
+    second_thread.join(timeout=10)
+
+    if first_thread.is_alive() or second_thread.is_alive():
+        raise AssertionError("concurrent append_event test threads did not finish")
+
+    with db_session_factory() as verification_session:
+        event_count = _order_event_count_by_external_event_id(verification_session, event_id)
+
+    assert len(successes) == 1
+    assert len(errors) == 1
+    assert isinstance(errors[0], EventAlreadyExistsError)
+    assert not isinstance(errors[0], IntegrityError)
+    assert event_count == 1
 
 
 def test_append_event_does_not_auto_commit(
@@ -580,22 +755,42 @@ def test_repository_methods_do_not_auto_commit(
 def test_list_open_orders_returns_only_open_recovery_statuses(
     db_session_factory: sessionmaker[Session],
 ) -> None:
-    open_client_id = _client_order_id()
-    terminal_client_id = _client_order_id()
-
     with db_session_factory.begin() as session:
         repository = SQLAlchemyOrderRepository(session)
-        open_order = repository.create_order(
-            _order_request(open_client_id),
-            client_order_id=open_client_id,
-        )
-        terminal_order = repository.create_order(
-            _order_request(terminal_client_id),
-            client_order_id=terminal_client_id,
-        )
-        repository.update_status(open_order.order_id, OrderStatus.SUBMITTED)
-        repository.update_status(terminal_order.order_id, OrderStatus.FILLED)
+        expected_open_order_ids = []
+        for status in [
+            OrderStatus.SUBMITTING,
+            OrderStatus.SUBMIT_TIMEOUT,
+            OrderStatus.SUBMITTED,
+            OrderStatus.ACKED,
+            OrderStatus.PARTIALLY_FILLED,
+            OrderStatus.CANCEL_PENDING,
+            OrderStatus.CANCEL_FAILED,
+            OrderStatus.UNKNOWN,
+        ]:
+            client_order_id = _client_order_id()
+            order = repository.create_order(
+                _order_request(client_order_id),
+                client_order_id=client_order_id,
+            )
+            repository.update_status(order.order_id, status)
+            expected_open_order_ids.append(order.order_id)
+
+        for status in [
+            OrderStatus.REJECTED_BY_RISK,
+            OrderStatus.SUBMIT_FAILED,
+            OrderStatus.CANCELED,
+            OrderStatus.FILLED,
+            OrderStatus.REJECTED_BY_EXCHANGE,
+            OrderStatus.EXPIRED,
+        ]:
+            client_order_id = _client_order_id()
+            order = repository.create_order(
+                _order_request(client_order_id),
+                client_order_id=client_order_id,
+            )
+            repository.update_status(order.order_id, status)
 
         listed = repository.list_open_orders()
 
-    assert [order.order_id for order in listed] == [open_order.order_id]
+    assert {order.order_id for order in listed} == set(expected_open_order_ids)

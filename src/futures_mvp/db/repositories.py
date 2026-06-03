@@ -1,6 +1,8 @@
 from collections.abc import Iterable
+from typing import cast
 
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -177,18 +179,37 @@ class SQLAlchemyOrderRepository:
         expected_version: int | None = None,
     ) -> OrderState:
         db_order_id = parse_order_id(order_id)
-        order = self._session.get(Order, db_order_id)
-        if order is None:
-            raise OrderNotFoundError(f"order not found: {order_id}")
-        if expected_version is not None and order.version != expected_version:
+        conditions = [Order.id == db_order_id]
+        if expected_version is not None:
+            conditions.append(Order.version == expected_version)
+
+        result = cast(
+            CursorResult[object],
+            self._session.execute(
+                update(Order)
+                .where(*conditions)
+                .values(status=new_status.value, version=Order.version + 1)
+                .execution_options(synchronize_session=False)
+            ),
+        )
+        if result.rowcount != 1:
+            if expected_version is None:
+                raise OrderNotFoundError(f"order not found: {order_id}")
             raise OptimisticLockError(
-                f"order {order_id} version mismatch: "
-                f"expected {expected_version}, got {order.version}"
+                f"order {order_id} version mismatch: expected {expected_version}"
             )
-        order.status = new_status.value
-        order.version += 1
         self._session.flush()
+        order = self._get_orm_by_id(db_order_id)
+        if order is None:
+            raise RepositoryError(f"order updated but not found: {order_id}")
         return order_to_domain(order)
+
+    def _get_orm_by_id(self, db_order_id: int) -> Order | None:
+        return self._session.scalar(
+            select(Order)
+            .where(Order.id == db_order_id)
+            .execution_options(populate_existing=True)
+        )
 
     def list_open_orders(self) -> list[OrderState]:
         orders = self._session.scalars(
@@ -207,18 +228,33 @@ class SQLAlchemyOrderEventRepository:
             raise EventAlreadyExistsError(
                 f"order event already exists: {event.event_source}/{event.external_event_id}"
             )
-        order_event = OrderEventOrm(
-            order_id=parse_order_id(event.order_id),
-            previous_status=event.previous_status.value if event.previous_status else None,
-            new_status=event.new_status.value,
-            event_source=event.event_source.value,
-            external_event_id=event.external_event_id,
-            raw_payload=event.raw_payload,
-            occurred_at=event.occurred_at,
-        )
-        self._session.add(order_event)
-        self._session.flush()
-        return order_event_to_domain(order_event)
+        try:
+            with self._session.begin_nested():
+                order_event = OrderEventOrm(
+                    order_id=parse_order_id(event.order_id),
+                    previous_status=event.previous_status.value if event.previous_status else None,
+                    new_status=event.new_status.value,
+                    event_source=event.event_source.value,
+                    external_event_id=event.external_event_id,
+                    raw_payload=event.raw_payload,
+                    occurred_at=event.occurred_at,
+                )
+                self._session.add(order_event)
+                self._session.flush()
+            return order_event_to_domain(order_event)
+        except IntegrityError as exc:
+            existing_after_conflict = self.get_by_event_key(
+                event.event_source,
+                event.external_event_id,
+            )
+            if existing_after_conflict is None:
+                raise RepositoryError(
+                    "order event unique conflict but event not found: "
+                    f"{event.event_source}/{event.external_event_id}"
+                ) from exc
+            raise EventAlreadyExistsError(
+                f"order event already exists: {event.event_source}/{event.external_event_id}"
+            ) from exc
 
     def get_by_event_key(
         self,

@@ -21,43 +21,42 @@ Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界
 
 ### Repository 单元测试
 
-| 场景 | 预期 |
-|---|---|
-| 订单创建 + 初始事件 | 订单记录和初始 `order_event` 在同一事务内提交。 |
-| 状态更新 + 事件 append | `orders.status` 更新和 `order_events` append 在同一事务内提交。 |
-| 写事件失败 | 事务 rollback，不留下已更新订单状态。 |
-| 更新订单失败 | 事务 rollback，不留下半条事件。 |
-| 相同 `client_order_id` + 相同 canonical payload | 返回已有订单，不创建第二笔订单。 |
-| 相同 `client_order_id` + 不同 canonical payload | 返回类型化幂等冲突，不创建第二笔订单。 |
-| `IntegrityError` 后查询已有订单 | 唯一约束冲突后重新查询，并按 canonical payload 判断幂等或冲突。 |
-| `order_id` str/int 映射成功 | Domain `order_id` 与 DB `orders.id` 由 Repository 统一转换。 |
-| 非法 `order_id` 字符串 | 拒绝查询，不得查询错误订单。 |
-| duplicate `order_event` | 不重复 append，不重复应用。 |
-| open/recovery query | 返回 `SUBMITTING`, `SUBMIT_TIMEOUT`, `SUBMITTED`, `ACKED`, `PARTIALLY_FILLED`, `CANCEL_PENDING`, `CANCEL_FAILED`, `UNKNOWN`。 |
-| 终态订单恢复查询 | `REJECTED_BY_RISK`, `SUBMIT_FAILED`, `CANCELED`, `FILLED`, `REJECTED_BY_EXCHANGE`, `EXPIRED` 不进入自动恢复集合。 |
-| event replay ordering | 按 `id` 或 `created_at, id` 稳定重放，禁止只按 `created_at`。 |
-| `raw_payload` | 不承载 source-of-truth 字段。 |
-| `occurred_at` 持久化 | `order_events.occurred_at` 必须写入业务事件发生时间，不能用 `created_at` 冒充。 |
+| 场景 | 预期 | 状态 |
+|---|---|---|
+| 订单创建 + 初始事件 | 订单记录和初始 `order_event` 在同一事务内提交。 | Done |
+| 状态更新 + 事件 append | `orders.status` 更新和 `order_events` append 在同一事务内提交。 | Done |
+| 写事件失败 | 事务 rollback，不留下已更新订单状态。 | Done |
+| 更新订单失败 | 事务 rollback，不留下半条事件。 | Done |
+| 相同 `client_order_id` + 相同 canonical payload | 返回已有订单，不创建第二笔订单。 | Done |
+| 相同 `client_order_id` + 不同 canonical payload | 返回类型化幂等冲突，不创建第二笔订单。 | Done |
+| `IntegrityError` 后查询已有订单 | 唯一约束冲突后重新查询，并按 canonical payload 判断幂等或冲突。 | Done |
+| `order_id` str/int 映射成功 | Domain `order_id` 与 DB `orders.id` 由 Repository 统一转换。 | Done |
+| 非法 `order_id` 字符串 | 拒绝查询，不得查询错误订单。 | Done |
+| duplicate `order_event` | 不重复 append，不重复应用。 | Done |
+| open/recovery query | 返回 `SUBMITTING`, `SUBMIT_TIMEOUT`, `SUBMITTED`, `ACKED`, `PARTIALLY_FILLED`, `CANCEL_PENDING`, `CANCEL_FAILED`, `UNKNOWN`。 | Done |
+| 终态订单恢复查询 | `REJECTED_BY_RISK`, `SUBMIT_FAILED`, `CANCELED`, `FILLED`, `REJECTED_BY_EXCHANGE`, `EXPIRED` 不进入自动恢复集合。 | Done |
+| event replay ordering | 按 `id` 或 `created_at, id` 稳定重放，禁止只按 `created_at`。 | Done |
+| `raw_payload` | 不承载 source-of-truth 字段。 | Done |
+| `occurred_at` 持久化 | `order_events.occurred_at` 必须写入业务事件发生时间，不能用 `created_at` 冒充。 | Done |
 
 ### PostgreSQL 集成测试
 
-| 场景 | 预期 |
-|---|---|
-| `orders.client_order_id` 唯一约束 | 真实 PostgreSQL 触发唯一约束。 |
-| `order_events(event_source, external_event_id)` 唯一约束 | 真实 PostgreSQL 触发唯一约束。 |
-| `raw_payload` JSON round-trip | JSON 能完整写入和读出。 |
-| 订单 + 事件同事务提交 | 真实 PostgreSQL 中二者同时可见。 |
-| 事件插入失败 rollback | `orders.status` 不变。 |
-| 订单更新失败 rollback | `order_events` 不残留。 |
+| 场景 | 预期 | 状态 |
+|---|---|---|
+| `orders.client_order_id` 唯一约束 | 真实 PostgreSQL 触发唯一约束。 | Done |
+| `order_events(event_source, external_event_id)` 唯一约束 | 真实 PostgreSQL 触发唯一约束。 | Done |
+| `raw_payload` JSON round-trip | JSON 能完整写入和读出。 | Done |
+| 订单 + 事件同事务提交 | 真实 PostgreSQL 中二者同时可见。 | Done |
+| 事件插入失败 rollback | `orders.status` 不变。 | Done |
+| 订单更新失败 rollback | `order_events` 不残留。 | Done |
 
-### 后续项
+### Phase 2.3+ 后续项
 
-并发创建可以不在 Phase 2.2 首批测试中落地，但必须作为后续验收项：
+以下进入 OMSService 后继续验收：
 
-- 两个独立 PostgreSQL session 同时创建相同 `client_order_id` + 相同 payload。
-- 最终只存在一笔订单。
-- 两个调用都返回同一订单，或一路创建、一路在冲突后查询并返回同一订单。
-- 相同 `client_order_id` + 不同 payload 并发时，只保留原订单，另一路得到明确幂等冲突。
+- OMSService 调用 Repository 后的状态迁移与事件写入编排。
+- OMSService 对乱序事件、`previous_status` mismatch 和 `UNKNOWN` 的策略。
+- OMSService 从 `orders + order_events` 重放恢复。
 
 ## 状态迁移测试
 

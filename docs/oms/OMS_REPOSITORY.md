@@ -65,7 +65,9 @@ class OrderRepository(Protocol):
 
 - `append_event(...)` 先按 `event_source + external_event_id` 查询。
 - 如果已存在，抛出 `EventAlreadyExistsError`。
-- 如果不存在，写入新事件并 `flush`。
+- 如果不存在，使用 nested transaction / savepoint 写入新事件并 `flush`。
+- 如果 DB unique constraint 抛出 `IntegrityError`，只回滚当前 insert savepoint。
+- `IntegrityError` 后重新查询 `event_source + external_event_id`；查到既有事件时统一抛出 `EventAlreadyExistsError`，仍查不到时抛出 `RepositoryError`。
 - Repository 不自动 `commit` 或 `rollback`。
 - Repository 写入 Domain `OrderEvent.occurred_at`，`created_at` 由 DB/ORM 生成。
 - Repository 透传 `raw_payload` 诊断信息，不解释 `raw_payload`。
@@ -247,12 +249,14 @@ Phase 2.2B 当前事实：
 
 - `orders.version int not null default 0`
 
-后续 Repository 状态更新必须使用 `version` 或等价锁机制：
+当前 Repository 状态更新使用 `version` 做乐观并发控制：
 
-- 读取订单当前版本。
-- 更新时校验版本。
-- 写入成功后版本递增。
-- 版本不匹配时拒绝当前更新或交由上层进入恢复流程。
+- `expected_version is not None` 时，使用单条条件 `UPDATE`。
+- 条件为 `orders.id = :id AND orders.version = :expected_version`。
+- 写入成功后 `version = version + 1`。
+- affected rows 为 `0` 时抛出 `OptimisticLockError`。
+- `expected_version is None` 时保留直接更新语义，但没有并发保护。
+- 生产状态更新路径应传入 `expected_version`。
 
 ## open/recovery query
 
@@ -312,13 +316,16 @@ open/recovery 状态集合：
 - `client_order_id` 相同 payload 幂等。
 - `client_order_id` 不同 payload 冲突。
 - `IntegrityError` 后查询已有订单。
+- 并发相同 `client_order_id` + 相同 payload 只创建一笔订单。
+- 并发相同 `client_order_id` + 不同 payload 抛出 `IdempotencyConflictError`。
 - `order_id` str/int 映射成功。
 - `order_id` 非法字符串拒绝。
 - duplicate `order_event` 不重复 append。
+- 并发 duplicate `order_event` 统一转换为 `EventAlreadyExistsError`。
 - open/recovery query 状态集合正确。
 - 终态订单不进入恢复集合。
 - event replay ordering by `id` 或 `created_at, id`。
 - `raw_payload` 不承载 source-of-truth 字段。
 - `occurred_at` 必须持久化业务事件发生时间。
 
-并发创建测试仍是后续项；后续验收必须证明并发相同 `client_order_id` 最终只创建一笔订单，并覆盖真实 `IntegrityError` 后重新查询分支。
+当前 Phase 2.2G 已覆盖稳定的双 Session / barrier 并发创建测试，并覆盖真实 `IntegrityError` 后重新查询分支。
