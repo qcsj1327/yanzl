@@ -11,6 +11,7 @@ import pytest
 
 from futures_mvp.domain.enums import (
     Direction,
+    EventApplicationStatus,
     EventSource,
     Offset,
     OrderStatus,
@@ -19,6 +20,7 @@ from futures_mvp.domain.enums import (
 )
 from futures_mvp.domain.models import OrderEvent, OrderRequest, OrderState, RiskResult
 from futures_mvp.interfaces.repositories import (
+    EventAlreadyExistsError,
     IdempotencyConflictError,
     OptimisticLockError,
     OrderNotFoundError,
@@ -176,7 +178,7 @@ class FakeOrderEventRepository:
             self.fail_next_append = False
             raise RuntimeError("append failed")
         if self.get_by_event_key(event.event_source, event.external_event_id) is not None:
-            raise RuntimeError("duplicate event append")
+            raise EventAlreadyExistsError("duplicate event append")
         self.events.append(event)
         return event
 
@@ -335,12 +337,14 @@ def test_apply_risk_result_accepted_bridges_created_to_risk_accepted() -> None:
     service = _service(uow)
     order = service.create_order(_order_request(), client_order_id="client-1")
 
-    accepted = service.apply_risk_result(
+    result = service.apply_risk_result(
         order.order_id,
         _risk_result(RiskDecision.ACCEPTED),
         external_event_id="risk-accepted-1",
     )
 
+    assert result.status == EventApplicationStatus.APPLIED
+    accepted = result.order
     assert accepted.status == OrderStatus.RISK_ACCEPTED
     assert accepted.version == 2
     assert uow.orders.update_expected_versions == [0, 1]
@@ -356,12 +360,14 @@ def test_apply_risk_result_rejected_from_created() -> None:
     service = _service(uow)
     order = service.create_order(_order_request(), client_order_id="client-1")
 
-    rejected = service.apply_risk_result(
+    result = service.apply_risk_result(
         order.order_id,
         _risk_result(RiskDecision.REJECTED),
         external_event_id="risk-rejected-1",
     )
 
+    assert result.status == EventApplicationStatus.APPLIED
+    rejected = result.order
     assert rejected.status == OrderStatus.REJECTED_BY_RISK
     assert uow.order_events.events[-1].new_status == OrderStatus.REJECTED_BY_RISK
 
@@ -373,12 +379,14 @@ def test_apply_risk_result_accepted_from_risk_checking() -> None:
     uow.orders.update_status(order.order_id, OrderStatus.RISK_CHECKING)
     uow.orders.update_expected_versions.clear()
 
-    accepted = service.apply_risk_result(
+    result = service.apply_risk_result(
         order.order_id,
         _risk_result(RiskDecision.ACCEPTED),
         external_event_id="risk-accepted-1",
     )
 
+    assert result.status == EventApplicationStatus.APPLIED
+    accepted = result.order
     assert accepted.status == OrderStatus.RISK_ACCEPTED
     assert accepted.version == 2
     assert uow.orders.update_expected_versions == [1]
@@ -393,12 +401,14 @@ def test_apply_risk_result_rejected_from_risk_checking() -> None:
     uow.orders.update_status(order.order_id, OrderStatus.RISK_CHECKING)
     uow.orders.update_expected_versions.clear()
 
-    rejected = service.apply_risk_result(
+    result = service.apply_risk_result(
         order.order_id,
         _risk_result(RiskDecision.REJECTED),
         external_event_id="risk-rejected-1",
     )
 
+    assert result.status == EventApplicationStatus.APPLIED
+    rejected = result.order
     assert rejected.status == OrderStatus.REJECTED_BY_RISK
     assert rejected.version == 2
     assert uow.orders.update_expected_versions == [1]
@@ -422,8 +432,34 @@ def test_apply_risk_result_duplicate_event_does_not_append_again() -> None:
         external_event_id="risk-rejected-1",
     )
 
-    assert second == first
+    assert first.status == EventApplicationStatus.APPLIED
+    assert second.status == EventApplicationStatus.DUPLICATE
+    assert second.order == first.order
     assert len(uow.order_events.events) == 2
+
+
+def test_apply_risk_result_duplicate_key_for_different_order_is_collision() -> None:
+    uow = FakeUnitOfWork()
+    service = _service(uow)
+    first_order = service.create_order(_order_request("client-1"), client_order_id="client-1")
+    second_order = service.create_order(_order_request("client-2"), client_order_id="client-2")
+    service.apply_risk_result(
+        first_order.order_id,
+        _risk_result(RiskDecision.REJECTED),
+        external_event_id="risk-shared-1",
+    )
+    before_events = len(uow.order_events.events)
+
+    result = service.apply_risk_result(
+        second_order.order_id,
+        _risk_result(RiskDecision.REJECTED),
+        external_event_id="risk-shared-1",
+    )
+
+    assert result.status == EventApplicationStatus.EVENT_KEY_COLLISION
+    assert result.order.order_id == second_order.order_id
+    assert uow.orders.get_by_id(second_order.order_id).status == OrderStatus.CREATED  # type: ignore[union-attr]
+    assert len(uow.order_events.events) == before_events
 
 
 def test_apply_risk_result_illegal_transition_rolls_back_without_success_event() -> None:
@@ -461,7 +497,7 @@ def test_apply_order_event_previous_status_match_updates_status_and_appends() ->
         external_event_id="risk-accepted-1",
     )
 
-    updated = service.apply_order_event(
+    result = service.apply_order_event(
         _event(
             order.order_id,
             previous_status=OrderStatus.RISK_ACCEPTED,
@@ -469,6 +505,8 @@ def test_apply_order_event_previous_status_match_updates_status_and_appends() ->
         )
     )
 
+    assert result.status == EventApplicationStatus.APPLIED
+    updated = result.order
     assert updated.status == OrderStatus.SUBMITTING
     assert updated.version == 3
     assert uow.orders.update_expected_versions[-1] == 2
@@ -493,11 +531,43 @@ def test_apply_order_event_duplicate_does_not_apply_twice() -> None:
 
     second = service.apply_order_event(event)
 
-    assert second == first
+    assert first.status == EventApplicationStatus.APPLIED
+    assert second.status == EventApplicationStatus.DUPLICATE
+    assert second.order == first.order
     exchange_event_count = [
         item.external_event_id for item in uow.order_events.events
     ].count("exchange-event-1")
     assert exchange_event_count == 1
+
+
+def test_apply_order_event_duplicate_key_for_different_order_is_collision() -> None:
+    uow = FakeUnitOfWork()
+    service = _service(uow)
+    first_order = service.create_order(_order_request("client-1"), client_order_id="client-1")
+    second_order = service.create_order(_order_request("client-2"), client_order_id="client-2")
+    uow.order_events.append_event(
+        _event(
+            first_order.order_id,
+            previous_status=OrderStatus.CREATED,
+            new_status=OrderStatus.UNKNOWN,
+            external_event_id="shared-exchange-event",
+        )
+    )
+    before_events = len(uow.order_events.events)
+
+    result = service.apply_order_event(
+        _event(
+            second_order.order_id,
+            previous_status=OrderStatus.CREATED,
+            new_status=OrderStatus.UNKNOWN,
+            external_event_id="shared-exchange-event",
+        )
+    )
+
+    assert result.status == EventApplicationStatus.EVENT_KEY_COLLISION
+    assert result.order.order_id == second_order.order_id
+    assert uow.orders.get_by_id(second_order.order_id).status == OrderStatus.CREATED  # type: ignore[union-attr]
+    assert len(uow.order_events.events) == before_events
 
 
 def test_apply_order_event_terminal_order_does_not_regress_to_old_event() -> None:
@@ -507,7 +577,7 @@ def test_apply_order_event_terminal_order_does_not_regress_to_old_event() -> Non
     uow.orders.update_status(order.order_id, OrderStatus.FILLED)
     before_count = len(uow.order_events.events)
 
-    current = service.apply_order_event(
+    result = service.apply_order_event(
         _event(
             order.order_id,
             previous_status=OrderStatus.ACKED,
@@ -515,6 +585,8 @@ def test_apply_order_event_terminal_order_does_not_regress_to_old_event() -> Non
         )
     )
 
+    assert result.status == EventApplicationStatus.OLD_IGNORED
+    current = result.order
     assert current.status == OrderStatus.FILLED
     assert len(uow.order_events.events) == before_count
 
@@ -524,7 +596,7 @@ def test_apply_order_event_previous_status_mismatch_enters_unknown() -> None:
     service = _service(uow)
     order = service.create_order(_order_request(), client_order_id="client-1")
 
-    unknown = service.apply_order_event(
+    result = service.apply_order_event(
         _event(
             order.order_id,
             previous_status=OrderStatus.ACKED,
@@ -532,11 +604,36 @@ def test_apply_order_event_previous_status_mismatch_enters_unknown() -> None:
         )
     )
 
+    assert result.status == EventApplicationStatus.ENTERED_UNKNOWN
+    unknown = result.order
     assert unknown.status == OrderStatus.UNKNOWN
     assert uow.order_events.events[-1].new_status == OrderStatus.UNKNOWN
     assert uow.order_events.events[-1].raw_payload["reason"] == (
         "previous_status_mismatch_unresolved"
     )
+
+
+def test_apply_order_event_missing_previous_status_enters_unknown() -> None:
+    uow = FakeUnitOfWork()
+    service = _service(uow)
+    order = service.create_order(_order_request(), client_order_id="client-1")
+    service.apply_risk_result(
+        order.order_id,
+        _risk_result(RiskDecision.ACCEPTED),
+        external_event_id="risk-accepted-1",
+    )
+
+    result = service.apply_order_event(
+        _event(
+            order.order_id,
+            previous_status=None,
+            new_status=OrderStatus.SUBMITTING,
+            external_event_id="missing-previous-status",
+        )
+    )
+
+    assert result.status == EventApplicationStatus.ENTERED_UNKNOWN
+    assert result.order.status == OrderStatus.UNKNOWN
 
 
 @pytest.mark.parametrize(
@@ -551,7 +648,7 @@ def test_unknown_cannot_recover_to_forbidden_process_states(
     order = service.create_order(_order_request(), client_order_id="client-1")
     uow.orders.update_status(order.order_id, OrderStatus.UNKNOWN)
 
-    current = service.apply_order_event(
+    result = service.apply_order_event(
         _event(
             order.order_id,
             previous_status=OrderStatus.UNKNOWN,
@@ -559,6 +656,8 @@ def test_unknown_cannot_recover_to_forbidden_process_states(
         )
     )
 
+    assert result.status == EventApplicationStatus.MISMATCH_REJECTED
+    current = result.order
     assert current.status == OrderStatus.UNKNOWN
     assert uow.orders.get_by_id(order.order_id).status == OrderStatus.UNKNOWN  # type: ignore[union-attr]
 
@@ -569,7 +668,7 @@ def test_unknown_can_recover_to_allowed_target_from_explicit_event() -> None:
     order = service.create_order(_order_request(), client_order_id="client-1")
     uow.orders.update_status(order.order_id, OrderStatus.UNKNOWN)
 
-    recovered = service.apply_order_event(
+    result = service.apply_order_event(
         _event(
             order.order_id,
             previous_status=OrderStatus.UNKNOWN,
@@ -577,9 +676,55 @@ def test_unknown_can_recover_to_allowed_target_from_explicit_event() -> None:
         )
     )
 
+    assert result.status == EventApplicationStatus.RECOVERED_FROM_UNKNOWN
+    recovered = result.order
     assert recovered.status == OrderStatus.FILLED
     assert uow.order_events.events[-1].previous_status == OrderStatus.UNKNOWN
     assert uow.order_events.events[-1].new_status == OrderStatus.FILLED
+
+
+def test_unknown_requires_previous_status_unknown_for_explicit_recovery() -> None:
+    uow = FakeUnitOfWork()
+    service = _service(uow)
+    order = service.create_order(_order_request(), client_order_id="client-1")
+    uow.orders.update_status(order.order_id, OrderStatus.UNKNOWN)
+    before_count = len(uow.order_events.events)
+
+    result = service.apply_order_event(
+        _event(
+            order.order_id,
+            previous_status=OrderStatus.ACKED,
+            new_status=OrderStatus.FILLED,
+        )
+    )
+
+    assert result.status == EventApplicationStatus.MISMATCH_REJECTED
+    assert result.order.status == OrderStatus.UNKNOWN
+    assert len(uow.order_events.events) == before_count
+
+
+def test_raw_payload_is_not_source_of_truth_for_order_event_status() -> None:
+    uow = FakeUnitOfWork()
+    service = _service(uow)
+    order = service.create_order(_order_request(), client_order_id="client-1")
+    service.apply_risk_result(
+        order.order_id,
+        _risk_result(RiskDecision.ACCEPTED),
+        external_event_id="risk-accepted-1",
+    )
+    event = _event(
+        order.order_id,
+        previous_status=OrderStatus.RISK_ACCEPTED,
+        new_status=OrderStatus.SUBMITTING,
+    )
+    event = event.model_copy(
+        update={"raw_payload": {"new_status": OrderStatus.FILLED.value}}
+    )
+
+    result = service.apply_order_event(event)
+
+    assert result.status == EventApplicationStatus.APPLIED
+    assert result.order.status == OrderStatus.SUBMITTING
 
 
 def test_recover_order_consistent_event_stream_is_noop() -> None:
@@ -588,8 +733,10 @@ def test_recover_order_consistent_event_stream_is_noop() -> None:
     order = service.create_order(_order_request(), client_order_id="client-1")
     before_count = len(uow.order_events.events)
 
-    recovered = service.recover_order(order.order_id)
+    result = service.recover_order(order.order_id)
 
+    assert result.status == EventApplicationStatus.APPLIED
+    recovered = result.order
     assert recovered.status == OrderStatus.CREATED
     assert len(uow.order_events.events) == before_count
 
@@ -600,8 +747,10 @@ def test_recover_order_inconsistent_event_stream_enters_unknown() -> None:
     order = service.create_order(_order_request(), client_order_id="client-1")
     uow.order_events.events.clear()
 
-    recovered = service.recover_order(order.order_id)
+    result = service.recover_order(order.order_id)
 
+    assert result.status == EventApplicationStatus.ENTERED_UNKNOWN
+    recovered = result.order
     assert recovered.status == OrderStatus.UNKNOWN
     assert uow.order_events.events[-1].new_status == OrderStatus.UNKNOWN
     assert uow.order_events.events[-1].raw_payload["reason"] == "replay_inconsistent"
@@ -631,8 +780,10 @@ def test_recover_order_unknown_recovers_to_replayed_allowed_status() -> None:
     )
     uow.orders.update_status(order.order_id, OrderStatus.UNKNOWN)
 
-    recovered = service.recover_order(order.order_id)
+    result = service.recover_order(order.order_id)
 
+    assert result.status == EventApplicationStatus.RECOVERED_FROM_UNKNOWN
+    recovered = result.order
     assert recovered.status == OrderStatus.FILLED
     assert uow.order_events.events[-1].previous_status == OrderStatus.UNKNOWN
     assert uow.order_events.events[-1].new_status == OrderStatus.FILLED
@@ -646,8 +797,10 @@ def test_recover_order_terminal_order_is_protected() -> None:
     uow.orders.update_status(order.order_id, OrderStatus.FILLED)
     before_count = len(uow.order_events.events)
 
-    recovered = service.recover_order(order.order_id)
+    result = service.recover_order(order.order_id)
 
+    assert result.status == EventApplicationStatus.IGNORED_TERMINAL
+    recovered = result.order
     assert recovered.status == OrderStatus.FILLED
     assert len(uow.order_events.events) == before_count
 

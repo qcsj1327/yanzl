@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from futures_mvp.domain.decimal import require_decimal
 from futures_mvp.domain.enums import (
     Direction,
+    EventApplicationStatus,
     EventSource,
     Offset,
     OrderStatus,
@@ -81,6 +82,12 @@ class OrderEvent(DomainModel):
     external_event_id: str
     raw_payload: dict[str, Any]
     occurred_at: datetime
+
+
+class OrderEventApplicationResult(DomainModel):
+    status: EventApplicationStatus
+    order: OrderState
+    reason: str | None = None
 
 
 class Trade(DomainModel):

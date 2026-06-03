@@ -131,6 +131,8 @@ OMS 在无法可靠判断订单当前状态时进入 `UNKNOWN`。典型条件：
 - 通过完整且幂等的事件重放恢复出一致状态。
 - 人工或系统对账生成明确恢复事件。
 - 恢复事件必须带有新的 `external_event_id`，并符合当前 `order_events` 幂等规则。
+- 显式 `OrderEvent` 恢复 `UNKNOWN` 时，`previous_status` 必须等于 `UNKNOWN`。
+- 显式恢复事件的 `previous_status` 不是 `UNKNOWN` 时，不得恢复，返回 `MISMATCH_REJECTED`。
 
 从 `UNKNOWN` 恢复到终态后，终态规则继续生效。
 
@@ -173,11 +175,15 @@ event_source + external_event_id
 事件处理规则：
 
 - 重复事件不得重复应用。
+- 重复事件必须先按 `event_source + external_event_id` 查询；若既有事件属于同一订单，返回 `DUPLICATE`。
+- 若既有事件属于其他订单，返回 `EVENT_KEY_COLLISION`，不得返回其他订单状态，不得修改当前订单。
 - 重复事件不得重复累计成交数量。
 - 重复事件不得重复写入同语义状态变化。
 - `previous_status` 与当前状态一致：按状态迁移矩阵正常应用。
 - `previous_status` 与当前状态不一致，且能判断为重复事件或旧事件：忽略并记录诊断。
 - `previous_status` 与当前状态不一致，且无法判断：进入 `UNKNOWN` 或拒绝应用。
+- 旧事件不得回退订单状态，返回 `OLD_IGNORED`。
+- 终态订单不得自动恢复或回退，恢复入口返回 `IGNORED_TERMINAL`。
 - 乱序事件不得破坏订单状态单调性。
 - 乱序事件不得让终态订单回退。
 - `raw_payload` 只用于诊断，不承载 source-of-truth 字段。

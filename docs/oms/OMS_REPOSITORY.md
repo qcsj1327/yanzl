@@ -396,7 +396,13 @@ Repository 负责持久化事实：
 from collections.abc import Callable
 from datetime import datetime
 
-from futures_mvp.domain.models import OrderEvent, OrderRequest, OrderState, RiskResult
+from futures_mvp.domain.models import (
+    OrderEvent,
+    OrderEventApplicationResult,
+    OrderRequest,
+    OrderState,
+    RiskResult,
+)
 from futures_mvp.interfaces.repositories import UnitOfWork
 
 
@@ -422,11 +428,11 @@ class OMSService:
         *,
         external_event_id: str,
         occurred_at: datetime | None = None,
-    ) -> OrderState: ...
+    ) -> OrderEventApplicationResult: ...
 
-    def apply_order_event(self, event: OrderEvent) -> OrderState: ...
+    def apply_order_event(self, event: OrderEvent) -> OrderEventApplicationResult: ...
 
-    def recover_order(self, order_id: str) -> OrderState: ...
+    def recover_order(self, order_id: str) -> OrderEventApplicationResult: ...
 
     def get_by_client_order_id(self, client_order_id: str) -> OrderState | None: ...
 ```
@@ -440,6 +446,8 @@ class OMSService:
 - 本阶段不暴露批量提交、撤单、撮合、成交、持仓或结算接口。
 - Phase 2.4 起，`OrderState.version` 暴露 `orders.version`，OMSService 生产状态更新路径必须向 `update_status` 传 `expected_version=order.version`。
 - 多段状态迁移必须使用上一次 `update_status` 返回的新 `OrderState.version`，不得复用旧版本。
+- `apply_risk_result`、`apply_order_event`、`recover_order` 返回 `OrderEventApplicationResult`，用 `EventApplicationStatus` 表达事件应用结果。
+- `EventApplicationStatus` 不得写成裸字符串，不得塞进 `raw_payload` 作为 source-of-truth。
 
 ### create_order 契约
 
@@ -475,6 +483,7 @@ class OMSService:
 处理：
 
 - 查询当前订单。
+- 先按 `event_source=RISK + external_event_id` 查询既有事件；既有事件属于同一订单时返回 `DUPLICATE`，属于其他订单时返回 `EVENT_KEY_COLLISION`。
 - 若 `RiskDecision.ACCEPTED`，目标状态为 `RISK_ACCEPTED`。
 - 若 `RiskDecision.REJECTED`，目标状态为 `REJECTED_BY_RISK`。
 - 当前状态为 `CREATED` 且风控通过时，必须先调用 `validate_transition(CREATED, RISK_CHECKING)`，再调用 `validate_transition(RISK_CHECKING, RISK_ACCEPTED)`。
@@ -484,6 +493,9 @@ class OMSService:
 - 如果风控通过路径需要从 `CREATED` 桥接到 `RISK_CHECKING`，必须在同一事务内 append `RISK_CHECKING` 事件和 `RISK_ACCEPTED` 事件，且最终返回 `RISK_ACCEPTED`。
 - 事件来源为 `RISK`。
 - 显式 `commit`。
+- 成功应用返回 `OrderEventApplicationResult(status=APPLIED, order=...)`。
+- duplicate 风控事件返回 `DUPLICATE`。
+- event key 属于其他订单时返回 `EVENT_KEY_COLLISION`，不得返回其他订单状态。
 
 禁止：
 
@@ -501,13 +513,14 @@ class OMSService:
 
 1. 打开 UnitOfWork。
 2. 按 `event_source + external_event_id` 查询已处理事件。
-3. 已存在时视为 duplicate event，返回当前订单状态，不重复 append，不重复更新状态。
-4. 查询当前订单。
-5. 校验 `previous_status`。
-6. 判断 old event、合法推进、UNKNOWN 或拒绝应用。
-7. 对合法推进调用 `validate_transition(current.status, event.new_status)`。
-8. 在同一事务内更新订单状态并 append 原始事件。
-9. 显式 `commit`。
+3. 已存在且属于当前请求订单时返回 `DUPLICATE`，不重复 append，不重复更新状态。
+4. 已存在但属于其他订单时返回 `EVENT_KEY_COLLISION`，不得返回其他订单状态，不得修改当前订单。
+5. 查询当前订单。
+6. 校验 `previous_status`。
+7. 判断 old event、合法推进、UNKNOWN 或拒绝应用。
+8. 对合法推进调用 `validate_transition(current.status, event.new_status)`。
+9. 在同一事务内更新订单状态并 append 原始事件。
+10. 显式 `commit`。
 
 禁止：
 
@@ -524,16 +537,17 @@ class OMSService:
 
 策略：
 
-- 不调用 `append_event`。
-- 不调用 `update_status`。
-- 返回当前订单状态。
+- 既有事件属于同一订单时，不调用 `append_event`，不调用 `update_status`，返回 `DUPLICATE` 和当前请求订单状态。
+- 既有事件属于其他订单时，返回 `EVENT_KEY_COLLISION` 和当前请求订单状态。
 - 不因 duplicate event 进入 `UNKNOWN`。
+- 不得返回其他订单状态。
 - 如当前订单不存在，返回订单不存在错误；不得仅凭旧事件重建订单。
 
 原因：
 
 - 当前 DB 幂等键是 `event_source + external_event_id`。
 - 重复事件不得重复应用，不得重复累计成交，不得重复写入同语义状态变化。
+- 当前阶段不修改 DB unique key。未来若要改为订单维度唯一，必须单独 schema migration。
 
 ### previous_status mismatch 策略
 
@@ -552,6 +566,8 @@ class OMSService:
 - 如果事件目标状态已经被当前状态覆盖，且不会改变终态、成交事实或审计事实，按 old event 忽略并记录诊断。
 - 如果无法判断为 duplicate 或 old event，且 `should_enter_unknown("previous_status_mismatch_unresolved")` 为真，进入 `UNKNOWN`。
 - 如果事件非法且无恢复价值，拒绝应用并记录诊断，不改变订单状态。
+- old event 返回 `OLD_IGNORED`。
+- 无法恢复的 mismatch 返回 `MISMATCH_REJECTED` 或进入 `UNKNOWN` 后返回 `ENTERED_UNKNOWN`。
 
 进入 `UNKNOWN` 时必须 append 诊断事件，`raw_payload` 保留 mismatch 诊断信息。
 
@@ -606,7 +622,7 @@ old event 是已经被当前订单状态覆盖、不会改变事实的迟到事�
 恢复来源：
 
 - 完整且幂等的事件重放恢复出一致状态。
-- 人工或系统对账生成明确恢复事件。
+- 人工或系统对账生成明确恢复事件；显式 `OrderEvent` 恢复必须满足 `previous_status == UNKNOWN`。
 - 未来交易所或 Mock Exchange 权威查询结果；但该查询不属于 Phase 2.3 实现。
 
 禁止恢复目标：
@@ -639,6 +655,7 @@ old event 是已经被当前订单状态覆盖、不会改变事实的迟到事�
 6. 重放结果与 `orders.status` 一致时，返回当前订单。
 7. `UNKNOWN` 订单如能从事件流恢复到 `UNKNOWN_RECOVERY_TARGETS` 中的稳定状态，写入恢复事件并更新订单状态。
 8. 重放结果与 `orders.status` 不一致且无法证明为可接受恢复差异时，进入或保持 `UNKNOWN`。
+9. 终态订单恢复返回 `IGNORED_TERMINAL`，不自动恢复、不回退。
 
 open/recovery 状态集合沿用 Repository 契约：
 
@@ -664,6 +681,7 @@ UNKNOWN 恢复流程：
 3. 如果能恢复到 `UNKNOWN_RECOVERY_TARGETS` 中的稳定状态，写入恢复事件并更新订单状态。
 4. 如果只能恢复到过程态或仍不一致，保持 `UNKNOWN`。
 5. 如果恢复事件重复，按 duplicate event 忽略，不重复恢复。
+6. 显式恢复事件 `previous_status` 不是 `UNKNOWN` 时，不恢复，返回 `MISMATCH_REJECTED`。
 
 约束：
 
@@ -689,3 +707,13 @@ UNKNOWN 恢复流程：
 - 事件 append 失败时不得留下状态更新。
 - duplicate event 已存在时不得再次 append。
 - 乐观锁失败时不得伪造事件。
+
+### Phase 3 Risk 边界
+
+Phase 3 Risk 仍是后续阶段，不是当前 OMS 当前事实。
+
+- Phase 3 最小版只允许实现 pure Risk Engine。
+- Phase 3 最小版不写 `risk_events`。
+- Phase 3 最小版不接 `OMSService`。
+- Phase 3 最小版不调用 Repository、UnitOfWork、ORM 或 DB。
+- 未来如果需要持久化 `risk_events`，必须先设计 `RiskEventRepository` / UnitOfWork 端口，再进入实现。

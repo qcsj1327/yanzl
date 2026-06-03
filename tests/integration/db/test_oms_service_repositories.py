@@ -16,6 +16,7 @@ from futures_mvp.db.repositories import SQLAlchemyOrderEventRepository, SQLAlche
 from futures_mvp.db.unit_of_work import SQLAlchemyUnitOfWork
 from futures_mvp.domain.enums import (
     Direction,
+    EventApplicationStatus,
     EventSource,
     Offset,
     OrderStatus,
@@ -136,7 +137,7 @@ def test_service_apply_risk_result_accepted_commits_status_and_events(
     request = _order_request()
     order = service.create_order(request, client_order_id=request.client_order_id)
 
-    accepted = service.apply_risk_result(
+    result = service.apply_risk_result(
         order.order_id,
         _risk_result(RiskDecision.ACCEPTED),
         external_event_id="risk-accepted-1",
@@ -151,8 +152,9 @@ def test_service_apply_risk_result_accepted_commits_status_and_events(
             )
         ]
 
-    assert accepted.status == OrderStatus.RISK_ACCEPTED
-    assert accepted.version == 2
+    assert result.status == EventApplicationStatus.APPLIED
+    assert result.order.status == OrderStatus.RISK_ACCEPTED
+    assert result.order.version == 2
     assert statuses == [
         OrderStatus.CREATED.value,
         OrderStatus.RISK_CHECKING.value,
@@ -167,7 +169,7 @@ def test_service_apply_risk_result_rejected_commits_status_and_event(
     request = _order_request()
     order = service.create_order(request, client_order_id=request.client_order_id)
 
-    rejected = service.apply_risk_result(
+    result = service.apply_risk_result(
         order.order_id,
         _risk_result(RiskDecision.REJECTED),
         external_event_id="risk-rejected-1",
@@ -177,8 +179,9 @@ def test_service_apply_risk_result_rejected_commits_status_and_event(
         assert _order_status(session, order.order_id) == OrderStatus.REJECTED_BY_RISK.value
         assert _event_count(session) == 2
 
-    assert rejected.status == OrderStatus.REJECTED_BY_RISK
-    assert rejected.version == 1
+    assert result.status == EventApplicationStatus.APPLIED
+    assert result.order.status == OrderStatus.REJECTED_BY_RISK
+    assert result.order.version == 1
 
 
 def test_service_apply_order_event_append_unique_conflict_returns_current_order(
@@ -236,7 +239,7 @@ def test_service_apply_order_event_append_unique_conflict_returns_current_order(
         hide_existing_event_twice,
     )
 
-    current = service.apply_order_event(event)
+    result = service.apply_order_event(event)
 
     with db_session_factory() as session:
         assert _order_status(session, order.order_id) == OrderStatus.RISK_ACCEPTED.value
@@ -249,7 +252,99 @@ def test_service_apply_order_event_append_unique_conflict_returns_current_order(
             or 0
         )
 
-    assert current.status == OrderStatus.RISK_ACCEPTED
+    assert result.status == EventApplicationStatus.DUPLICATE
+    assert result.order.status == OrderStatus.RISK_ACCEPTED
+    assert event_count == 1
+
+
+def test_service_apply_order_event_duplicate_same_order_returns_duplicate(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    service = _service(db_session_factory)
+    request = _order_request()
+    order = service.create_order(request, client_order_id=request.client_order_id)
+    service.apply_risk_result(
+        order.order_id,
+        _risk_result(RiskDecision.ACCEPTED),
+        external_event_id="risk-accepted-1",
+    )
+    event = _event(
+        order.order_id,
+        previous_status=OrderStatus.RISK_ACCEPTED,
+        new_status=OrderStatus.SUBMITTING,
+        external_event_id="exchange-duplicate-same-order",
+    )
+
+    first = service.apply_order_event(event)
+    second = service.apply_order_event(event)
+
+    with db_session_factory() as session:
+        event_count = (
+            session.scalar(
+                select(func.count())
+                .select_from(OrderEventOrm)
+                .where(OrderEventOrm.external_event_id == event.external_event_id)
+            )
+            or 0
+        )
+
+    assert first.status == EventApplicationStatus.APPLIED
+    assert second.status == EventApplicationStatus.DUPLICATE
+    assert second.order.order_id == order.order_id
+    assert event_count == 1
+
+
+def test_service_apply_order_event_duplicate_key_for_different_order_is_collision(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    service = _service(db_session_factory)
+    first_request = _order_request()
+    second_request = _order_request()
+    first_order = service.create_order(
+        first_request,
+        client_order_id=first_request.client_order_id,
+    )
+    second_order = service.create_order(
+        second_request,
+        client_order_id=second_request.client_order_id,
+    )
+    shared_event_id = "exchange-collision"
+
+    with db_session_factory.begin() as session:
+        session.add(
+            OrderEventOrm(
+                order_id=int(first_order.order_id),
+                previous_status=OrderStatus.CREATED.value,
+                new_status=OrderStatus.UNKNOWN.value,
+                event_source=EventSource.EXCHANGE.value,
+                external_event_id=shared_event_id,
+                raw_payload={"diagnostic": True},
+                occurred_at=NOW,
+            )
+        )
+
+    result = service.apply_order_event(
+        _event(
+            second_order.order_id,
+            previous_status=OrderStatus.CREATED,
+            new_status=OrderStatus.UNKNOWN,
+            external_event_id=shared_event_id,
+        )
+    )
+
+    with db_session_factory() as session:
+        assert _order_status(session, second_order.order_id) == OrderStatus.CREATED.value
+        event_count = (
+            session.scalar(
+                select(func.count())
+                .select_from(OrderEventOrm)
+                .where(OrderEventOrm.external_event_id == shared_event_id)
+            )
+            or 0
+        )
+
+    assert result.status == EventApplicationStatus.EVENT_KEY_COLLISION
+    assert result.order.order_id == second_order.order_id
     assert event_count == 1
 
 
@@ -344,6 +439,200 @@ def test_service_optimistic_lock_failure_rolls_back_without_event(
         assert _event_count(session) == 4
 
 
+def test_uow_append_event_then_update_failure_rolls_back_event(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    service = _service(db_session_factory)
+    request = _order_request()
+    order = service.create_order(request, client_order_id=request.client_order_id)
+    event = _event(
+        order.order_id,
+        previous_status=OrderStatus.CREATED,
+        new_status=OrderStatus.UNKNOWN,
+        external_event_id="append-before-update-failure",
+    )
+
+    with pytest.raises(OptimisticLockError):
+        with SQLAlchemyUnitOfWork(session_factory=db_session_factory) as uow:
+            uow.order_events.append_event(event)
+            uow.orders.update_status(
+                order.order_id,
+                OrderStatus.UNKNOWN,
+                expected_version=99,
+            )
+            uow.commit()
+
+    with db_session_factory() as session:
+        assert _order_status(session, order.order_id) == OrderStatus.CREATED.value
+        event_count = (
+            session.scalar(
+                select(func.count())
+                .select_from(OrderEventOrm)
+                .where(OrderEventOrm.external_event_id == event.external_event_id)
+            )
+            or 0
+        )
+
+    assert event_count == 0
+
+
+def test_service_unknown_recovers_from_previous_status_unknown(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    service = _service(db_session_factory)
+    request = _order_request()
+    order = service.create_order(request, client_order_id=request.client_order_id)
+    with SQLAlchemyUnitOfWork(session_factory=db_session_factory) as uow:
+        uow.orders.update_status(order.order_id, OrderStatus.UNKNOWN, expected_version=0)
+        uow.commit()
+
+    recovered = service.apply_order_event(
+        _event(
+            order.order_id,
+            previous_status=OrderStatus.UNKNOWN,
+            new_status=OrderStatus.FILLED,
+            external_event_id="unknown-recovery-ok",
+        )
+    )
+
+    assert recovered.status == EventApplicationStatus.RECOVERED_FROM_UNKNOWN
+    assert recovered.order.status == OrderStatus.FILLED
+
+
+def test_service_unknown_previous_status_mismatch_does_not_recover(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    service = _service(db_session_factory)
+    request = _order_request()
+    order = service.create_order(request, client_order_id=request.client_order_id)
+    with SQLAlchemyUnitOfWork(session_factory=db_session_factory) as uow:
+        uow.orders.update_status(order.order_id, OrderStatus.UNKNOWN, expected_version=0)
+        uow.commit()
+
+    result = service.apply_order_event(
+        _event(
+            order.order_id,
+            previous_status=OrderStatus.ACKED,
+            new_status=OrderStatus.FILLED,
+            external_event_id="unknown-recovery-bad-previous",
+        )
+    )
+
+    with db_session_factory() as session:
+        assert _order_status(session, order.order_id) == OrderStatus.UNKNOWN.value
+
+    assert result.status == EventApplicationStatus.MISMATCH_REJECTED
+    assert result.order.status == OrderStatus.UNKNOWN
+
+
+@pytest.mark.parametrize(
+    "forbidden_status",
+    [OrderStatus.CANCEL_PENDING, OrderStatus.CANCEL_FAILED],
+)
+def test_service_unknown_recovery_rejects_forbidden_targets(
+    db_session_factory: sessionmaker[Session],
+    forbidden_status: OrderStatus,
+) -> None:
+    service = _service(db_session_factory)
+    request = _order_request()
+    order = service.create_order(request, client_order_id=request.client_order_id)
+    with SQLAlchemyUnitOfWork(session_factory=db_session_factory) as uow:
+        uow.orders.update_status(order.order_id, OrderStatus.UNKNOWN, expected_version=0)
+        uow.commit()
+
+    result = service.apply_order_event(
+        _event(
+            order.order_id,
+            previous_status=OrderStatus.UNKNOWN,
+            new_status=forbidden_status,
+            external_event_id=f"unknown-forbidden-{forbidden_status.value}",
+        )
+    )
+
+    with db_session_factory() as session:
+        assert _order_status(session, order.order_id) == OrderStatus.UNKNOWN.value
+
+    assert result.status == EventApplicationStatus.MISMATCH_REJECTED
+    assert result.order.status == OrderStatus.UNKNOWN
+
+
+def test_service_apply_order_event_ignores_raw_payload_as_source_of_truth(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    service = _service(db_session_factory)
+    request = _order_request()
+    order = service.create_order(request, client_order_id=request.client_order_id)
+    service.apply_risk_result(
+        order.order_id,
+        _risk_result(RiskDecision.ACCEPTED),
+        external_event_id="risk-accepted-raw-payload",
+    )
+    event = _event(
+        order.order_id,
+        previous_status=OrderStatus.RISK_ACCEPTED,
+        new_status=OrderStatus.SUBMITTING,
+        external_event_id="raw-payload-not-truth",
+    ).model_copy(update={"raw_payload": {"new_status": OrderStatus.FILLED.value}})
+
+    result = service.apply_order_event(event)
+
+    with db_session_factory() as session:
+        assert _order_status(session, order.order_id) == OrderStatus.SUBMITTING.value
+
+    assert result.status == EventApplicationStatus.APPLIED
+    assert result.order.status == OrderStatus.SUBMITTING
+
+
+def test_service_recover_order_consistent_event_stream_is_noop(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    service = _service(db_session_factory)
+    request = _order_request()
+    order = service.create_order(request, client_order_id=request.client_order_id)
+
+    result = service.recover_order(order.order_id)
+
+    assert result.status == EventApplicationStatus.APPLIED
+    assert result.order.status == OrderStatus.CREATED
+
+
+def test_service_recover_order_missing_initial_event_enters_unknown(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    service = _service(db_session_factory)
+    request = _order_request()
+    order = service.create_order(request, client_order_id=request.client_order_id)
+    with db_session_factory.begin() as session:
+        session.execute(delete(OrderEventOrm).where(OrderEventOrm.order_id == int(order.order_id)))
+
+    result = service.recover_order(order.order_id)
+
+    with db_session_factory() as session:
+        assert _order_status(session, order.order_id) == OrderStatus.UNKNOWN.value
+
+    assert result.status == EventApplicationStatus.ENTERED_UNKNOWN
+    assert result.order.status == OrderStatus.UNKNOWN
+
+
+def test_service_recover_order_unknown_unrecoverable_stays_unknown(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    service = _service(db_session_factory)
+    request = _order_request()
+    order = service.create_order(request, client_order_id=request.client_order_id)
+    with SQLAlchemyUnitOfWork(session_factory=db_session_factory) as uow:
+        uow.orders.update_status(order.order_id, OrderStatus.UNKNOWN, expected_version=0)
+        uow.commit()
+
+    result = service.recover_order(order.order_id)
+
+    with db_session_factory() as session:
+        assert _order_status(session, order.order_id) == OrderStatus.UNKNOWN.value
+
+    assert result.status == EventApplicationStatus.MISMATCH_REJECTED
+    assert result.order.status == OrderStatus.UNKNOWN
+
+
 def test_service_recover_order_terminal_status_is_protected(
     db_session_factory: sessionmaker[Session],
 ) -> None:
@@ -355,9 +644,10 @@ def test_service_recover_order_terminal_status_is_protected(
         uow.orders.update_status(order.order_id, OrderStatus.FILLED)
         uow.commit()
 
-    recovered = service.recover_order(order.order_id)
+    result = service.recover_order(order.order_id)
 
     with db_session_factory() as session:
         assert _order_status(session, order.order_id) == OrderStatus.FILLED.value
 
-    assert recovered.status == OrderStatus.FILLED
+    assert result.status == EventApplicationStatus.IGNORED_TERMINAL
+    assert result.order.status == OrderStatus.FILLED

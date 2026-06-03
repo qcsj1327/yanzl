@@ -128,6 +128,21 @@
 | `ACCEPTED` | `ACCEPTED` |
 | `REJECTED` | `REJECTED` |
 
+### EventApplicationStatus
+
+`EventApplicationStatus` 是 OMS application service 的类型化事件应用结果。它不得写成裸字符串散落在 OMSService 内部，也不得藏进 `raw_payload` 作为 source-of-truth。
+
+| 名称 | 值 |
+|---|---|
+| `APPLIED` | `APPLIED` |
+| `DUPLICATE` | `DUPLICATE` |
+| `OLD_IGNORED` | `OLD_IGNORED` |
+| `MISMATCH_REJECTED` | `MISMATCH_REJECTED` |
+| `ENTERED_UNKNOWN` | `ENTERED_UNKNOWN` |
+| `RECOVERED_FROM_UNKNOWN` | `RECOVERED_FROM_UNKNOWN` |
+| `IGNORED_TERMINAL` | `IGNORED_TERMINAL` |
+| `EVENT_KEY_COLLISION` | `EVENT_KEY_COLLISION` |
+
 ## 当前 Domain Models
 
 所有 Decimal 兼容字段在 Domain 语义中必须保持为 Decimal。不得引入 float 字段。
@@ -212,6 +227,18 @@ OMS 是订单状态唯一事实来源。
 
 当前 schema 幂等约束为 `UNIQUE(event_source, external_event_id)`。
 
+### OrderEventApplicationResult
+
+`OrderEventApplicationResult` 是 OMS application service 返回的类型化事件应用结果。
+
+| 字段 | 类型 | 默认值 | 语义 |
+|---|---|---|---|
+| `status` | `EventApplicationStatus` | required | OMS 对事件或恢复操作的类型化处理结果。 |
+| `order` | `OrderState` | required | 处理完成后当前请求订单的状态，不得返回其他订单状态。 |
+| `reason` | `str \| None` | `None` | 可选诊断原因，不是 source-of-truth。 |
+
+`OrderEventApplicationResult` 只描述 OMS 应用层语义，不替代 `order_events` 事件流，也不进入 DB schema。
+
 ### Trade
 
 | 字段 | 类型 | 默认值 | 语义 |
@@ -282,8 +309,10 @@ OMS 是订单状态唯一事实来源。
 - `MarketDataMock.latest_price(instrument_id: str) -> Decimal`：Mock 行情价格查询。
 - `StrategyEngine.on_market_data(...) -> list[Signal]`：策略代码只能输出信号。
 - `FuturesRiskEngine.check_order(signal: Signal) -> RiskResult`：订单创建前必须经过风控检查。
-- `OMS.create_order(request: OrderRequest, risk_result: RiskResult) -> OrderState`：OMS 持有订单状态。
-- `OMS.apply_event(event: OrderEvent) -> OrderState`：订单状态变化通过 OMS 事件处理。
+- `OMS.create_order(request: OrderRequest, *, client_order_id: str) -> OrderState`：创建或幂等返回 OMS 订单。
+- `OMS.apply_risk_result(order_id: str, risk_result: RiskResult, *, external_event_id: str, occurred_at: datetime | None = None) -> OrderEventApplicationResult`：消费外部风控结果，不计算风控。
+- `OMS.apply_order_event(event: OrderEvent) -> OrderEventApplicationResult`：订单状态变化通过 OMS 事件处理。
+- `OMS.recover_order(order_id: str) -> OrderEventApplicationResult`：基于 `orders + order_events` 对单笔订单恢复。
 - `OMS.get_by_client_order_id(client_order_id: str) -> OrderState | None`：客户端订单幂等查询。
 - `EMS.submit(order: OrderState) -> None`：执行提交边界。
 - `EMS.cancel(order: OrderState) -> None`：执行撤单边界。

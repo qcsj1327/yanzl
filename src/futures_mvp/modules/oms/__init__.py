@@ -1,4 +1,8 @@
-from futures_mvp.modules.oms.errors import InvalidOrderTransition, OMSError
+from futures_mvp.modules.oms.errors import (
+    EventKeyCollisionError,
+    InvalidOrderTransition,
+    OMSError,
+)
 from futures_mvp.modules.oms.service import OMSService
 from futures_mvp.modules.oms.state_machine import (
     ALLOWED_TRANSITIONS,
@@ -19,6 +23,7 @@ __all__ = [
     "TERMINAL_STATUSES",
     "UNKNOWN_ENTRY_REASONS",
     "UNKNOWN_RECOVERY_TARGETS",
+    "EventKeyCollisionError",
     "InvalidOrderTransition",
     "OMSError",
     "OMSService",

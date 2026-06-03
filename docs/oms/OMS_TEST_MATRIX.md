@@ -111,6 +111,8 @@ Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界
 |---|---|---|
 | 同 `event_source + external_event_id` | 不更新状态，不 append，返回当前订单。 | Done |
 | append 阶段唯一约束 duplicate | append 抛 `EventAlreadyExistsError` 时 rollback 并按 duplicate 返回当前订单。 | Done |
+| duplicate 指向同一订单 | 返回 `DUPLICATE`，不重复 append，不重复应用。 | Done |
+| duplicate 指向其他订单 | 返回 `EVENT_KEY_COLLISION`，不得返回其他订单状态，不得修改当前订单。 | Done |
 | duplicate 但 payload 不同 | 仍按 duplicate 处理；不得重复应用，诊断策略后续由 audit schema 承接。 | Phase 2.3+ |
 | duplicate 指向终态订单 | 终态保持不变。 | Phase 2.3+ |
 | duplicate 订单不存在 | 抛订单不存在或数据一致性错误，不凭事件重建订单。 | Phase 2.3+ |
@@ -121,9 +123,9 @@ Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界
 |---|---|---|
 | `previous_status` 一致 | 正常迁移。 | Done |
 | mismatch 但 duplicate | duplicate 优先，忽略。 | Done |
-| mismatch 且明显旧事件 | 不回退，按 old event 忽略或记录诊断。 | Phase 2.3+ |
+| mismatch 且明显旧事件 | 不回退，按 old event 忽略或记录诊断。 | Done |
 | mismatch 无法判断 | 进入 `UNKNOWN` 或拒绝应用；若进入必须写诊断事件。 | Done |
-| `previous_status` 缺失 | 拒绝应用或进入 `UNKNOWN`，不得直接普通应用。 | Phase 2.3+ |
+| `previous_status` 缺失 | 拒绝应用或进入 `UNKNOWN`，不得直接普通应用。 | Done |
 
 ### old event
 
@@ -132,7 +134,7 @@ Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界
 | `ACKED` 后到 `SUBMITTED` | 不回退。 | Phase 2.3+ |
 | `FILLED` 后到 `PARTIALLY_FILLED` | 终态不回退。 | Done |
 | `CANCELED` 后到 `ACKED` | 终态不回退；无法证明时拒绝或诊断。 | Phase 2.3+ |
-| 旧事件携带不可验证事实 | 不把 `raw_payload` 当 source-of-truth。 | Phase 2.3+ |
+| 旧事件携带不可验证事实 | 不把 `raw_payload` 当 source-of-truth。 | Done |
 
 ### UNKNOWN
 
@@ -144,7 +146,7 @@ Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界
 | 事件顺序缺口 | 进入 `UNKNOWN` 或拒绝应用。 | Phase 2.3+ |
 | UNKNOWN 恢复到允许状态 | 迁移到允许目标，append 恢复事件。 | Done |
 | UNKNOWN 恢复到禁止状态 | 拒绝恢复，保持 `UNKNOWN`。 | Done |
-| UNKNOWN 收到重复旧事件 | 不恢复，不重复 append。 | Phase 2.3+ |
+| UNKNOWN 收到重复旧事件 | 不恢复，不重复 append。 | Phase 2.6+ |
 
 ### recovery
 
@@ -155,7 +157,7 @@ Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界
 | 事件流不一致 | 进入 `UNKNOWN` 或保持 `UNKNOWN`，append 诊断事件。 | Done |
 | 缺少初始事件 | 进入 `UNKNOWN`。 | Done |
 | UNKNOWN 可恢复 | 写恢复事件并迁移到目标状态。 | Done |
-| UNKNOWN 不可恢复 | 保持 `UNKNOWN`。 | Phase 2.3+ |
+| UNKNOWN 不可恢复 | 保持 `UNKNOWN`。 | Done |
 | 终态恢复保护 | 不进入自动恢复集合，不回退状态。 | Done |
 | 恢复事件重复 | 不重复 append，不重复状态更新。 | Phase 2.3+ |
 
@@ -164,9 +166,9 @@ Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界
 | 场景 | 预期 | 状态 |
 |---|---|---|
 | 状态更新成功但事件 append 失败 | rollback，订单状态不变。 | Done |
-| 事件 append 成功但状态更新失败 | rollback，事件不可见。 | Phase 2.3+ |
+| 事件 append 成功但状态更新失败 | rollback，事件不可见。 | Done |
 | 乐观锁失败 | 抛类型化错误，不写状态事件。 | Done |
-| 并发 duplicate event | 只有一个事件成功 append，另一路按 duplicate 返回。 | Phase 2.3+ |
+| 并发 duplicate event | 只有一个事件成功 append，另一路按 duplicate 返回。 | Done |
 | 并发状态推进 | 只有符合 expected version 的更新成功，失败路径不写伪造事件。 | Done |
 
 ### 边界防回归
@@ -178,6 +180,30 @@ Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界
 | 不注入 EMS | 服务不调用 `submit` 或 `cancel`。 | Done |
 | 不注入 Mock Exchange | 服务不调用撮合、查询或结算接口。 | Done |
 | 不触碰 Position/Margin/PnL/Settlement | 相关模块无调用、无状态写入。 | Done |
+
+## Phase 2.5 OMS Semantic Consolidation Tests
+
+| 场景 | 预期 | 状态 |
+|---|---|---|
+| `EventApplicationStatus` Domain 契约 | enum 值完整，OMSService 不使用裸字符串表达结果。 | Done |
+| `OrderEventApplicationResult` Domain 契约 | 使用当前 Pydantic DomainModel 风格，包含 `status/order/reason`。 | Done |
+| OMS Protocol 对齐 | `create_order/apply_risk_result/apply_order_event/recover_order/get_by_client_order_id` 与 OMSService API 对齐。 | Done |
+| `apply_risk_result` 返回类型化结果 | 测试断言 `result.status` 与 `result.order`，不只断言 `OrderState`。 | Done |
+| `apply_order_event` 返回类型化结果 | 测试断言 `result.status` 与 `result.order`，覆盖 `APPLIED/DUPLICATE/OLD_IGNORED/ENTERED_UNKNOWN/MISMATCH_REJECTED/RECOVERED_FROM_UNKNOWN/EVENT_KEY_COLLISION`。 | Done |
+| `recover_order` 返回类型化结果 | 测试断言 `APPLIED/ENTERED_UNKNOWN/MISMATCH_REJECTED/RECOVERED_FROM_UNKNOWN/IGNORED_TERMINAL`。 | Done |
+| PostgreSQL duplicate same order | 返回 `DUPLICATE`，不重复 append。 | Done |
+| PostgreSQL duplicate different order | 返回 `EVENT_KEY_COLLISION`，不返回其他订单，不修改当前订单。 | Done |
+| PostgreSQL UNKNOWN 显式恢复 | 只有 `previous_status == UNKNOWN` 且目标允许时恢复。 | Done |
+| PostgreSQL UNKNOWN 禁止目标 | `CANCEL_PENDING/CANCEL_FAILED` 不恢复，保持 `UNKNOWN`。 | Done |
+| PostgreSQL recover no-op | 事件流一致时不写额外事件。 | Done |
+| PostgreSQL recover 缺初始事件 | 进入 `UNKNOWN` 并写诊断事件。 | Done |
+| PostgreSQL recover 不可恢复 | 保持 `UNKNOWN`。 | Done |
+| PostgreSQL terminal recover | 终态保护，不自动恢复、不回退。 | Done |
+| PostgreSQL append 后 update 失败 | 同事务 rollback，事件不可见。 | Done |
+| raw_payload 非 source-of-truth | 类型化字段决定状态，`raw_payload` 只作诊断。 | Done |
+| 完整乱序撮合语义 | 不在 Phase 2.5 实现。 | Phase 2.6+ |
+| 外部查询恢复 | 不在 Phase 2.5 实现。 | Phase 3+ |
+| `risk_events` 持久化 | Phase 3 最小版禁止写；未来必须先设计 RiskEventRepository/UoW。 | Phase 3+ |
 
 ## 状态迁移测试
 

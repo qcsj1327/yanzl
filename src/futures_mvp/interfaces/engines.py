@@ -1,8 +1,10 @@
+from datetime import datetime
 from decimal import Decimal
 from typing import Protocol
 
 from futures_mvp.domain.models import (
     OrderEvent,
+    OrderEventApplicationResult,
     OrderRequest,
     OrderState,
     RiskResult,
@@ -24,9 +26,20 @@ class FuturesRiskEngine(Protocol):
 
 
 class OMS(Protocol):
-    def create_order(self, request: OrderRequest, risk_result: RiskResult) -> OrderState: ...
+    def create_order(self, request: OrderRequest, *, client_order_id: str) -> OrderState: ...
 
-    def apply_event(self, event: OrderEvent) -> OrderState: ...
+    def apply_risk_result(
+        self,
+        order_id: str,
+        risk_result: RiskResult,
+        *,
+        external_event_id: str,
+        occurred_at: datetime | None = None,
+    ) -> OrderEventApplicationResult: ...
+
+    def apply_order_event(self, event: OrderEvent) -> OrderEventApplicationResult: ...
+
+    def recover_order(self, order_id: str) -> OrderEventApplicationResult: ...
 
     def get_by_client_order_id(self, client_order_id: str) -> OrderState | None: ...
 

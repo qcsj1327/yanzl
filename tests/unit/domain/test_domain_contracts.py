@@ -3,9 +3,24 @@ from decimal import Decimal
 
 import pytest
 
-from futures_mvp.domain.enums import Direction, EventSource, Offset, OrderStatus, OrderType
+from futures_mvp.domain.enums import (
+    Direction,
+    EventApplicationStatus,
+    EventSource,
+    Offset,
+    OrderStatus,
+    OrderType,
+)
 from futures_mvp.domain.errors import DecimalRequiredError
-from futures_mvp.domain.models import OrderEvent, OrderRequest, OrderState, Position, Signal, Trade
+from futures_mvp.domain.models import (
+    OrderEvent,
+    OrderEventApplicationResult,
+    OrderRequest,
+    OrderState,
+    Position,
+    Signal,
+    Trade,
+)
 
 
 def test_order_status_complete_state_machine() -> None:
@@ -27,6 +42,19 @@ def test_order_status_complete_state_machine() -> None:
         "REJECTED_BY_EXCHANGE",
         "EXPIRED",
         "UNKNOWN",
+    ]
+
+
+def test_event_application_status_complete_contract() -> None:
+    assert [status.value for status in EventApplicationStatus] == [
+        "APPLIED",
+        "DUPLICATE",
+        "OLD_IGNORED",
+        "MISMATCH_REJECTED",
+        "ENTERED_UNKNOWN",
+        "RECOVERED_FROM_UNKNOWN",
+        "IGNORED_TERMINAL",
+        "EVENT_KEY_COLLISION",
     ]
 
 
@@ -95,6 +123,18 @@ def test_order_state_version_defaults_to_zero_for_optimistic_locking() -> None:
     state = OrderState(order_id="order-1", request=_order_request())
 
     assert state.version == 0
+
+
+def test_order_event_application_result_uses_typed_status_and_order() -> None:
+    state = OrderState(order_id="order-1", request=_order_request())
+    result = OrderEventApplicationResult(
+        status=EventApplicationStatus.APPLIED,
+        order=state,
+    )
+
+    assert result.status == EventApplicationStatus.APPLIED
+    assert result.order == state
+    assert result.reason is None
 
 
 def _order_request() -> OrderRequest:

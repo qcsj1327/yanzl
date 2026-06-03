@@ -12,3 +12,7 @@ class InvalidOrderTransition(OMSError):
         super().__init__(
             f"invalid order status transition: {from_status.value} -> {to_status.value}"
         )
+
+
+class EventKeyCollisionError(OMSError):
+    """Raised when an OMS event idempotency key belongs to a different order."""
