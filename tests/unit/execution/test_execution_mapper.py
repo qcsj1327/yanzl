@@ -454,6 +454,74 @@ def test_illegal_same_status_event_is_ignored(
     assert result.order_event is None
 
 
+@pytest.mark.parametrize(
+    ("exchange_report", "target_status", "different_current_status"),
+    [
+        (
+            report(ExchangeReportType.ACK),
+            OrderStatus.ACKED,
+            None,
+        ),
+        (
+            report(ExchangeReportType.CANCELED, operation=ExecutionOperation.CANCEL),
+            OrderStatus.CANCELED,
+            None,
+        ),
+        (
+            report(ExchangeReportType.FULL_FILL),
+            OrderStatus.FILLED,
+            None,
+        ),
+        (
+            report(ExchangeReportType.EXPIRED),
+            OrderStatus.EXPIRED,
+            None,
+        ),
+        (
+            report(ExchangeReportType.REJECTED),
+            OrderStatus.REJECTED_BY_EXCHANGE,
+            None,
+        ),
+        (
+            report(
+                ExchangeReportType.EXCHANGE_UNAVAILABLE,
+                operation=ExecutionOperation.SUBMIT,
+                delivery_phase=DeliveryPhase.PRE_SEND,
+            ),
+            OrderStatus.SUBMIT_FAILED,
+            None,
+        ),
+        (
+            report(ExchangeReportType.TIMEOUT, operation=ExecutionOperation.SUBMIT),
+            OrderStatus.SUBMIT_TIMEOUT,
+            OrderStatus.SUBMITTING,
+        ),
+        (
+            report(ExchangeReportType.CANCEL_REJECTED, operation=ExecutionOperation.CANCEL),
+            OrderStatus.CANCEL_FAILED,
+            OrderStatus.CANCEL_PENDING,
+        ),
+    ],
+)
+def test_expected_previous_status_same_status_event_is_ignored(
+    exchange_report: ExchangeReport,
+    target_status: OrderStatus,
+    different_current_status: OrderStatus | None,
+) -> None:
+    result = map_exchange_report(
+        exchange_report,
+        context(
+            current_order_status=different_current_status,
+            expected_previous_status=target_status,
+        ),
+    )
+
+    assert result.status is MappingResultStatus.IGNORED_REPORT
+    assert result.error is not None
+    assert result.error.reason is MappingErrorReason.ILLEGAL_SAME_STATUS_EVENT
+    assert result.order_event is None
+
+
 def test_same_status_guard_requires_current_order_status() -> None:
     result = map_exchange_report(
         report(ExchangeReportType.TIMEOUT, operation=ExecutionOperation.SUBMIT),
@@ -469,6 +537,21 @@ def test_partially_filled_same_status_remains_mappable() -> None:
     result = map_exchange_report(
         report(ExchangeReportType.PARTIAL_FILL),
         context(current_order_status=OrderStatus.PARTIALLY_FILLED),
+    )
+
+    assert result.status is MappingResultStatus.MAPPED_ORDER_EVENT
+    assert result.order_event is not None
+    assert result.order_event.previous_status is OrderStatus.PARTIALLY_FILLED
+    assert result.order_event.new_status is OrderStatus.PARTIALLY_FILLED
+
+
+def test_expected_previous_partially_filled_same_status_remains_mappable() -> None:
+    result = map_exchange_report(
+        report(ExchangeReportType.PARTIAL_FILL),
+        context(
+            current_order_status=OrderStatus.ACKED,
+            expected_previous_status=OrderStatus.PARTIALLY_FILLED,
+        ),
     )
 
     assert result.status is MappingResultStatus.MAPPED_ORDER_EVENT

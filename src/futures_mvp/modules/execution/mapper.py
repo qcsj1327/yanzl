@@ -165,17 +165,9 @@ def map_exchange_report(report: ExchangeReport, context: MappingContext) -> Mapp
     if isinstance(target_status, MappingErrorReason):
         return _mapping_error(target_status, "ExchangeReport cannot be mapped to OrderStatus.")
 
+    effective_previous_status = context.expected_previous_status or context.current_order_status
     if (
-        target_status in _CONTEXT_REQUIRED_SAME_STATUS_TARGETS
-        and context.current_order_status is None
-    ):
-        return _insufficient_context(
-            MappingErrorReason.MISSING_CURRENT_ORDER_STATUS,
-            "current_order_status is required to avoid illegal same-status events.",
-        )
-
-    if (
-        context.current_order_status == target_status
+        effective_previous_status == target_status
         and target_status not in _SAME_STATUS_ALLOWED_TARGETS
     ):
         return MappingResult(
@@ -186,8 +178,16 @@ def map_exchange_report(report: ExchangeReport, context: MappingContext) -> Mapp
             ),
         )
 
-    previous_status = context.expected_previous_status or context.current_order_status
-    if previous_status is None:
+    if (
+        target_status in _CONTEXT_REQUIRED_SAME_STATUS_TARGETS
+        and context.current_order_status is None
+    ):
+        return _insufficient_context(
+            MappingErrorReason.MISSING_CURRENT_ORDER_STATUS,
+            "current_order_status is required to avoid illegal same-status events.",
+        )
+
+    if effective_previous_status is None:
         return _insufficient_context(
             MappingErrorReason.MISSING_EXPECTED_PREVIOUS_STATUS,
             "expected_previous_status or current_order_status is required.",
@@ -195,7 +195,7 @@ def map_exchange_report(report: ExchangeReport, context: MappingContext) -> Mapp
 
     event = OrderEvent(
         order_id=report.order_id,
-        previous_status=previous_status,
+        previous_status=effective_previous_status,
         new_status=target_status,
         event_source=event_source,
         external_event_id=report.exchange_report_id,
