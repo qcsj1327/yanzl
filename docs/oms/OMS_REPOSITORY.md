@@ -66,7 +66,11 @@ class OrderRepository(Protocol):
 - `append_event(...)` 先按 `event_source + external_event_id` 查询。
 - 如果已存在，抛出 `EventAlreadyExistsError`。
 - 如果不存在，写入新事件并 `flush`。
-- Repository 不解释 `raw_payload`，不判断乱序，不处理 `previous_status` mismatch。
+- Repository 不自动 `commit` 或 `rollback`。
+- Repository 写入 Domain `OrderEvent.occurred_at`，`created_at` 由 DB/ORM 生成。
+- Repository 透传 `raw_payload` 诊断信息，不解释 `raw_payload`。
+- Repository 不判断乱序，不处理 `previous_status` mismatch，不决定 `UNKNOWN`。
+- `list_by_order_id(...)` 必须按 `order_events.id` 升序返回，不得只按 `created_at` 排序。
 
 当前抽象端口签名：
 
@@ -103,6 +107,9 @@ Phase 2.2 后续实现必须使用统一事务边界：
 - UnitOfWork 原子提交或回滚。
 - 当前 `SQLAlchemyUnitOfWork.__exit__` 遇异常必须 `rollback`。
 - 当前 `SQLAlchemyUnitOfWork.__exit__` 无异常不自动 `commit`，必须由调用方显式 `commit`，避免隐式提交。
+- 事务原子性测试必须以数据库查询事实为准，不得依赖当前 Session 的 ORM identity map。
+- 未 `commit` 不可见必须使用第二个独立 Session 验证。
+- rollback 后结果必须使用新的独立 Session 验证。
 
 当前抽象端口签名：
 
@@ -299,6 +306,9 @@ open/recovery 状态集合：
 - 订单创建 + 初始事件同事务。
 - 状态更新 + 事件同事务。
 - rollback 不留半条订单或半条事件。
+- 未 `commit` 不可见必须用第二个独立 Session 验证。
+- rollback 结果必须用新的独立 Session 验证。
+- 事务原子性测试必须以数据库事实为准，不得依赖 ORM identity map。
 - `client_order_id` 相同 payload 幂等。
 - `client_order_id` 不同 payload 冲突。
 - `IntegrityError` 后查询已有订单。

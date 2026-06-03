@@ -20,6 +20,7 @@ from futures_mvp.db.unit_of_work import SQLAlchemyUnitOfWork
 from futures_mvp.domain.enums import Direction, EventSource, Offset, OrderStatus, OrderType
 from futures_mvp.domain.models import OrderEvent, OrderRequest
 from futures_mvp.interfaces.repositories import (
+    EventAlreadyExistsError,
     IdempotencyConflictError,
     OptimisticLockError,
     RepositoryError,
@@ -78,15 +79,18 @@ def _order_event(
     order_id: str,
     external_event_id: str | None = None,
     new_status: OrderStatus = OrderStatus.CREATED,
+    previous_status: OrderStatus | None = None,
+    raw_payload: dict[str, object] | None = None,
+    occurred_at: datetime | None = None,
 ) -> OrderEvent:
     return OrderEvent(
         order_id=order_id,
-        previous_status=None,
+        previous_status=previous_status,
         new_status=new_status,
         event_source=EventSource.OMS,
         external_event_id=external_event_id or f"event-{uuid4()}",
-        raw_payload={"diagnostic": True},
-        occurred_at=datetime.now(UTC),
+        raw_payload=raw_payload or {"diagnostic": True},
+        occurred_at=occurred_at or datetime.now(UTC),
     )
 
 
@@ -102,6 +106,28 @@ def _order_count(session: Session) -> int:
 
 def _order_event_count(session: Session) -> int:
     return session.scalar(select(func.count()).select_from(OrderEventOrm)) or 0
+
+
+def _order_count_by_client_order_id(session: Session, client_order_id: str) -> int:
+    return (
+        session.scalar(
+            select(func.count())
+            .select_from(Order)
+            .where(Order.client_order_id == client_order_id)
+        )
+        or 0
+    )
+
+
+def _order_event_count_by_external_event_id(session: Session, external_event_id: str) -> int:
+    return (
+        session.scalar(
+            select(func.count())
+            .select_from(OrderEventOrm)
+            .where(OrderEventOrm.external_event_id == external_event_id)
+        )
+        or 0
+    )
 
 
 def test_create_order_then_get_by_client_order_id(
@@ -283,6 +309,18 @@ def test_append_event_then_list_by_order_id(db_session_factory: sessionmaker[Ses
     assert listed == [event]
 
 
+def test_append_event_then_get_by_event_key(db_session_factory: sessionmaker[Session]) -> None:
+    with db_session_factory.begin() as session:
+        order_id = _create_order(session)
+        repository = SQLAlchemyOrderEventRepository(session)
+        event = _order_event(order_id)
+
+        appended = repository.append_event(event)
+        loaded = repository.get_by_event_key(event.event_source, event.external_event_id)
+
+    assert loaded == appended
+
+
 def test_event_replay_ordering_uses_id_ascending(
     db_session_factory: sessionmaker[Session],
 ) -> None:
@@ -295,6 +333,213 @@ def test_event_replay_ordering_uses_id_ascending(
         listed = repository.list_by_order_id(order_id)
 
     assert listed == [second, first]
+
+
+def test_list_by_order_id_invalid_order_id_is_rejected(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        repository = SQLAlchemyOrderEventRepository(session)
+
+        with pytest.raises(RepositoryError):
+            repository.list_by_order_id("not-an-int")
+
+
+def test_duplicate_event_raises_and_does_not_add_row(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        order_id = _create_order(session)
+        repository = SQLAlchemyOrderEventRepository(session)
+        event = _order_event(order_id, external_event_id="duplicate-event")
+        repository.append_event(event)
+        event_count_before = _order_event_count(session)
+
+        with pytest.raises(EventAlreadyExistsError):
+            repository.append_event(event)
+
+        assert _order_event_count(session) == event_count_before
+
+
+def test_append_event_does_not_auto_commit(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as setup_session:
+        order_id = _create_order(setup_session)
+
+    session = db_session_factory()
+    try:
+        repository = SQLAlchemyOrderEventRepository(session)
+        event = _order_event(order_id, external_event_id="uncommitted-event")
+        repository.append_event(event)
+
+        with db_session_factory() as other_session:
+            persisted = other_session.scalar(
+                select(OrderEventOrm).where(
+                    OrderEventOrm.external_event_id == event.external_event_id
+                )
+            )
+
+        assert persisted is None
+    finally:
+        session.rollback()
+        session.close()
+
+
+def test_append_event_rollback_leaves_no_event(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as setup_session:
+        order_id = _create_order(setup_session)
+
+    event_id = "rolled-back-event"
+    session = db_session_factory()
+    try:
+        repository = SQLAlchemyOrderEventRepository(session)
+        repository.append_event(_order_event(order_id, external_event_id=event_id))
+        session.rollback()
+    finally:
+        session.close()
+
+    with db_session_factory() as verification_session:
+        assert _order_event_count_by_external_event_id(verification_session, event_id) == 0
+
+
+def test_create_order_and_append_event_rollback_leaves_no_order_or_event(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    client_order_id = _client_order_id()
+    event_id = "rolled-back-create-event"
+
+    with SQLAlchemyUnitOfWork(session_factory=db_session_factory) as uow:
+        order = uow.orders.create_order(
+            _order_request(client_order_id),
+            client_order_id=client_order_id,
+        )
+        uow.order_events.append_event(_order_event(order.order_id, external_event_id=event_id))
+        uow.rollback()
+
+    with db_session_factory() as verification_session:
+        assert _order_count_by_client_order_id(verification_session, client_order_id) == 0
+        assert _order_event_count_by_external_event_id(verification_session, event_id) == 0
+
+
+def test_create_order_and_append_event_commit_persists_both(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    client_order_id = _client_order_id()
+    event_id = "committed-create-event"
+
+    with SQLAlchemyUnitOfWork(session_factory=db_session_factory) as uow:
+        order = uow.orders.create_order(
+            _order_request(client_order_id),
+            client_order_id=client_order_id,
+        )
+        uow.order_events.append_event(_order_event(order.order_id, external_event_id=event_id))
+        uow.commit()
+
+    with db_session_factory() as verification_session:
+        assert _order_count_by_client_order_id(verification_session, client_order_id) == 1
+        assert _order_event_count_by_external_event_id(verification_session, event_id) == 1
+
+
+def test_unit_of_work_exception_rolls_back_order_and_event(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    client_order_id = _client_order_id()
+    event_id = "exception-rollback-event"
+
+    with pytest.raises(RuntimeError):
+        with SQLAlchemyUnitOfWork(session_factory=db_session_factory) as uow:
+            order = uow.orders.create_order(
+                _order_request(client_order_id),
+                client_order_id=client_order_id,
+            )
+            uow.order_events.append_event(_order_event(order.order_id, external_event_id=event_id))
+            raise RuntimeError("force rollback")
+
+    with db_session_factory() as verification_session:
+        assert _order_count_by_client_order_id(verification_session, client_order_id) == 0
+        assert _order_event_count_by_external_event_id(verification_session, event_id) == 0
+
+
+def test_update_status_and_append_event_commit_persists_both(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    client_order_id = _client_order_id()
+    event_id = "acked-event"
+    with db_session_factory.begin() as setup_session:
+        order_id = _create_order(setup_session, client_order_id)
+
+    with SQLAlchemyUnitOfWork(session_factory=db_session_factory) as uow:
+        uow.orders.update_status(order_id, OrderStatus.ACKED, expected_version=0)
+        uow.order_events.append_event(
+            _order_event(
+                order_id,
+                external_event_id=event_id,
+                previous_status=OrderStatus.CREATED,
+                new_status=OrderStatus.ACKED,
+            )
+        )
+        uow.commit()
+
+    with db_session_factory() as verification_session:
+        order = verification_session.get(Order, int(order_id))
+        event_count = _order_event_count_by_external_event_id(verification_session, event_id)
+
+    assert order is not None
+    assert order.status == OrderStatus.ACKED.value
+    assert event_count == 1
+
+
+def test_update_status_and_failed_append_event_rollback_leaves_order_unchanged(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    client_order_id = _client_order_id()
+    event_id = "duplicate-status-event"
+    with db_session_factory.begin() as setup_session:
+        order_id = _create_order(setup_session, client_order_id)
+        event_repository = SQLAlchemyOrderEventRepository(setup_session)
+        event_repository.append_event(_order_event(order_id, external_event_id=event_id))
+
+    with SQLAlchemyUnitOfWork(session_factory=db_session_factory) as uow:
+        uow.orders.update_status(order_id, OrderStatus.ACKED, expected_version=0)
+        with pytest.raises(EventAlreadyExistsError):
+            uow.order_events.append_event(_order_event(order_id, external_event_id=event_id))
+        uow.rollback()
+
+    with db_session_factory() as verification_session:
+        order = verification_session.get(Order, int(order_id))
+        event_count = _order_event_count_by_external_event_id(verification_session, event_id)
+
+    assert order is not None
+    assert order.status == OrderStatus.CREATED.value
+    assert event_count == 1
+
+
+def test_order_event_occurred_at_and_raw_payload_round_trip(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    occurred_at = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+    raw_payload = {"diagnostic": True, "nested": {"source": "test"}}
+
+    with db_session_factory.begin() as session:
+        order_id = _create_order(session)
+        repository = SQLAlchemyOrderEventRepository(session)
+        event = repository.append_event(
+            _order_event(
+                order_id,
+                external_event_id="payload-round-trip-event",
+                raw_payload=raw_payload,
+                occurred_at=occurred_at,
+            )
+        )
+
+        loaded = repository.get_by_event_key(event.event_source, event.external_event_id)
+
+    assert loaded is not None
+    assert loaded.occurred_at == occurred_at
+    assert loaded.raw_payload == raw_payload
 
 
 def test_unit_of_work_rollback_leaves_no_order(
