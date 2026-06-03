@@ -17,3 +17,6 @@ htmlcov/
 .docker/
 
 .vscode/settings.json.codex/
+
+.DS_Store
+.codex/
