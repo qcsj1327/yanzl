@@ -1,6 +1,6 @@
 # OMS Repository / UnitOfWork 设计契约
 
-本文档定义 OMS Repository 与 UnitOfWork 设计契约。Phase 2.2C-B 只定义抽象端口，不实现 SQLAlchemy Repository，不实现 OMSService。
+本文档定义 OMS Repository 与 UnitOfWork 设计契约。Phase 2.2D 已提供 SQLAlchemy Repository skeleton、UnitOfWork skeleton 和 ORM <-> Domain mapper，但仍不实现 OMSService、风控接入或事件乱序处理。
 
 ## Repository 边界
 
@@ -61,6 +61,13 @@ class OrderRepository(Protocol):
 
 重复事件、乱序事件、`previous_status` mismatch 和 `UNKNOWN` 策略属于 OMS application/service 层。
 
+当前 SQLAlchemy skeleton 对重复 `order_event` 的处理策略：
+
+- `append_event(...)` 先按 `event_source + external_event_id` 查询。
+- 如果已存在，抛出 `EventAlreadyExistsError`。
+- 如果不存在，写入新事件并 `flush`。
+- Repository 不解释 `raw_payload`，不判断乱序，不处理 `previous_status` mismatch。
+
 当前抽象端口签名：
 
 ```python
@@ -94,6 +101,8 @@ Phase 2.2 后续实现必须使用统一事务边界：
 - `OrderRepository` 和 `OrderEventRepository` 共享同一个 UnitOfWork 事务边界。
 - application/service 完成状态机判断、幂等判断和事件语义判断。
 - UnitOfWork 原子提交或回滚。
+- 当前 `SQLAlchemyUnitOfWork.__exit__` 遇异常必须 `rollback`。
+- 当前 `SQLAlchemyUnitOfWork.__exit__` 无异常不自动 `commit`，必须由调用方显式 `commit`，避免隐式提交。
 
 当前抽象端口签名：
 
