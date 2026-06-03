@@ -19,7 +19,7 @@
 
 - `architecture/`：项目结构、分层、目录治理规则。
 - `domain/`：Domain 字段冻结契约和领域边界。
-- `oms/`：OMS 状态机、Repository、测试矩阵等 OMS 契约。
+- `oms/`：OMS 状态机、Repository / UnitOfWork / Application Service、测试矩阵等 OMS 契约。
 - `risk/`：风控模块文档。
 - `execution/`：EMS、Mock Exchange、执行链路文档。
 - `position/`：持仓、保证金、PnL 相关文档。
@@ -55,10 +55,20 @@
 
 - Domain 字段或枚举变化：更新 `domain/DOMAIN_FREEZE.md`。
 - OMS 状态迁移变化：更新 `oms/OMS_STATE_MACHINE.md`。
-- OMS Repository / UnitOfWork 变化：更新 `oms/OMS_REPOSITORY.md`。
+- OMS Repository / UnitOfWork / Application Service 变化：更新 `oms/OMS_REPOSITORY.md`。
 - OMS 测试覆盖变化：更新 `oms/OMS_TEST_MATRIX.md`。
 - 风控文档：进入 `risk/`。
 - 执行与 Mock Exchange 文档：进入 `execution/`。
 - 持仓、保证金、PnL 文档：进入 `position/`。
 - 结算文档：进入 `settlement/`。
 - 本地开发和验证说明：进入 `operations/` 或根 README 的简短入口。
+
+## OMS 文档收敛规则
+
+OMS 相关文档只维护三份主文档：
+
+- `oms/OMS_STATE_MACHINE.md`
+- `oms/OMS_REPOSITORY.md`
+- `oms/OMS_TEST_MATRIX.md`
+
+新增 OMS 设计优先并入上述三份文档。除非用户明确批准，不得新增新的 `docs/oms/OMS_*.md` 文件。

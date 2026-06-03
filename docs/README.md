@@ -7,7 +7,7 @@
 - `architecture/PROJECT_STRUCTURE.md`：项目目录和文档分层规则。
 - `domain/DOMAIN_FREEZE.md`：当前 Domain 字段冻结契约。
 - `oms/OMS_STATE_MACHINE.md`：OMS 状态机契约。
-- `oms/OMS_REPOSITORY.md`：OMS Repository / UnitOfWork 契约。
+- `oms/OMS_REPOSITORY.md`：OMS Repository / UnitOfWork / Application Service 契约。
 - `oms/OMS_TEST_MATRIX.md`：OMS 测试矩阵。
 - `risk/README.md`：风控模块文档入口。
 - `execution/README.md`：执行与 Mock Exchange 模块文档入口。
