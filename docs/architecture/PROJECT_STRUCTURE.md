@@ -72,3 +72,12 @@ OMS 相关文档只维护三份主文档：
 - `oms/OMS_TEST_MATRIX.md`
 
 新增 OMS 设计优先并入上述三份文档。除非用户明确批准，不得新增新的 `docs/oms/OMS_*.md` 文件。
+
+## Risk 文档收敛规则
+
+Risk 相关文档只维护两份主文档：
+
+- `risk/RISK_CONTRACT.md`
+- `risk/RISK_TEST_MATRIX.md`
+
+`risk/README.md` 只作为入口索引。新增 Risk 设计优先并入上述两份文档。除非用户明确批准，不得为单个 Risk 规则新增独立文档。

@@ -120,6 +120,15 @@ Phase 2 OMS 实现前必须先阅读：
 
 Phase 2.3A 已引入最小 OMS Application Service 编排。OMS 仍只负责订单状态、幂等、事件持久化和恢复边界，不实现风控计算、EMS、Mock Exchange、持仓、保证金、PnL 或结算。
 
+### Phase 3 Risk Contract Gate
+
+Phase 3 Risk 实现前必须先阅读：
+
+- `docs/risk/RISK_CONTRACT.md`
+- `docs/risk/RISK_TEST_MATRIX.md`
+
+Phase 3 首阶段只允许 pure Risk Engine，不接 `OMSService`，不写 `risk_events`，不访问 DB / Repository / UnitOfWork，不进入 EMS、Mock Exchange、Position、Margin、PnL 或 Settlement。
+
 ## Demo 策略
 
 当前 demo 只提供骨架入口，不执行完整交易链路：
