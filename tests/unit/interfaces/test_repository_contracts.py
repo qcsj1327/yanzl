@@ -3,10 +3,20 @@ from decimal import Decimal
 from pathlib import Path
 
 from futures_mvp.domain.enums import Direction, EventSource, Offset, OrderStatus, OrderType
-from futures_mvp.domain.models import OrderEvent, OrderRequest, OrderState, Trade
+from futures_mvp.domain.models import (
+    OrderEvent,
+    OrderRequest,
+    OrderState,
+    Position,
+    PositionEvent,
+    PositionSnapshot,
+    Trade,
+)
 from futures_mvp.interfaces.repositories import (
     OrderEventRepository,
     OrderRepository,
+    PositionEventRepository,
+    PositionRepository,
     TradeRepository,
     UnitOfWork,
 )
@@ -55,6 +65,39 @@ def _trade(order_id: str = "1", exchange_trade_id: str = "trade-1") -> Trade:
         quantity=Decimal("1"),
         trade_time=datetime.now(UTC),
         source_exchange_report_id="report-1",
+    )
+
+
+def _position_event(trade: Trade) -> PositionEvent:
+    before = PositionSnapshot.from_position(
+        Position(id="1", account_id=trade.account_id, instrument_id=trade.instrument_id)
+    )
+    after = PositionSnapshot.from_position(
+        Position(
+            id="1",
+            account_id=trade.account_id,
+            instrument_id=trade.instrument_id,
+            long_today_qty=trade.quantity,
+            long_avg_price=trade.price,
+            version=1,
+        )
+    )
+    return PositionEvent(
+        account_id=trade.account_id,
+        instrument_id=trade.instrument_id,
+        exchange=trade.exchange,
+        exchange_trade_id=trade.exchange_trade_id,
+        trade_id=trade.id or "1",
+        position_id="1",
+        event_type="TRADE_APPLIED",
+        direction=trade.direction,
+        offset=trade.offset,
+        price=trade.price,
+        quantity=trade.quantity,
+        before_snapshot=before,
+        after_snapshot=after,
+        occurred_at=trade.trade_time,
+        created_at=datetime.now(UTC),
     )
 
 
@@ -137,11 +180,71 @@ class FakeTradeRepository:
         return self.trades.get((account_id, exchange, exchange_trade_id))
 
 
+class FakePositionRepository:
+    def __init__(self) -> None:
+        self.positions: dict[tuple[str, str], Position] = {}
+
+    def get_by_account_instrument(self, account_id: str, instrument_id: str) -> Position | None:
+        return self.positions.get((account_id, instrument_id))
+
+    def create_or_get_position(self, account_id: str, instrument_id: str) -> Position:
+        return self.positions.setdefault(
+            (account_id, instrument_id),
+            Position(id="1", account_id=account_id, instrument_id=instrument_id),
+        )
+
+    def update_position(
+        self,
+        position: Position,
+        *,
+        expected_version: int | None = None,
+    ) -> Position:
+        del expected_version
+        self.positions[(position.account_id, position.instrument_id)] = position
+        return position
+
+    def list_by_account(self, account_id: str) -> list[Position]:
+        return [
+            position
+            for position in self.positions.values()
+            if position.account_id == account_id
+        ]
+
+
+class FakePositionEventRepository:
+    def __init__(self) -> None:
+        self.events: dict[tuple[str, str, str], PositionEvent] = {}
+
+    def append_position_event(self, event: PositionEvent) -> PositionEvent:
+        self.events[(event.account_id, event.exchange, event.exchange_trade_id)] = event
+        return event
+
+    def get_by_trade_key(
+        self,
+        account_id: str,
+        exchange: str,
+        exchange_trade_id: str,
+    ) -> PositionEvent | None:
+        return self.events.get((account_id, exchange, exchange_trade_id))
+
+    def list_by_position(self, account_id: str, instrument_id: str) -> list[PositionEvent]:
+        return [
+            event
+            for event in self.events.values()
+            if event.account_id == account_id and event.instrument_id == instrument_id
+        ]
+
+    def list_by_account(self, account_id: str) -> list[PositionEvent]:
+        return [event for event in self.events.values() if event.account_id == account_id]
+
+
 class FakeUnitOfWork:
     def __init__(self) -> None:
         self.orders = FakeOrderRepository()
         self.order_events = FakeOrderEventRepository()
         self.trades = FakeTradeRepository()
+        self.positions = FakePositionRepository()
+        self.position_events = FakePositionEventRepository()
         self.commit_count = 0
         self.rollback_count = 0
 
@@ -168,20 +271,28 @@ def test_repository_protocols_can_be_implemented_by_fakes() -> None:
     order_repo = FakeOrderRepository()
     event_repo = FakeOrderEventRepository()
     trade_repo = FakeTradeRepository()
+    position_repo = FakePositionRepository()
+    position_event_repo = FakePositionEventRepository()
 
     assert isinstance(order_repo, OrderRepository)
     assert isinstance(event_repo, OrderEventRepository)
     assert isinstance(trade_repo, TradeRepository)
+    assert isinstance(position_repo, PositionRepository)
+    assert isinstance(position_event_repo, PositionEventRepository)
 
     order = order_repo.create_order(_order_request(), client_order_id="client-1")
     event = event_repo.append_event(_order_event(order.order_id))
     trade = trade_repo.create_or_get_trade(_trade(order.order_id))
+    position = position_repo.create_or_get_position("account-1", "rb2601")
+    position_event = position_event_repo.append_position_event(_position_event(trade))
 
     assert order_repo.get_by_id(order.order_id) == order
     assert order_repo.get_by_client_order_id("client-1") == order
     assert event_repo.get_by_event_key(EventSource.OMS, event.external_event_id) == event
     assert event_repo.list_by_order_id(order.order_id) == [event]
     assert trade_repo.get_by_exchange_trade_id("account-1", "SHFE", "trade-1") == trade
+    assert position_repo.get_by_account_instrument("account-1", "rb2601") == position
+    assert position_event_repo.get_by_trade_key("account-1", "SHFE", "trade-1") == position_event
 
 
 def test_unit_of_work_protocol_supports_commit_and_rollback() -> None:

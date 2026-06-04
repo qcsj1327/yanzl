@@ -6,6 +6,8 @@ from sqlalchemy.orm import Session
 from futures_mvp.db.repositories import (
     SQLAlchemyOrderEventRepository,
     SQLAlchemyOrderRepository,
+    SQLAlchemyPositionEventRepository,
+    SQLAlchemyPositionRepository,
     SQLAlchemyTradeRepository,
 )
 from futures_mvp.db.session import SessionLocal
@@ -25,12 +27,16 @@ class SQLAlchemyUnitOfWork:
         self.orders: SQLAlchemyOrderRepository
         self.order_events: SQLAlchemyOrderEventRepository
         self.trades: SQLAlchemyTradeRepository
+        self.positions: SQLAlchemyPositionRepository
+        self.position_events: SQLAlchemyPositionEventRepository
 
     def __enter__(self) -> "SQLAlchemyUnitOfWork":
         self._session = self._provided_session or self._session_factory()
         self.orders = SQLAlchemyOrderRepository(self._session)
         self.order_events = SQLAlchemyOrderEventRepository(self._session)
         self.trades = SQLAlchemyTradeRepository(self._session)
+        self.positions = SQLAlchemyPositionRepository(self._session)
+        self.position_events = SQLAlchemyPositionEventRepository(self._session)
         return self
 
     def __exit__(

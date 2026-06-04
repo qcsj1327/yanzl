@@ -12,12 +12,19 @@ from futures_mvp.domain.enums import (
     Offset,
     OrderStatus,
     OrderType,
+    PositionManagerResultStatus,
     RiskDecision,
 )
 
 
 class DomainModel(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+def require_positive_decimal(value: Decimal, *, field_name: str) -> Decimal:
+    if value <= 0:
+        raise ValueError(f"{field_name} must be greater than 0")
+    return value
 
 
 class Signal(DomainModel):
@@ -117,6 +124,11 @@ class FillEvent(DomainModel):
             return None
         return require_decimal(value)
 
+    @field_validator("quantity")
+    @classmethod
+    def _quantity_positive(cls, value: Decimal) -> Decimal:
+        return require_positive_decimal(value, field_name="quantity")
+
     @model_validator(mode="after")
     def _fee_currency_required_when_fee_known(self) -> "FillEvent":
         if self.fee_amount is not None and self.fee_currency is None:
@@ -152,6 +164,11 @@ class Trade(DomainModel):
             return None
         return require_decimal(value)
 
+    @field_validator("quantity")
+    @classmethod
+    def _quantity_positive(cls, value: Decimal) -> Decimal:
+        return require_positive_decimal(value, field_name="quantity")
+
     @model_validator(mode="after")
     def _fee_currency_required_when_fee_known(self) -> "Trade":
         if self.fee_amount is not None and self.fee_currency is None:
@@ -162,6 +179,7 @@ class Trade(DomainModel):
 
 
 class Position(DomainModel):
+    id: str | None = None
     account_id: str
     instrument_id: str
     long_today_qty: Decimal = Decimal("0")
@@ -177,6 +195,8 @@ class Position(DomainModel):
     realized_pnl: Decimal = Decimal("0")
     unrealized_pnl: Decimal = Decimal("0")
     margin_used: Decimal = Decimal("0")
+    version: int = 0
+    updated_at: datetime | None = None
 
     @field_validator(
         "long_today_qty",
@@ -197,6 +217,85 @@ class Position(DomainModel):
     @classmethod
     def _decimal_only(cls, value: Any) -> Decimal:
         return require_decimal(value)
+
+
+class PositionSnapshot(DomainModel):
+    account_id: str
+    instrument_id: str
+    long_today_qty: Decimal
+    long_yesterday_qty: Decimal
+    short_today_qty: Decimal
+    short_yesterday_qty: Decimal
+    long_avg_price: Decimal
+    short_avg_price: Decimal
+    version: int
+
+    @field_validator(
+        "long_today_qty",
+        "long_yesterday_qty",
+        "short_today_qty",
+        "short_yesterday_qty",
+        "long_avg_price",
+        "short_avg_price",
+        mode="before",
+    )
+    @classmethod
+    def _decimal_only(cls, value: Any) -> Decimal:
+        return require_decimal(value)
+
+    @classmethod
+    def from_position(cls, position: Position) -> "PositionSnapshot":
+        return cls(
+            account_id=position.account_id,
+            instrument_id=position.instrument_id,
+            long_today_qty=position.long_today_qty,
+            long_yesterday_qty=position.long_yesterday_qty,
+            short_today_qty=position.short_today_qty,
+            short_yesterday_qty=position.short_yesterday_qty,
+            long_avg_price=position.long_avg_price,
+            short_avg_price=position.short_avg_price,
+            version=position.version,
+        )
+
+
+class PositionEvent(DomainModel):
+    id: str | None = None
+    account_id: str
+    instrument_id: str
+    exchange: str
+    exchange_trade_id: str
+    trade_id: str
+    position_id: str
+    event_type: str
+    direction: Direction
+    offset: Offset
+    price: Decimal
+    quantity: Decimal
+    before_snapshot: PositionSnapshot
+    after_snapshot: PositionSnapshot
+    occurred_at: datetime
+    created_at: datetime
+    raw_payload: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("price", "quantity", mode="before")
+    @classmethod
+    def _decimal_only(cls, value: Any) -> Decimal:
+        return require_decimal(value)
+
+    @field_validator("quantity")
+    @classmethod
+    def _quantity_positive(cls, value: Decimal) -> Decimal:
+        return require_positive_decimal(value, field_name="quantity")
+
+
+class PositionManagerResult(DomainModel):
+    status: PositionManagerResultStatus
+    position: Position | None = None
+    position_event: PositionEvent | None = None
+    reason: str | None = None
+    trade_id: str | None = None
+    account_id: str | None = None
+    instrument_id: str | None = None
 
 
 class TradingCalendar(DomainModel):

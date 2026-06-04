@@ -1,6 +1,6 @@
-from sqlalchemy import DateTime, Integer, UniqueConstraint
+from sqlalchemy import DateTime, Integer, Numeric, UniqueConstraint
 
-from futures_mvp.db.models import Base, Order, OrderEvent, Position, Trade
+from futures_mvp.db.models import Base, Order, OrderEvent, Position, PositionEvent, Trade
 
 
 def _unique_constraint_columns(model: type[object], name: str) -> tuple[str, ...]:
@@ -19,6 +19,7 @@ def test_required_tables_are_declared() -> None:
         "order_events",
         "trades",
         "positions",
+        "position_events",
         "account_snapshots",
         "settlement_snapshots",
         "risk_events",
@@ -88,5 +89,41 @@ def test_positions_are_single_row_per_account_and_instrument() -> None:
         "realized_pnl",
         "unrealized_pnl",
         "margin_used",
+        "version",
     ]:
         assert column_name in Position.__table__.columns
+
+    version = Position.__table__.columns["version"]
+    assert isinstance(version.type, Integer)
+    assert version.nullable is False
+
+
+def test_position_events_match_stage_c_idempotency_and_audit_contract() -> None:
+    assert _unique_constraint_columns(
+        PositionEvent,
+        "uq_position_events_account_exchange_trade",
+    ) == ("account_id", "exchange", "exchange_trade_id")
+    for column_name in [
+        "id",
+        "account_id",
+        "instrument_id",
+        "exchange",
+        "exchange_trade_id",
+        "trade_id",
+        "position_id",
+        "event_type",
+        "direction",
+        "offset",
+        "price",
+        "quantity",
+        "before_snapshot",
+        "after_snapshot",
+        "occurred_at",
+        "created_at",
+        "raw_payload",
+    ]:
+        assert column_name in PositionEvent.__table__.columns
+
+    assert isinstance(PositionEvent.__table__.columns["price"].type, Numeric)
+    assert isinstance(PositionEvent.__table__.columns["quantity"].type, Numeric)
+    assert PositionEvent.__table__.columns["created_at"].nullable is False

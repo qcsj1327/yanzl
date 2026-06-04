@@ -1,5 +1,6 @@
 from typing import get_type_hints
 
+import futures_mvp.modules.execution  # noqa: F401
 from futures_mvp.domain.models import (
     OrderEvent,
     OrderEventApplicationResult,

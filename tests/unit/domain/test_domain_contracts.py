@@ -10,6 +10,7 @@ from futures_mvp.domain.enums import (
     Offset,
     OrderStatus,
     OrderType,
+    PositionManagerResultStatus,
 )
 from futures_mvp.domain.errors import DecimalRequiredError
 from futures_mvp.domain.models import (
@@ -19,6 +20,9 @@ from futures_mvp.domain.models import (
     OrderRequest,
     OrderState,
     Position,
+    PositionEvent,
+    PositionManagerResult,
+    PositionSnapshot,
     Signal,
     Trade,
 )
@@ -56,6 +60,16 @@ def test_event_application_status_complete_contract() -> None:
         "RECOVERED_FROM_UNKNOWN",
         "IGNORED_TERMINAL",
         "EVENT_KEY_COLLISION",
+    ]
+
+
+def test_position_manager_result_status_complete_contract() -> None:
+    assert [status.value for status in PositionManagerResultStatus] == [
+        "APPLIED",
+        "DUPLICATE_IGNORED",
+        "REJECTED_INSUFFICIENT_POSITION",
+        "CONFLICT",
+        "ERROR",
     ]
 
 
@@ -259,6 +273,60 @@ def test_trade_rejects_float_facts() -> None:
         )
 
 
+@pytest.mark.parametrize("quantity", [Decimal("0"), Decimal("-1")])
+def test_fill_event_trade_and_position_event_require_positive_quantity(
+    quantity: Decimal,
+) -> None:
+    with pytest.raises(ValueError, match="quantity must be greater than 0"):
+        FillEvent(
+            order_id="order-1",
+            account_id="acct-1",
+            exchange="SHFE",
+            instrument_id="rb2610",
+            exchange_report_id="report-1",
+            exchange_trade_id="trade-1",
+            direction=Direction.BUY,
+            offset=Offset.OPEN,
+            price=Decimal("3500"),
+            quantity=quantity,
+            traded_at=datetime.now(UTC),
+        )
+
+    with pytest.raises(ValueError, match="quantity must be greater than 0"):
+        Trade(
+            account_id="acct-1",
+            exchange="SHFE",
+            exchange_trade_id="trade-1",
+            order_id="order-1",
+            instrument_id="rb2610",
+            direction=Direction.BUY,
+            offset=Offset.OPEN,
+            price=Decimal("3500"),
+            quantity=quantity,
+            trade_time=datetime.now(UTC),
+        )
+
+    snapshot = PositionSnapshot.from_position(Position(account_id="acct-1", instrument_id="rb2610"))
+    with pytest.raises(ValueError, match="quantity must be greater than 0"):
+        PositionEvent(
+            account_id="acct-1",
+            instrument_id="rb2610",
+            exchange="SHFE",
+            exchange_trade_id="trade-1",
+            trade_id="1",
+            position_id="1",
+            event_type="TRADE_APPLIED",
+            direction=Direction.BUY,
+            offset=Offset.OPEN,
+            price=Decimal("3500"),
+            quantity=quantity,
+            before_snapshot=snapshot,
+            after_snapshot=snapshot,
+            occurred_at=datetime.now(UTC),
+            created_at=datetime.now(UTC),
+        )
+
+
 def test_fee_currency_is_required_iff_fee_amount_is_known() -> None:
     with pytest.raises(ValueError):
         Trade(
@@ -295,6 +363,7 @@ def test_fee_currency_is_required_iff_fee_amount_is_known() -> None:
 def test_position_is_single_row_with_long_short_today_yesterday_fields() -> None:
     position = Position(account_id="acct-1", instrument_id="rb2610")
 
+    assert position.version == 0
     assert position.long_today_qty == Decimal("0")
     assert position.long_yesterday_qty == Decimal("0")
     assert position.short_today_qty == Decimal("0")
@@ -302,3 +371,106 @@ def test_position_is_single_row_with_long_short_today_yesterday_fields() -> None
     assert position.frozen_long_qty == Decimal("0")
     assert position.frozen_short_qty == Decimal("0")
     assert position.margin_used == Decimal("0")
+
+
+def test_position_snapshot_decimal_contract() -> None:
+    snapshot = PositionSnapshot.from_position(
+        Position(
+            id="1",
+            account_id="acct-1",
+            instrument_id="rb2610",
+            long_today_qty=Decimal("2"),
+            long_avg_price=Decimal("3500.5"),
+            version=3,
+        )
+    )
+
+    assert snapshot.account_id == "acct-1"
+    assert snapshot.long_today_qty == Decimal("2")
+    assert snapshot.long_avg_price == Decimal("3500.5")
+    assert snapshot.version == 3
+
+
+def test_position_snapshot_rejects_float_facts() -> None:
+    with pytest.raises(DecimalRequiredError):
+        PositionSnapshot(
+            account_id="acct-1",
+            instrument_id="rb2610",
+            long_today_qty=1.0,
+            long_yesterday_qty=Decimal("0"),
+            short_today_qty=Decimal("0"),
+            short_yesterday_qty=Decimal("0"),
+            long_avg_price=Decimal("0"),
+            short_avg_price=Decimal("0"),
+            version=0,
+        )
+
+
+def test_position_event_decimal_and_snapshot_contract() -> None:
+    before = PositionSnapshot.from_position(Position(account_id="acct-1", instrument_id="rb2610"))
+    after = PositionSnapshot.from_position(
+        Position(
+            account_id="acct-1",
+            instrument_id="rb2610",
+            long_today_qty=Decimal("1"),
+            long_avg_price=Decimal("3500"),
+            version=1,
+        )
+    )
+    event = PositionEvent(
+        account_id="acct-1",
+        instrument_id="rb2610",
+        exchange="SHFE",
+        exchange_trade_id="trade-1",
+        trade_id="1",
+        position_id="1",
+        event_type="TRADE_APPLIED",
+        direction=Direction.BUY,
+        offset=Offset.OPEN,
+        price=Decimal("3500"),
+        quantity=Decimal("1"),
+        before_snapshot=before,
+        after_snapshot=after,
+        occurred_at=datetime.now(UTC),
+        created_at=datetime.now(UTC),
+        raw_payload={"diagnostic": True},
+    )
+
+    assert event.price == Decimal("3500")
+    assert event.quantity == Decimal("1")
+    assert event.before_snapshot.long_today_qty == Decimal("0")
+    assert event.after_snapshot.long_today_qty == Decimal("1")
+
+
+def test_position_event_rejects_float_facts() -> None:
+    snapshot = PositionSnapshot.from_position(Position(account_id="acct-1", instrument_id="rb2610"))
+
+    with pytest.raises(DecimalRequiredError):
+        PositionEvent(
+            account_id="acct-1",
+            instrument_id="rb2610",
+            exchange="SHFE",
+            exchange_trade_id="trade-1",
+            trade_id="1",
+            position_id="1",
+            event_type="TRADE_APPLIED",
+            direction=Direction.BUY,
+            offset=Offset.OPEN,
+            price=3500.0,
+            quantity=Decimal("1"),
+            before_snapshot=snapshot,
+            after_snapshot=snapshot,
+            occurred_at=datetime.now(UTC),
+            created_at=datetime.now(UTC),
+        )
+
+
+def test_position_manager_result_uses_typed_status() -> None:
+    result = PositionManagerResult(
+        status=PositionManagerResultStatus.APPLIED,
+        account_id="acct-1",
+        instrument_id="rb2610",
+        trade_id="1",
+    )
+
+    assert result.status == PositionManagerResultStatus.APPLIED

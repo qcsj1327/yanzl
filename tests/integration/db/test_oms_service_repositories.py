@@ -10,8 +10,10 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from alembic import command
 from futures_mvp.db.config import settings
-from futures_mvp.db.models import Order
+from futures_mvp.db.models import Order, Position
 from futures_mvp.db.models import OrderEvent as OrderEventOrm
+from futures_mvp.db.models import PositionEvent as PositionEventOrm
+from futures_mvp.db.models import Trade as TradeOrm
 from futures_mvp.db.repositories import SQLAlchemyOrderEventRepository, SQLAlchemyOrderRepository
 from futures_mvp.db.unit_of_work import SQLAlchemyUnitOfWork
 from futures_mvp.domain.enums import (
@@ -45,10 +47,16 @@ def db_session_factory() -> Iterator[sessionmaker[Session]]:
 @pytest.fixture(autouse=True)
 def clean_orders(db_session_factory: sessionmaker[Session]) -> Iterator[None]:
     with db_session_factory.begin() as session:
+        session.execute(delete(PositionEventOrm))
+        session.execute(delete(Position))
+        session.execute(delete(TradeOrm))
         session.execute(delete(OrderEventOrm))
         session.execute(delete(Order))
     yield
     with db_session_factory.begin() as session:
+        session.execute(delete(PositionEventOrm))
+        session.execute(delete(Position))
+        session.execute(delete(TradeOrm))
         session.execute(delete(OrderEventOrm))
         session.execute(delete(Order))
 

@@ -115,7 +115,11 @@ class OrderEvent(Base):
     external_event_id: Mapped[str] = mapped_column(String(128), nullable=False)
     raw_payload: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
 
     order: Mapped[Order] = relationship(back_populates="events")
 
@@ -148,6 +152,7 @@ class Trade(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     order: Mapped[Order] = relationship(back_populates="trades")
+    position_events: Mapped[list["PositionEvent"]] = relationship(back_populates="trade")
 
 
 class Position(Base, TimestampMixin):
@@ -184,6 +189,43 @@ class Position(Base, TimestampMixin):
     realized_pnl: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False, default=Decimal("0"))
     unrealized_pnl: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False, default=Decimal("0"))
     margin_used: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False, default=Decimal("0"))
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+
+    events: Mapped[list["PositionEvent"]] = relationship(back_populates="position")
+
+
+class PositionEvent(Base):
+    __tablename__ = "position_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "account_id",
+            "exchange",
+            "exchange_trade_id",
+            name="uq_position_events_account_exchange_trade",
+        ),
+        Index("ix_position_events_account_instrument", "account_id", "instrument_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    instrument_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    exchange: Mapped[str] = mapped_column(String(32), nullable=False)
+    exchange_trade_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    trade_id: Mapped[int] = mapped_column(ForeignKey("trades.id"), nullable=False, index=True)
+    position_id: Mapped[int] = mapped_column(ForeignKey("positions.id"), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    direction: Mapped[str] = mapped_column(String(16), nullable=False)
+    offset: Mapped[str] = mapped_column(String(32), nullable=False)
+    price: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    before_snapshot: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    after_snapshot: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    raw_payload: Mapped[dict[str, object] | None] = mapped_column(JSON)
+
+    trade: Mapped[Trade] = relationship(back_populates="position_events")
+    position: Mapped[Position] = relationship(back_populates="events")
 
 
 class AccountSnapshot(Base):

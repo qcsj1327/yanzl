@@ -82,7 +82,8 @@
 
 - Fill / Trade 是会计主链入口。
 - `trades` 是成交事实账本；终态成交去重必须基于类型化成交身份，例如 `account_id + exchange + exchange_trade_id`。
-- `positions(account_id, instrument_id)` 是 live position source-of-truth。
+- `positions(account_id, instrument_id)` 是 live position projection / current source-of-truth。
+- `position_events` 是 Position 幂等、replay 和 audit ledger；只靠 `positions` snapshot 不允许作为重复成交 replay 的幂等依据。
 - Margin、PnL、Settlement 只能基于类型化 Trade、Position、Market price、Settlement price 和 account context 计算。
 - `account_snapshots`、`settlement_snapshots` 是快照与审计，不替代 live source-of-truth。
 
@@ -131,8 +132,8 @@
 15. 对 `MAPPED_ORDER_EVENT`，Orchestrator 将 `OrderEvent` 交回 `OMSService.apply_order_event(...)`。
 16. OMS 根据状态机、幂等、乱序、终态保护和 UNKNOWN 规则应用或拒绝事件。
 17. 当回报包含真实成交事实时，必须先经 Fill / Trade domain migration 形成 typed `Fill` / `Trade`。
-18. Trade ledger 去重后进入 Position Manager。
-19. Position Manager 更新 live `positions`，处理开仓、平今、平昨、冻结/解冻和 today/yesterday bucket。
+18. Trade ledger 去重后作为 Position Manager 的唯一输入事实。
+19. Position Manager 更新 live `positions`，处理开仓、平今、平昨和 today/yesterday bucket，并写入 `position_events` 作为 applied-trade audit。
 20. Margin Engine 基于 Position、instrument rules、account context 计算保证金。
 21. PnL Engine 基于 Trade、Position、last price、settlement price 计算 realized / unrealized PnL。
 22. Settlement Engine 在交易日边界执行结算、结算价更新、保证金重算、PnL 归集和 today -> yesterday roll。
@@ -185,9 +186,12 @@
 
 ### Position
 
-- `positions(account_id, instrument_id)` 是 live position source-of-truth。
+- `trades` ledger 是 Position 更新的唯一输入事实。
+- `positions(account_id, instrument_id)` 是 live position projection / current source-of-truth。
+- `position_events` 是幂等和 replay audit ledger，记录 trade 是否已应用、应用前后 position snapshot 和 conflict 判定依据。
+- Position 禁止消费 `OrderStatus`、`OrderEvent`、`ExchangeReport` 或 `raw_payload`。
 - Pending、submitted、rejected 或其他未成交订单都不是真实持仓。
-- 开仓、平今、平昨、冻结、解冻、today/yesterday roll 必须类型化。
+- 开仓、平今、平昨、冻结、解冻、today/yesterday roll 必须类型化；Stage C 只冻结 trade-driven position bucket 更新，不实现冻结/解冻或结算滚动。
 - `account_snapshots` 和 `settlement_snapshots` 不是 live position source-of-truth。
 
 ### Margin / PnL / Settlement
@@ -248,13 +252,28 @@ Stage B 冻结说明：
 ### Stage C: Position Manager
 
 - Goal：建立基于 Trade ledger 的 live position 更新链。
-- Inputs：typed Trade、current Position model、today/yesterday bucket、offset。
-- Outputs：PositionManager、Position repository/UoW、开仓/平今/平昨/冻结/解冻规则。
-- Allowed changes：position module、repository、DB tests、position replay tests。
-- Forbidden changes：不把 pending/submitted 订单当真实持仓；不让 Risk 自查 Position DB。
-- Required tests：open long/short、close today、close yesterday、insufficient bucket、duplicate trade、position replay。
-- Acceptance criteria：重复 trade 不重复改仓；positions 与 replay 一致。
+- Inputs：typed Trade、current Position model、today/yesterday bucket、offset、`position_events` idempotency/audit ledger。
+- Outputs：PositionManager、Position repository/UoW、PositionEvent repository/UoW、开仓/平今/平昨规则、applied-trade audit、position replay contract。
+- Allowed changes：position domain / service、position repository、position event repository、DB migration、DB tests、position replay tests。
+- Forbidden changes：不把 pending/submitted 订单当真实持仓；不让 Position 消费 `OrderStatus`、`OrderEvent`、`ExchangeReport` 或 `raw_payload`；不让 Risk 自查 Position DB；不实现 Margin / PnL / Settlement / today->yesterday roll / order freeze reservation。
+- Required tests：OPEN LONG、OPEN SHORT、CLOSE TODAY LONG、CLOSE YESTERDAY LONG、CLOSE TODAY SHORT、CLOSE YESTERDAY SHORT、partial close、insufficient today/yesterday bucket、duplicate trade no-op、duplicate trade conflict、replay deterministic、position event unique trade key、DB round trip、UoW exposes positions/events、no OMS/Risk/Execution mapper/Broker/Runtime import、no Margin/PnL/Settlement mutation。
+- Acceptance criteria：重复 trade replay no-op；same trade key + different canonical payload typed conflict；positions 与 ordered Trade replay 一致；PositionEvent 可回答哪笔 trade 已应用、应用前后 position 是什么、replay 是否重复。
 - Suggested tag：`stage-c-position-manager`。
+
+Stage C 当前实现说明：
+
+- Stage C 选择 `PositionEvent`，不选择仅 `position_applied_trades`，因为 replay 和 audit 需要 before/after snapshot。
+- Stage C Position 负责字段为 `account_id`、`instrument_id`、`long_today_qty`、`long_yesterday_qty`、`short_today_qty`、`short_yesterday_qty`、`long_avg_price`、`short_avg_price`、`version`、`updated_at`。
+- 已存在的 `frozen_long_qty` / `frozen_short_qty` 可保留为字段，但 Stage C 不从订单状态推导冻结；冻结/解冻后续必须由 typed reservation event 驱动。
+- Stage C 不更新 `realized_pnl`、`unrealized_pnl`、`margin_used`、settlement roll、today -> yesterday roll。
+- 更新规则：BUY + OPEN 增加 `long_today_qty` 并按同侧 today + yesterday 总量加权平均更新 `long_avg_price`；SELL + OPEN 增加 `short_today_qty` 并按同侧 today + yesterday 总量加权平均更新 `short_avg_price`；SELL + CLOSE_TODAY 扣 `long_today_qty`；SELL + CLOSE_YESTERDAY 扣 `long_yesterday_qty`；BUY + CLOSE_TODAY 扣 `short_today_qty`；BUY + CLOSE_YESTERDAY 扣 `short_yesterday_qty`。
+- Partial close 只扣成交数量；close 数量超过对应 bucket 时返回 typed rejection 且不修改 position；unsupported offset 返回 typed error；任何 resulting quantity 不得为负；数量和价格必须使用 Decimal。
+- 平仓不在 Stage C 计算 realized PnL；平仓不改变剩余 open avg price。
+- 幂等键沿用 Trade identity：`account_id + exchange + exchange_trade_id`。已存在且 canonical payload 一致时，live `positions` projection 必须与 `PositionEvent.after_snapshot` 一致才返回 `DUPLICATE_IGNORED`；projection diverged 或 payload 不一致时返回 `CONFLICT`；未存在时在同一 UoW 内更新 `positions` 并写入 `position_events`。
+- `PositionEvent` 字段包括 `id`、`account_id`、`instrument_id`、`exchange`、`exchange_trade_id`、`trade_id`、`position_id`、`direction`、`offset`、`price`、`quantity`、`before_snapshot`、`after_snapshot`、`event_type`、`occurred_at`、`created_at`、diagnostic-only `raw_payload`。
+- `PositionManager.apply_trade(trade)` 返回 typed result，状态包括 `APPLIED`、`DUPLICATE_IGNORED`、`REJECTED_INSUFFICIENT_POSITION`、`CONFLICT`、`ERROR`。
+- `PositionManager.replay_trades(...)` 按 `trade_time` 和稳定 secondary key 排序后逐笔 `apply_trade`，已应用 no-op。Replay divergence 不得静默覆盖，必须返回 typed conflict/report。
+- Stage C DB migration 已包含 `positions.version INTEGER NOT NULL DEFAULT 0`、`position_events` table、`UNIQUE(account_id, exchange, exchange_trade_id)`、`position_id` FK，以及 `account_id`、`instrument_id`、`account_id + instrument_id`、`trade_id` / `exchange_trade_id` 索引。
 
 ### Stage D: Margin Engine
 

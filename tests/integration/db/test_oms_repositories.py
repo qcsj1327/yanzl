@@ -14,22 +14,40 @@ from alembic import command
 from futures_mvp.db.config import settings
 from futures_mvp.db.models import Order, Position
 from futures_mvp.db.models import OrderEvent as OrderEventOrm
+from futures_mvp.db.models import PositionEvent as PositionEventOrm
 from futures_mvp.db.models import Trade as TradeOrm
 from futures_mvp.db.repositories import (
     SQLAlchemyOrderEventRepository,
     SQLAlchemyOrderRepository,
+    SQLAlchemyPositionEventRepository,
+    SQLAlchemyPositionRepository,
     SQLAlchemyTradeRepository,
 )
 from futures_mvp.db.unit_of_work import SQLAlchemyUnitOfWork
-from futures_mvp.domain.enums import Direction, EventSource, Offset, OrderStatus, OrderType
-from futures_mvp.domain.models import OrderEvent, OrderRequest, Trade
+from futures_mvp.domain.enums import (
+    Direction,
+    EventSource,
+    Offset,
+    OrderStatus,
+    OrderType,
+    PositionManagerResultStatus,
+)
+from futures_mvp.domain.models import (
+    OrderEvent,
+    OrderRequest,
+    PositionEvent,
+    PositionSnapshot,
+    Trade,
+)
 from futures_mvp.interfaces.repositories import (
     EventAlreadyExistsError,
     IdempotencyConflictError,
     OptimisticLockError,
+    PositionEventConflictError,
     RepositoryError,
     TradeIdempotencyConflictError,
 )
+from futures_mvp.modules.position import PositionManager
 
 
 @pytest.fixture(scope="session")
@@ -47,11 +65,15 @@ def db_session_factory() -> Iterator[sessionmaker[Session]]:
 @pytest.fixture(autouse=True)
 def clean_orders(db_session_factory: sessionmaker[Session]) -> Iterator[None]:
     with db_session_factory.begin() as session:
+        session.execute(delete(PositionEventOrm))
+        session.execute(delete(Position))
         session.execute(delete(TradeOrm))
         session.execute(delete(OrderEventOrm))
         session.execute(delete(Order))
     yield
     with db_session_factory.begin() as session:
+        session.execute(delete(PositionEventOrm))
+        session.execute(delete(Position))
         session.execute(delete(TradeOrm))
         session.execute(delete(OrderEventOrm))
         session.execute(delete(Order))
@@ -126,6 +148,57 @@ def _trade(
         trade_time=datetime(2026, 1, 1, 9, 1, tzinfo=UTC),
         trading_day=date(2026, 1, 1),
         source_exchange_report_id=source_exchange_report_id,
+        raw_payload=raw_payload or {"diagnostic": True},
+    )
+
+
+def _position_event(
+    trade: Trade,
+    position_id: str,
+    *,
+    before_snapshot: PositionSnapshot | None = None,
+    after_snapshot: PositionSnapshot | None = None,
+    quantity: Decimal | None = None,
+    raw_payload: dict[str, object] | None = None,
+) -> PositionEvent:
+    before = before_snapshot or PositionSnapshot(
+        account_id=trade.account_id,
+        instrument_id=trade.instrument_id,
+        long_today_qty=Decimal("0"),
+        long_yesterday_qty=Decimal("0"),
+        short_today_qty=Decimal("0"),
+        short_yesterday_qty=Decimal("0"),
+        long_avg_price=Decimal("0"),
+        short_avg_price=Decimal("0"),
+        version=0,
+    )
+    after = after_snapshot or PositionSnapshot(
+        account_id=trade.account_id,
+        instrument_id=trade.instrument_id,
+        long_today_qty=quantity or trade.quantity,
+        long_yesterday_qty=Decimal("0"),
+        short_today_qty=Decimal("0"),
+        short_yesterday_qty=Decimal("0"),
+        long_avg_price=trade.price,
+        short_avg_price=Decimal("0"),
+        version=1,
+    )
+    return PositionEvent(
+        account_id=trade.account_id,
+        instrument_id=trade.instrument_id,
+        exchange=trade.exchange,
+        exchange_trade_id=trade.exchange_trade_id,
+        trade_id=trade.id or "1",
+        position_id=position_id,
+        event_type="TRADE_APPLIED",
+        direction=trade.direction,
+        offset=trade.offset,
+        price=trade.price,
+        quantity=quantity or trade.quantity,
+        before_snapshot=before,
+        after_snapshot=after,
+        occurred_at=trade.trade_time,
+        created_at=datetime.now(UTC),
         raw_payload=raw_payload or {"diagnostic": True},
     )
 
@@ -880,6 +953,263 @@ def test_trade_repository_does_not_mutate_positions(
         after_count = session.scalar(select(func.count()).select_from(Position))
 
     assert before_count == after_count == 0
+
+
+def test_position_repository_create_get_and_version_default(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        repository = SQLAlchemyPositionRepository(session)
+        created = repository.create_or_get_position("account-1", "rb2601")
+        loaded = repository.get_by_account_instrument("account-1", "rb2601")
+
+    assert created.id is not None
+    assert loaded is not None
+    assert loaded.id == created.id
+    assert loaded.long_today_qty == Decimal("0")
+    assert loaded.version == 0
+
+
+def test_position_repository_update_increments_version_and_stage_c_fields_only(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        repository = SQLAlchemyPositionRepository(session)
+        created = repository.create_or_get_position("account-1", "rb2601")
+        seeded = session.get(Position, int(created.id or "0"))
+        assert seeded is not None
+        seeded.realized_pnl = Decimal("12")
+        seeded.unrealized_pnl = Decimal("34")
+        seeded.margin_used = Decimal("56")
+        updated = repository.update_position(
+            created.model_copy(
+                update={
+                    "long_today_qty": Decimal("2"),
+                    "long_avg_price": Decimal("3500"),
+                }
+            ),
+            expected_version=0,
+        )
+
+    assert updated.version == 1
+    assert updated.long_today_qty == Decimal("2")
+    assert updated.long_avg_price == Decimal("3500")
+    assert updated.realized_pnl == Decimal("12")
+    assert updated.unrealized_pnl == Decimal("34")
+    assert updated.margin_used == Decimal("56")
+
+
+def test_position_repository_expected_version_mismatch_is_controlled_error(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        repository = SQLAlchemyPositionRepository(session)
+        created = repository.create_or_get_position("account-1", "rb2601")
+
+        with pytest.raises(OptimisticLockError):
+            repository.update_position(
+                created.model_copy(update={"long_today_qty": Decimal("1")}),
+                expected_version=1,
+            )
+
+
+def test_position_event_repository_round_trip_and_unique_trade_key(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        order_id = _create_order(session)
+        trade = SQLAlchemyTradeRepository(session).create_or_get_trade(_trade(order_id))
+        position = SQLAlchemyPositionRepository(session).create_or_get_position(
+            trade.account_id,
+            trade.instrument_id,
+        )
+        repository = SQLAlchemyPositionEventRepository(session)
+        created = repository.append_position_event(_position_event(trade, position.id or "1"))
+        loaded = repository.get_by_trade_key("account-1", "SHFE", "trade-1")
+        event_count = session.scalar(select(func.count()).select_from(PositionEventOrm))
+
+    assert created.id is not None
+    assert loaded is not None
+    assert loaded.id == created.id
+    assert loaded.trade_id == trade.id
+    assert loaded.position_id == position.id
+    assert loaded.before_snapshot.long_today_qty == Decimal("0")
+    assert loaded.after_snapshot.long_today_qty == Decimal("1")
+    assert event_count == 1
+
+
+def test_position_event_duplicate_same_payload_returns_existing(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        order_id = _create_order(session)
+        trade = SQLAlchemyTradeRepository(session).create_or_get_trade(_trade(order_id))
+        position = SQLAlchemyPositionRepository(session).create_or_get_position(
+            trade.account_id,
+            trade.instrument_id,
+        )
+        repository = SQLAlchemyPositionEventRepository(session)
+        first = repository.append_position_event(
+            _position_event(trade, position.id or "1", raw_payload={"source": "first"})
+        )
+        second = repository.append_position_event(
+            _position_event(trade, position.id or "1", raw_payload={"source": "second"})
+        )
+        event_count = session.scalar(select(func.count()).select_from(PositionEventOrm))
+
+    assert first.id == second.id
+    assert event_count == 1
+    assert second.raw_payload == {"source": "first"}
+
+
+def test_position_event_duplicate_different_payload_raises_controlled_error(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        order_id = _create_order(session)
+        trade = SQLAlchemyTradeRepository(session).create_or_get_trade(_trade(order_id))
+        position = SQLAlchemyPositionRepository(session).create_or_get_position(
+            trade.account_id,
+            trade.instrument_id,
+        )
+        repository = SQLAlchemyPositionEventRepository(session)
+        repository.append_position_event(_position_event(trade, position.id or "1"))
+
+        with pytest.raises(PositionEventConflictError) as exc_info:
+            repository.append_position_event(
+                _position_event(trade, position.id or "1", quantity=Decimal("2"))
+            )
+
+    assert not isinstance(exc_info.value, IntegrityError)
+
+
+def test_position_event_duplicate_different_before_snapshot_raises_controlled_error(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        order_id = _create_order(session)
+        trade = SQLAlchemyTradeRepository(session).create_or_get_trade(_trade(order_id))
+        position = SQLAlchemyPositionRepository(session).create_or_get_position(
+            trade.account_id,
+            trade.instrument_id,
+        )
+        repository = SQLAlchemyPositionEventRepository(session)
+        repository.append_position_event(_position_event(trade, position.id or "1"))
+
+        changed_before = PositionSnapshot(
+            account_id=trade.account_id,
+            instrument_id=trade.instrument_id,
+            long_today_qty=Decimal("1"),
+            long_yesterday_qty=Decimal("0"),
+            short_today_qty=Decimal("0"),
+            short_yesterday_qty=Decimal("0"),
+            long_avg_price=Decimal("3500.5"),
+            short_avg_price=Decimal("0"),
+            version=0,
+        )
+        with pytest.raises(PositionEventConflictError):
+            repository.append_position_event(
+                _position_event(
+                    trade,
+                    position.id or "1",
+                    before_snapshot=changed_before,
+                )
+            )
+
+
+def test_position_event_duplicate_different_after_snapshot_raises_controlled_error(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        order_id = _create_order(session)
+        trade = SQLAlchemyTradeRepository(session).create_or_get_trade(_trade(order_id))
+        position = SQLAlchemyPositionRepository(session).create_or_get_position(
+            trade.account_id,
+            trade.instrument_id,
+        )
+        repository = SQLAlchemyPositionEventRepository(session)
+        repository.append_position_event(_position_event(trade, position.id or "1"))
+
+        changed_after = PositionSnapshot(
+            account_id=trade.account_id,
+            instrument_id=trade.instrument_id,
+            long_today_qty=Decimal("2"),
+            long_yesterday_qty=Decimal("0"),
+            short_today_qty=Decimal("0"),
+            short_yesterday_qty=Decimal("0"),
+            long_avg_price=trade.price,
+            short_avg_price=Decimal("0"),
+            version=1,
+        )
+        with pytest.raises(PositionEventConflictError):
+            repository.append_position_event(
+                _position_event(
+                    trade,
+                    position.id or "1",
+                    after_snapshot=changed_after,
+                )
+            )
+
+
+def test_position_manager_close_without_position_does_not_insert_empty_row(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        order_id = _create_order(session)
+        persisted_trade = SQLAlchemyTradeRepository(session).create_or_get_trade(
+            _trade(order_id).model_copy(
+                update={
+                    "direction": Direction.SELL,
+                    "offset": Offset.CLOSE_TODAY,
+                }
+            )
+        )
+
+    manager = PositionManager(lambda: SQLAlchemyUnitOfWork(session_factory=db_session_factory))
+    result = manager.apply_trade(persisted_trade)
+
+    with db_session_factory.begin() as session:
+        position_count = session.scalar(select(func.count()).select_from(Position))
+        event_count = session.scalar(select(func.count()).select_from(PositionEventOrm))
+
+    assert result.status == PositionManagerResultStatus.REJECTED_INSUFFICIENT_POSITION
+    assert position_count == 0
+    assert event_count == 0
+
+
+def test_position_manager_duplicate_detects_projection_divergence(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        order_id = _create_order(session)
+        persisted_trade = SQLAlchemyTradeRepository(session).create_or_get_trade(_trade(order_id))
+
+    manager = PositionManager(lambda: SQLAlchemyUnitOfWork(session_factory=db_session_factory))
+    first = manager.apply_trade(persisted_trade)
+
+    with db_session_factory.begin() as session:
+        position = session.scalar(select(Position))
+        assert position is not None
+        position.long_today_qty = Decimal("2")
+
+    replay = manager.replay_trades([persisted_trade])
+
+    with db_session_factory.begin() as session:
+        event_count = session.scalar(select(func.count()).select_from(PositionEventOrm))
+
+    assert first.status == PositionManagerResultStatus.APPLIED
+    assert replay.results[0].status == PositionManagerResultStatus.CONFLICT
+    assert replay.results[0].reason == "position_projection_diverged_from_event_snapshot"
+    assert replay.has_divergence
+    assert event_count == 1
+
+
+def test_unit_of_work_exposes_position_repositories(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with SQLAlchemyUnitOfWork(session_factory=db_session_factory) as uow:
+        assert isinstance(uow.positions, SQLAlchemyPositionRepository)
+        assert isinstance(uow.position_events, SQLAlchemyPositionEventRepository)
 
 
 def test_unit_of_work_rollback_leaves_no_order(

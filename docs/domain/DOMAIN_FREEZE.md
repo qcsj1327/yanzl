@@ -272,6 +272,7 @@ Stage B 冻结 `FillEvent` 作为 execution report 中的类型化成交事实�
 | `raw_payload` | `dict[str, Any]` | required | 诊断 payload；不承载成交 source-of-truth。 |
 
 `FillEvent` 的价格、数量、trade id、fill id、fee、trading day 等 source-of-truth 字段必须类型化。`raw_payload` 只保留诊断信息。
+`quantity` 必须为正 Decimal；零数量或负数量不得进入成交事实。
 
 ### Trade
 
@@ -298,10 +299,17 @@ Stage B 冻结 `FillEvent` 作为 execution report 中的类型化成交事实�
 成交去重基于 `account_id + exchange + exchange_trade_id`。
 
 `Trade` 是 accounting source-of-truth。Position、Margin、PnL 和 Settlement 只能消费去重后的 `Trade` ledger；`OrderStatus.FILLED`、`OrderStatus.PARTIALLY_FILLED`、`OrderEvent`、`ExchangeReport` 和 `raw_payload` 都不是成交账本事实。
+`Trade.quantity` 必须为正 Decimal；零数量或负数量不得进入 Trade ledger。
 
 如 broker 无 `exchange_trade_id`，不得生成随机 ID 入账；必须先冻结稳定替代键，否则该成交不得进入 `Trade` ledger。
 
 ### Position
+
+Stage C 已实现 Position Manager 契约。`Trade` ledger 是 Position 更新唯一输入事实；`positions(account_id, instrument_id)` 是 live position projection / current source-of-truth；`PositionEvent` 是 idempotency、replay 和 audit ledger。
+
+Position 禁止消费 `OrderStatus`、`OrderEvent`、`ExchangeReport` 或 `raw_payload`。只靠 `positions` snapshot 不允许作为 repeated trade replay no-op 的幂等依据。
+
+Stage C 当前负责字段：
 
 | 字段 | 类型 | 默认值 | 语义 |
 |---|---|---|---|
@@ -311,17 +319,72 @@ Stage B 冻结 `FillEvent` 作为 execution report 中的类型化成交事实�
 | `long_yesterday_qty` | `Decimal` | `Decimal("0")` | 多头昨仓数量。 |
 | `short_today_qty` | `Decimal` | `Decimal("0")` | 空头今仓数量。 |
 | `short_yesterday_qty` | `Decimal` | `Decimal("0")` | 空头昨仓数量。 |
+| `long_avg_price` | `Decimal` | `Decimal("0")` | 多头开仓均价；开仓按加权平均更新，平仓不在 Stage C 改写剩余均价。 |
+| `short_avg_price` | `Decimal` | `Decimal("0")` | 空头开仓均价；开仓按加权平均更新，平仓不在 Stage C 改写剩余均价。 |
+| `version` | `int` | `0` | 乐观并发和 replay divergence 检查版本。 |
+| `updated_at` | `datetime` | required | live projection 最后更新时间。 |
+
+当前已存在但 Stage C 不更新的字段：
+
+| 字段 | 类型 | 默认值 | 语义 |
+|---|---|---|---|
 | `frozen_long_qty` | `Decimal` | `Decimal("0")` | 冻结多头数量。 |
 | `frozen_short_qty` | `Decimal` | `Decimal("0")` | 冻结空头数量。 |
-| `long_avg_price` | `Decimal` | `Decimal("0")` | 多头持仓均价。 |
-| `short_avg_price` | `Decimal` | `Decimal("0")` | 空头持仓均价。 |
 | `settlement_price` | `Decimal` | `Decimal("0")` | 结算价。 |
 | `last_price` | `Decimal` | `Decimal("0")` | 最新行情价。 |
 | `realized_pnl` | `Decimal` | `Decimal("0")` | 已实现盈亏。 |
 | `unrealized_pnl` | `Decimal` | `Decimal("0")` | 未实现盈亏。 |
 | `margin_used` | `Decimal` | `Decimal("0")` | 持仓占用保证金。 |
 
-当前 live position 身份为 `account_id + instrument_id`。
+`frozen_long_qty` / `frozen_short_qty` 可保留为字段，但 Stage C 不从 `OrderStatus` 推导冻结；冻结/解冻后续必须由 typed reservation event 驱动。Stage C 不更新 realized/unrealized PnL、`margin_used`、settlement roll、today -> yesterday roll。
+
+Stage C update rules：
+
+- BUY + OPEN：增加 `long_today_qty`，按同侧 `long_today_qty + long_yesterday_qty` 总量做 Decimal 加权平均并更新 `long_avg_price`。
+- SELL + OPEN：增加 `short_today_qty`，按同侧 `short_today_qty + short_yesterday_qty` 总量做 Decimal 加权平均并更新 `short_avg_price`。
+- SELL + CLOSE_TODAY：扣减 `long_today_qty`。
+- SELL + CLOSE_YESTERDAY：扣减 `long_yesterday_qty`。
+- BUY + CLOSE_TODAY：扣减 `short_today_qty`。
+- BUY + CLOSE_YESTERDAY：扣减 `short_yesterday_qty`。
+- Partial close 只扣成交数量。
+- Close 数量超过对应 bucket 时返回 typed rejection，不修改 position。
+- Unsupported offset 返回 typed error。
+- 任何 resulting quantity 不得为负。
+- 平仓不计算 realized PnL，不改变剩余 open avg price。
+
+### PositionEvent
+
+Stage C 选择 `PositionEvent`，不选择仅 `position_applied_trades`，因为 replay 和 audit 需要 before/after snapshot。
+
+| 字段 | 类型 | 默认值 | 语义 |
+|---|---|---|---|
+| `id` | `str` | required | Position event 本地身份。 |
+| `account_id` | `str` | required | 账户 ID。 |
+| `instrument_id` | `str` | required | 合约 ID。 |
+| `exchange` | `str` | required | 交易所。 |
+| `exchange_trade_id` | `str` | required | 交易所成交 ID。 |
+| `trade_id` | `str` | required | 对应 Trade ledger 本地身份。 |
+| `position_id` | `str` | required | 对应 live position row。 |
+| `direction` | `str` | required | Trade direction / side。 |
+| `offset` | `str` | required | OPEN / CLOSE_TODAY / CLOSE_YESTERDAY。 |
+| `price` | `Decimal` | required | 成交价。 |
+| `quantity` | `Decimal` | required | 应用数量。 |
+| `before_snapshot` | `PositionSnapshot` | required | 应用前 position typed snapshot；DB 以 JSON serialization 存储。 |
+| `after_snapshot` | `PositionSnapshot` | required | 应用后 position typed snapshot；DB 以 JSON serialization 存储。 |
+| `event_type` | `str` | required | 例如 `TRADE_APPLIED`。 |
+| `occurred_at` | `datetime` | required | 使用 Trade time 或业务发生时间。 |
+| `created_at` | `datetime` | required | 本地写入时间。 |
+| `raw_payload` | `dict[str, Any]` | `{}` | 诊断 payload；不承载 position source-of-truth。 |
+
+PositionEvent 幂等键沿用 Trade identity：`account_id + exchange + exchange_trade_id`。已存在且 canonical payload 一致时，`apply_trade` 必须比对 live `positions` projection 与 `PositionEvent.after_snapshot`；一致才 no-op / duplicate applied，不一致必须返回 typed conflict / replay divergence。已存在但 canonical payload 不一致时，必须返回 typed conflict；未存在时，必须在同一 UoW 内更新 `positions` 并写入 `position_events`。
+PositionEvent canonical payload 必须包含 `before_snapshot` 和 `after_snapshot` 的 normalized typed representation；`raw_payload` 不参与 canonical payload。
+
+PositionEvent 必须支持回答：
+
+- 哪笔 Trade 已应用。
+- 应用前后 Position 是什么。
+- Replay 是否重复。
+- Conflict 如何判定。
 
 ### TradingCalendar
 
@@ -367,8 +430,8 @@ Stage B 冻结 `FillEvent` 作为 execution report 中的类型化成交事实�
 - Phase 4 可实现的 `MockFuturesExchange` 当前不包含 settlement 方法；每日结算属于后续 Settlement 阶段，不得挂在 Execution skeleton 上。
 - 移除 `MockFuturesExchange.run_daily_settlement(trading_day)` 是 intentional interface migration；Future Settlement Protocol 必须在后续 Settlement 阶段另行定义。
 - `TradeProcessor.apply_trade(trade: Trade) -> bool`：成交应用，返回是否实际应用。
-- `FuturesPositionManager.apply_trade(trade: Trade) -> None`：成交更新持仓。
-- `FuturesPositionManager.roll_today_to_yesterday(account_id: str, trading_day: str) -> None`：今仓转昨仓。
+- `PositionManager.apply_trade(trade: Trade) -> PositionApplicationResult`：Stage C 成交更新持仓的 application service 入口；只消费 `Trade`。
+- `PositionManager.replay_trades(trades: Sequence[Trade]) -> PositionReplayResult`：如 Stage C 实现 replay runner，则按冻结排序逐笔应用 Trade；已应用 trade no-op。
 - `MarginEngine.margin_required(order: OrderRequest) -> Decimal`：保证金计算边界。
 - `PnLEngine.mark_to_market(account_id: str) -> Decimal`：盯市计算边界。
 - `SettlementEngine.settle(account_id: str, trading_day: str) -> None`：结算边界。
@@ -383,6 +446,61 @@ Stage B 冻结 `TradeRepository`：
 - 重复键但 `order_id`、`instrument_id`、`direction`、`offset`、`price`、`quantity`、`trade_time`、fee 或 source report 不一致时抛 `TradeIdempotencyConflictError`。
 - Repository 不更新 Position，不修改 OMS，不应用 `OrderEvent`，不调用 Risk、Execution 或 Runtime。
 - UnitOfWork 在 Stage B 需要暴露 `trades: TradeRepository`，但不把 `trades` 写入 OMSService 的职责边界。
+
+Stage C 冻结 `PositionRepository`：
+
+- `get_by_account_instrument(account_id: str, instrument_id: str) -> Position | None`：按 live position 身份查询。
+- `create_or_get_position(account_id: str, instrument_id: str) -> Position`：创建或返回当前 live projection。
+- `update_position(position: Position, expected_version: int | None = None) -> Position`：更新 live projection，并在提供 `expected_version` 时执行乐观并发检查。
+- `list_by_account(account_id: str) -> list[Position]`：列出账户当前持仓。
+- Repository 不读取 `OrderStatus`、`OrderEvent`、`ExchangeReport` 或 `raw_payload` 推导持仓，不更新 OMS，不调用 Risk、Execution、Broker 或 Runtime。
+
+Stage C 冻结 `PositionEventRepository`：
+
+- `append_position_event(event: PositionEvent) -> PositionEvent`：追加 applied-trade audit event。
+- `get_by_trade_key(account_id: str, exchange: str, exchange_trade_id: str) -> PositionEvent | None`：按 Trade identity 查询是否已应用。
+- `list_by_position(account_id: str, instrument_id: str) -> list[PositionEvent]`：列出单合约持仓事件。
+- `list_by_account(account_id: str) -> list[PositionEvent]`：列出账户持仓事件。
+
+Stage C `UnitOfWork` 需要暴露 `positions: PositionRepository` 和 `position_events: PositionEventRepository`。同一 Trade 首次应用时，`positions` update 与 `position_events` append 必须在同一 UoW 内完成。
+
+Stage C `PositionApplicationStatus` 冻结为：
+
+- `APPLIED`：Trade 首次应用，position 已更新并写入 PositionEvent。
+- `DUPLICATE_IGNORED`：同一 Trade identity 已应用且 canonical payload 一致，本次 no-op。
+- `REJECTED_INSUFFICIENT_POSITION`：平仓数量超过对应 today/yesterday bucket，position 不变。
+- `CONFLICT`：同一 Trade identity 已存在但 canonical payload 不一致，或 replay divergence。
+- `ERROR`：unsupported offset、非法方向、Decimal contract 失败或其他 typed error。
+
+Stage C 不 import OMS / Risk / Execution mapper / Broker / Runtime，不写 Margin / PnL / Settlement，不更新 Order。
+
+Stage C replay contract：
+
+- Full replay 可以从 ordered `Trade` ledger 重建 `positions`。
+- Incremental replay 逐笔调用 `apply_trade`；已应用 Trade 返回 `DUPLICATE_IGNORED`，不重复修改 position。
+- Trade ordering 使用 `trade_time`，稳定 secondary key 使用 `id` 或 `exchange_trade_id`。
+- Replay divergence 不能静默覆盖 live projection，必须返回 typed conflict/report。
+- 只靠 `positions` snapshot 不能作为 replay idempotency 依据。
+
+Stage C testing matrix：
+
+- OPEN LONG。
+- OPEN SHORT。
+- CLOSE TODAY LONG。
+- CLOSE YESTERDAY LONG。
+- CLOSE TODAY SHORT。
+- CLOSE YESTERDAY SHORT。
+- Partial close。
+- Insufficient today bucket。
+- Insufficient yesterday bucket。
+- Duplicate trade no-op。
+- Duplicate trade conflict。
+- Replay deterministic。
+- Position event unique trade key。
+- DB round trip。
+- UoW exposes `positions` / `position_events`。
+- No OMS / Risk / Execution mapper / Broker / Runtime import。
+- No Margin / PnL / Settlement mutation。
 
 本阶段任何接口都不得连接真实期货柜台、CTP、SimNow 或真实交易网关。
 
@@ -575,6 +693,49 @@ Fee 语义：
 - `UNIQUE(account_id, instrument_id)`，名称为 `uq_positions_account_inst`
 - `account_id` 索引
 - `instrument_id` 索引
+
+Stage C implemented migration：
+
+- `positions.version INTEGER NOT NULL DEFAULT 0`
+- `version` 用于 optimistic update 和 replay divergence 检查。
+- Stage C migration 不新增 margin / pnl / settlement 表，不改变 `orders` / `order_events` / `trades` 语义。
+
+### position_events
+
+Stage C 已新增 `position_events` 表作为 idempotency + replay audit ledger。
+
+字段：
+
+- `id`
+- `account_id`
+- `instrument_id`
+- `exchange`
+- `exchange_trade_id`
+- `trade_id`
+- `position_id`
+- `direction`
+- `offset`
+- `price`
+- `quantity`
+- `before_snapshot`
+- `after_snapshot`
+- `event_type`
+- `occurred_at`
+- `created_at`
+- `raw_payload`
+
+约束和索引：
+
+- `UNIQUE(account_id, exchange, exchange_trade_id)`
+- `position_id` references `positions.id`
+- `trade_id` references `trades.id`
+- `account_id` 索引
+- `instrument_id` 索引
+- `(account_id, instrument_id)` 复合索引
+- `trade_id` 索引
+- `exchange_trade_id` 索引
+
+`before_snapshot` / `after_snapshot` 用于 replay audit，不替代 live `positions` source-of-truth。`raw_payload` 只诊断，不参与 position canonical payload 或 replay conflict 判定。
 
 ### account_snapshots
 

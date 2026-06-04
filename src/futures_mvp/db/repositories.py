@@ -8,14 +8,25 @@ from sqlalchemy.orm import Session
 
 from futures_mvp.db.models import Order
 from futures_mvp.db.models import OrderEvent as OrderEventOrm
+from futures_mvp.db.models import Position as PositionOrm
+from futures_mvp.db.models import PositionEvent as PositionEventOrm
 from futures_mvp.db.models import Trade as TradeOrm
 from futures_mvp.domain.enums import Direction, EventSource, Offset, OrderStatus, OrderType
-from futures_mvp.domain.models import OrderEvent, OrderRequest, OrderState, Trade
+from futures_mvp.domain.models import (
+    OrderEvent,
+    OrderRequest,
+    OrderState,
+    Position,
+    PositionEvent,
+    PositionSnapshot,
+    Trade,
+)
 from futures_mvp.interfaces.repositories import (
     EventAlreadyExistsError,
     IdempotencyConflictError,
     OptimisticLockError,
     OrderNotFoundError,
+    PositionEventConflictError,
     RepositoryError,
     TradeIdempotencyConflictError,
 )
@@ -95,6 +106,66 @@ def trade_to_domain(trade: TradeOrm) -> Trade:
         source_exchange_report_id=trade.source_exchange_report_id,
         raw_payload=trade.raw_payload or {},
     )
+
+
+def position_to_domain(position: PositionOrm) -> Position:
+    return Position(
+        id=str(position.id),
+        account_id=position.account_id,
+        instrument_id=position.instrument_id,
+        long_today_qty=position.long_today_qty,
+        long_yesterday_qty=position.long_yesterday_qty,
+        short_today_qty=position.short_today_qty,
+        short_yesterday_qty=position.short_yesterday_qty,
+        frozen_long_qty=position.frozen_long_qty,
+        frozen_short_qty=position.frozen_short_qty,
+        long_avg_price=position.long_avg_price,
+        short_avg_price=position.short_avg_price,
+        settlement_price=position.settlement_price,
+        last_price=position.last_price,
+        realized_pnl=position.realized_pnl,
+        unrealized_pnl=position.unrealized_pnl,
+        margin_used=position.margin_used,
+        version=position.version,
+        updated_at=position.updated_at,
+    )
+
+
+def position_event_to_domain(event: PositionEventOrm) -> PositionEvent:
+    return PositionEvent(
+        id=str(event.id),
+        account_id=event.account_id,
+        instrument_id=event.instrument_id,
+        exchange=event.exchange,
+        exchange_trade_id=event.exchange_trade_id,
+        trade_id=str(event.trade_id),
+        position_id=str(event.position_id),
+        event_type=event.event_type,
+        direction=Direction(event.direction),
+        offset=Offset(event.offset),
+        price=event.price,
+        quantity=event.quantity,
+        before_snapshot=PositionSnapshot.model_validate(event.before_snapshot),
+        after_snapshot=PositionSnapshot.model_validate(event.after_snapshot),
+        occurred_at=event.occurred_at,
+        created_at=event.created_at,
+        raw_payload=event.raw_payload or {},
+    )
+
+
+def _snapshot_to_json(snapshot: PositionSnapshot) -> dict[str, object]:
+    return cast(dict[str, object], snapshot.model_dump(mode="json"))
+
+
+def _canonical_snapshot_payload(
+    snapshot: PositionSnapshot | dict[str, object],
+) -> tuple[object, ...]:
+    typed_snapshot = (
+        snapshot
+        if isinstance(snapshot, PositionSnapshot)
+        else PositionSnapshot.model_validate(snapshot)
+    )
+    return tuple(sorted(typed_snapshot.model_dump(mode="json").items()))
 
 
 def _status_values(statuses: Iterable[OrderStatus]) -> list[str]:
@@ -177,6 +248,53 @@ def _same_canonical_trade_payload(existing: TradeOrm, trade: Trade) -> bool:
     return _canonical_trade_payload_from_orm(existing) == _canonical_trade_payload_from_domain(
         trade
     )
+
+
+def _canonical_position_event_payload_from_domain(event: PositionEvent) -> tuple[object, ...]:
+    return (
+        event.account_id,
+        event.instrument_id,
+        event.exchange,
+        event.exchange_trade_id,
+        event.trade_id,
+        event.position_id,
+        event.event_type,
+        event.direction.value,
+        event.offset.value,
+        event.price,
+        event.quantity,
+        _canonical_snapshot_payload(event.before_snapshot),
+        _canonical_snapshot_payload(event.after_snapshot),
+        event.occurred_at,
+    )
+
+
+def _canonical_position_event_payload_from_orm(event: PositionEventOrm) -> tuple[object, ...]:
+    return (
+        event.account_id,
+        event.instrument_id,
+        event.exchange,
+        event.exchange_trade_id,
+        str(event.trade_id),
+        str(event.position_id),
+        event.event_type,
+        event.direction,
+        event.offset,
+        event.price,
+        event.quantity,
+        _canonical_snapshot_payload(event.before_snapshot),
+        _canonical_snapshot_payload(event.after_snapshot),
+        event.occurred_at,
+    )
+
+
+def _same_canonical_position_event_payload(
+    existing: PositionEventOrm,
+    event: PositionEvent,
+) -> bool:
+    return _canonical_position_event_payload_from_orm(
+        existing
+    ) == _canonical_position_event_payload_from_domain(event)
 
 
 class SQLAlchemyOrderRepository:
@@ -432,3 +550,215 @@ class SQLAlchemyTradeRepository:
                 f"{trade.account_id}/{trade.exchange}/{trade.exchange_trade_id}"
             )
         return trade_to_domain(existing)
+
+
+class SQLAlchemyPositionRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def get_by_account_instrument(
+        self,
+        account_id: str,
+        instrument_id: str,
+    ) -> Position | None:
+        position = self._get_orm_by_account_instrument(account_id, instrument_id)
+        return position_to_domain(position) if position else None
+
+    def create_or_get_position(self, account_id: str, instrument_id: str) -> Position:
+        existing = self._get_orm_by_account_instrument(account_id, instrument_id)
+        if existing is not None:
+            return position_to_domain(existing)
+
+        try:
+            with self._session.begin_nested():
+                position = PositionOrm(
+                    account_id=account_id,
+                    instrument_id=instrument_id,
+                )
+                self._session.add(position)
+                self._session.flush()
+            return position_to_domain(position)
+        except IntegrityError as exc:
+            existing_after_conflict = self._get_orm_by_account_instrument(
+                account_id,
+                instrument_id,
+            )
+            if existing_after_conflict is None:
+                raise RepositoryError(
+                    "position unique conflict but position not found: "
+                    f"{account_id}/{instrument_id}"
+                ) from exc
+            return position_to_domain(existing_after_conflict)
+
+    def update_position(
+        self,
+        position: Position,
+        *,
+        expected_version: int | None = None,
+    ) -> Position:
+        if position.id is None:
+            raise RepositoryError("position.id is required for update_position")
+        db_position_id = parse_order_id(position.id)
+        conditions = [PositionOrm.id == db_position_id]
+        if expected_version is not None:
+            conditions.append(PositionOrm.version == expected_version)
+
+        result = cast(
+            CursorResult[object],
+            self._session.execute(
+                update(PositionOrm)
+                .where(*conditions)
+                .values(
+                    long_today_qty=position.long_today_qty,
+                    long_yesterday_qty=position.long_yesterday_qty,
+                    short_today_qty=position.short_today_qty,
+                    short_yesterday_qty=position.short_yesterday_qty,
+                    long_avg_price=position.long_avg_price,
+                    short_avg_price=position.short_avg_price,
+                    version=PositionOrm.version + 1,
+                )
+                .execution_options(synchronize_session=False)
+            ),
+        )
+        if result.rowcount != 1:
+            if expected_version is None:
+                raise RepositoryError(f"position not found: {position.id}")
+            raise OptimisticLockError(
+                f"position {position.id} version mismatch: expected {expected_version}"
+            )
+        self._session.flush()
+        updated = self._get_orm_by_id(db_position_id)
+        if updated is None:
+            raise RepositoryError(f"position updated but not found: {position.id}")
+        return position_to_domain(updated)
+
+    def list_by_account(self, account_id: str) -> list[Position]:
+        positions = self._session.scalars(
+            select(PositionOrm)
+            .where(PositionOrm.account_id == account_id)
+            .order_by(PositionOrm.instrument_id.asc())
+        ).all()
+        return [position_to_domain(position) for position in positions]
+
+    def _get_orm_by_id(self, db_position_id: int) -> PositionOrm | None:
+        return self._session.scalar(
+            select(PositionOrm)
+            .where(PositionOrm.id == db_position_id)
+            .execution_options(populate_existing=True)
+        )
+
+    def _get_orm_by_account_instrument(
+        self,
+        account_id: str,
+        instrument_id: str,
+    ) -> PositionOrm | None:
+        return self._session.scalar(
+            select(PositionOrm).where(
+                PositionOrm.account_id == account_id,
+                PositionOrm.instrument_id == instrument_id,
+            )
+        )
+
+
+class SQLAlchemyPositionEventRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def append_position_event(self, event: PositionEvent) -> PositionEvent:
+        existing = self._get_orm_by_trade_key(
+            event.account_id,
+            event.exchange,
+            event.exchange_trade_id,
+        )
+        if existing is not None:
+            return self._existing_position_event_for_append(existing, event)
+
+        try:
+            with self._session.begin_nested():
+                event_orm = PositionEventOrm(
+                    account_id=event.account_id,
+                    instrument_id=event.instrument_id,
+                    exchange=event.exchange,
+                    exchange_trade_id=event.exchange_trade_id,
+                    trade_id=parse_order_id(event.trade_id),
+                    position_id=parse_order_id(event.position_id),
+                    event_type=event.event_type,
+                    direction=event.direction.value,
+                    offset=event.offset.value,
+                    price=event.price,
+                    quantity=event.quantity,
+                    before_snapshot=_snapshot_to_json(event.before_snapshot),
+                    after_snapshot=_snapshot_to_json(event.after_snapshot),
+                    occurred_at=event.occurred_at,
+                    created_at=event.created_at,
+                    raw_payload=event.raw_payload,
+                )
+                self._session.add(event_orm)
+                self._session.flush()
+            return position_event_to_domain(event_orm)
+        except IntegrityError as exc:
+            existing_after_conflict = self._get_orm_by_trade_key(
+                event.account_id,
+                event.exchange,
+                event.exchange_trade_id,
+            )
+            if existing_after_conflict is None:
+                raise RepositoryError(
+                    "position event unique conflict but event not found: "
+                    f"{event.account_id}/{event.exchange}/{event.exchange_trade_id}"
+                ) from exc
+            return self._existing_position_event_for_append(existing_after_conflict, event)
+
+    def get_by_trade_key(
+        self,
+        account_id: str,
+        exchange: str,
+        exchange_trade_id: str,
+    ) -> PositionEvent | None:
+        event = self._get_orm_by_trade_key(account_id, exchange, exchange_trade_id)
+        return position_event_to_domain(event) if event else None
+
+    def list_by_position(self, account_id: str, instrument_id: str) -> list[PositionEvent]:
+        events = self._session.scalars(
+            select(PositionEventOrm)
+            .where(
+                PositionEventOrm.account_id == account_id,
+                PositionEventOrm.instrument_id == instrument_id,
+            )
+            .order_by(PositionEventOrm.id.asc())
+        ).all()
+        return [position_event_to_domain(event) for event in events]
+
+    def list_by_account(self, account_id: str) -> list[PositionEvent]:
+        events = self._session.scalars(
+            select(PositionEventOrm)
+            .where(PositionEventOrm.account_id == account_id)
+            .order_by(PositionEventOrm.id.asc())
+        ).all()
+        return [position_event_to_domain(event) for event in events]
+
+    def _get_orm_by_trade_key(
+        self,
+        account_id: str,
+        exchange: str,
+        exchange_trade_id: str,
+    ) -> PositionEventOrm | None:
+        return self._session.scalar(
+            select(PositionEventOrm).where(
+                PositionEventOrm.account_id == account_id,
+                PositionEventOrm.exchange == exchange,
+                PositionEventOrm.exchange_trade_id == exchange_trade_id,
+            )
+        )
+
+    def _existing_position_event_for_append(
+        self,
+        existing: PositionEventOrm,
+        event: PositionEvent,
+    ) -> PositionEvent:
+        if not _same_canonical_position_event_payload(existing, event):
+            raise PositionEventConflictError(
+                "exchange_trade_id reused with different position event payload: "
+                f"{event.account_id}/{event.exchange}/{event.exchange_trade_id}"
+            )
+        return position_event_to_domain(existing)
