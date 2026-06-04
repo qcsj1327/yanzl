@@ -15,6 +15,7 @@ from futures_mvp.domain.enums import (
     PnLPriceBasis,
     PnLResultStatus,
     PositionManagerResultStatus,
+    SettlementResultStatus,
 )
 from futures_mvp.domain.errors import DecimalRequiredError
 from futures_mvp.domain.models import (
@@ -36,6 +37,9 @@ from futures_mvp.domain.models import (
     PositionManagerResult,
     PositionSnapshot,
     RealizedPnL,
+    SettlementContext,
+    SettlementPrice,
+    SettlementSnapshot,
     Signal,
     Trade,
     UnrealizedPnL,
@@ -127,6 +131,71 @@ def test_pnl_result_status_complete_contract() -> None:
         "CONFLICT",
         "ERROR",
     ]
+
+
+def test_settlement_result_status_complete_contract() -> None:
+    assert [status.value for status in SettlementResultStatus] == [
+        "SETTLED",
+        "DUPLICATE",
+        "REJECTED_NON_TRADING_DAY",
+        "REJECTED_MISSING_POSITION",
+        "REJECTED_MISSING_PNL",
+        "REJECTED_MISSING_MARGIN",
+        "REJECTED_MISSING_SETTLEMENT_PRICE",
+        "REJECTED_FROZEN_POSITION",
+        "CONFLICT",
+        "ERROR",
+    ]
+
+
+def test_settlement_domain_validators_and_no_raw_payload_facts() -> None:
+    price = SettlementPrice(
+        instrument_id="rb2610",
+        exchange="SHFE",
+        trading_day=date(2026, 6, 4),
+        price=Decimal("3500"),
+        source=None,
+        received_at=datetime.now(UTC),
+    )
+
+    assert price.price == Decimal("3500")
+    assert "raw_payload" not in SettlementPrice.model_fields
+    assert "raw_payload" not in SettlementSnapshot.model_fields
+
+    with pytest.raises(DecimalRequiredError):
+        SettlementPrice(
+            instrument_id="rb2610",
+            exchange="SHFE",
+            trading_day=date(2026, 6, 4),
+            price=3500.0,
+            received_at=datetime.now(UTC),
+        )
+    with pytest.raises(ValueError):
+        SettlementPrice(
+            instrument_id="rb2610",
+            exchange="SHFE",
+            trading_day=date(2026, 6, 4),
+            price=Decimal("0"),
+            received_at=datetime.now(UTC),
+        )
+    with pytest.raises(ValueError):
+        SettlementContext(
+            account_id="acct-1",
+            trading_day=date(2026, 6, 4),
+            account_before=AccountContext(
+                account_id="acct-1",
+                equity=Decimal("10000"),
+                available_cash=Decimal("10000"),
+                frozen_cash=Decimal("0"),
+                snapshot_time=datetime.now(UTC),
+            ),
+            positions=(),
+            pnl_snapshots=(),
+            margin_snapshots=(),
+            settlement_prices=(),
+            calculation_key=" ",
+            settled_at=datetime.now(UTC),
+        )
 
 
 def test_core_models_reject_float_prices_and_quantities() -> None:

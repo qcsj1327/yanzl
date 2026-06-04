@@ -4,12 +4,14 @@ from types import TracebackType
 from sqlalchemy.orm import Session
 
 from futures_mvp.db.repositories import (
+    SQLAlchemyAccountSnapshotRepository,
     SQLAlchemyMarginSnapshotRepository,
     SQLAlchemyOrderEventRepository,
     SQLAlchemyOrderRepository,
     SQLAlchemyPnLSnapshotRepository,
     SQLAlchemyPositionEventRepository,
     SQLAlchemyPositionRepository,
+    SQLAlchemySettlementSnapshotRepository,
     SQLAlchemyTradeRepository,
 )
 from futures_mvp.db.session import SessionLocal
@@ -33,6 +35,8 @@ class SQLAlchemyUnitOfWork:
         self.position_events: SQLAlchemyPositionEventRepository
         self.margin_snapshots: SQLAlchemyMarginSnapshotRepository
         self.pnl_snapshots: SQLAlchemyPnLSnapshotRepository
+        self.account_snapshots: SQLAlchemyAccountSnapshotRepository
+        self.settlement_snapshots: SQLAlchemySettlementSnapshotRepository
 
     def __enter__(self) -> "SQLAlchemyUnitOfWork":
         self._session = self._provided_session or self._session_factory()
@@ -43,6 +47,8 @@ class SQLAlchemyUnitOfWork:
         self.position_events = SQLAlchemyPositionEventRepository(self._session)
         self.margin_snapshots = SQLAlchemyMarginSnapshotRepository(self._session)
         self.pnl_snapshots = SQLAlchemyPnLSnapshotRepository(self._session)
+        self.account_snapshots = SQLAlchemyAccountSnapshotRepository(self._session)
+        self.settlement_snapshots = SQLAlchemySettlementSnapshotRepository(self._session)
         return self
 
     def __exit__(

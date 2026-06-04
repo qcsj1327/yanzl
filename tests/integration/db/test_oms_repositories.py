@@ -12,19 +12,23 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from alembic import command
 from futures_mvp.db.config import settings
+from futures_mvp.db.models import AccountSnapshot as AccountSnapshotOrm
 from futures_mvp.db.models import MarginSnapshot as MarginSnapshotOrm
 from futures_mvp.db.models import Order, Position
 from futures_mvp.db.models import OrderEvent as OrderEventOrm
 from futures_mvp.db.models import PnLSnapshot as PnLSnapshotOrm
 from futures_mvp.db.models import PositionEvent as PositionEventOrm
+from futures_mvp.db.models import SettlementSnapshot as SettlementSnapshotOrm
 from futures_mvp.db.models import Trade as TradeOrm
 from futures_mvp.db.repositories import (
+    SQLAlchemyAccountSnapshotRepository,
     SQLAlchemyMarginSnapshotRepository,
     SQLAlchemyOrderEventRepository,
     SQLAlchemyOrderRepository,
     SQLAlchemyPnLSnapshotRepository,
     SQLAlchemyPositionEventRepository,
     SQLAlchemyPositionRepository,
+    SQLAlchemySettlementSnapshotRepository,
     SQLAlchemyTradeRepository,
 )
 from futures_mvp.db.unit_of_work import SQLAlchemyUnitOfWork
@@ -39,6 +43,7 @@ from futures_mvp.domain.enums import (
     PnLPriceBasis,
     PnLResultStatus,
     PositionManagerResultStatus,
+    SettlementResultStatus,
 )
 from futures_mvp.domain.models import (
     AccountContext,
@@ -50,6 +55,9 @@ from futures_mvp.domain.models import (
     PnLSnapshot,
     PositionEvent,
     PositionSnapshot,
+    SettlementContext,
+    SettlementPrice,
+    SettlementSnapshot,
     Trade,
 )
 from futures_mvp.interfaces.repositories import (
@@ -60,11 +68,13 @@ from futures_mvp.interfaces.repositories import (
     PnLSnapshotConflictError,
     PositionEventConflictError,
     RepositoryError,
+    SettlementSnapshotConflictError,
     TradeIdempotencyConflictError,
 )
 from futures_mvp.modules.margin import MarginEngine
 from futures_mvp.modules.pnl import PnLEngine
 from futures_mvp.modules.position import PositionManager
+from futures_mvp.modules.settlement import SettlementEngine
 
 
 @pytest.fixture(scope="session")
@@ -82,6 +92,8 @@ def db_session_factory() -> Iterator[sessionmaker[Session]]:
 @pytest.fixture(autouse=True)
 def clean_orders(db_session_factory: sessionmaker[Session]) -> Iterator[None]:
     with db_session_factory.begin() as session:
+        session.execute(delete(SettlementSnapshotOrm))
+        session.execute(delete(AccountSnapshotOrm))
         session.execute(delete(PnLSnapshotOrm))
         session.execute(delete(MarginSnapshotOrm))
         session.execute(delete(PositionEventOrm))
@@ -91,6 +103,8 @@ def clean_orders(db_session_factory: sessionmaker[Session]) -> Iterator[None]:
         session.execute(delete(Order))
     yield
     with db_session_factory.begin() as session:
+        session.execute(delete(SettlementSnapshotOrm))
+        session.execute(delete(AccountSnapshotOrm))
         session.execute(delete(PnLSnapshotOrm))
         session.execute(delete(MarginSnapshotOrm))
         session.execute(delete(PositionEventOrm))
@@ -289,6 +303,86 @@ def _close_context() -> CloseTradeContext:
         avg_cost=Decimal("3400"),
         available_qty=Decimal("2"),
         contract_multiplier=Decimal("10"),
+    )
+
+
+def _settlement_account_context() -> AccountContext:
+    return AccountContext(
+        account_id="account-1",
+        equity=Decimal("10000"),
+        available_cash=Decimal("6500"),
+        frozen_cash=Decimal("0"),
+        snapshot_time=datetime(2026, 6, 4, 14, tzinfo=UTC),
+    )
+
+
+def _settlement_price() -> SettlementPrice:
+    return SettlementPrice(
+        instrument_id="rb2601",
+        exchange="SHFE",
+        trading_day=date(2026, 6, 4),
+        price=Decimal("3500"),
+        received_at=datetime(2026, 6, 4, 14, tzinfo=UTC),
+    )
+
+
+def _settlement_snapshot() -> SettlementSnapshot:
+    return SettlementSnapshot(
+        account_id="account-1",
+        trading_day=date(2026, 6, 4),
+        calculation_key="account-1:2026-06-04:settlement",
+        positions_before=(
+            {
+                "id": "1",
+                "account_id": "account-1",
+                "instrument_id": "rb2601",
+                "long_today_qty": "1.00000000",
+                "long_yesterday_qty": "2.00000000",
+                "short_today_qty": "1.00000000",
+                "short_yesterday_qty": "0E-8",
+                "frozen_long_qty": "0E-8",
+                "frozen_short_qty": "0E-8",
+                "long_avg_price": "3400.00000000",
+                "short_avg_price": "3600.00000000",
+                "settlement_price": "0E-8",
+                "last_price": "0E-8",
+                "realized_pnl": "10.00000000",
+                "unrealized_pnl": "20.00000000",
+                "margin_used": "77.00000000",
+                "version": 0,
+            },
+        ),
+        positions_after=(
+            {
+                "id": "1",
+                "account_id": "account-1",
+                "instrument_id": "rb2601",
+                "long_today_qty": "0",
+                "long_yesterday_qty": "3.00000000",
+                "short_today_qty": "0",
+                "short_yesterday_qty": "1.00000000",
+                "frozen_long_qty": "0E-8",
+                "frozen_short_qty": "0E-8",
+                "long_avg_price": "3400.00000000",
+                "short_avg_price": "3600.00000000",
+                "settlement_price": "0E-8",
+                "last_price": "0E-8",
+                "realized_pnl": "10.00000000",
+                "unrealized_pnl": "20.00000000",
+                "margin_used": "77.00000000",
+                "version": 1,
+            },
+        ),
+        settlement_prices=(_settlement_price().model_dump(mode="json"),),
+        pnl_snapshot_ids=("1",),
+        margin_snapshot_ids=("1",),
+        cash_before=Decimal("10000"),
+        cash_after=Decimal("10100"),
+        realized_pnl=Decimal("100"),
+        unrealized_pnl=Decimal("50"),
+        margin_used=Decimal("3500"),
+        status=SettlementResultStatus.SETTLED,
+        created_at=datetime(2026, 6, 4, 15, tzinfo=UTC),
     )
 
 
@@ -2442,3 +2536,265 @@ def test_pnl_engine_optimistic_lock_rolls_back_snapshot_append(
     assert position_after is not None
     assert position_after.realized_pnl == Decimal("0E-8")
     assert position_after.unrealized_pnl == Decimal("0E-8")
+
+
+def test_unit_of_work_exposes_stage_f_repositories(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with SQLAlchemyUnitOfWork(session_factory=db_session_factory) as uow:
+        assert isinstance(uow.account_snapshots, SQLAlchemyAccountSnapshotRepository)
+        assert isinstance(uow.settlement_snapshots, SQLAlchemySettlementSnapshotRepository)
+
+
+def test_position_repository_settlement_roll_updates_only_qty_buckets(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        position = Position(
+            account_id="account-1",
+            instrument_id="rb2601",
+            long_today_qty=Decimal("1"),
+            long_yesterday_qty=Decimal("2"),
+            short_today_qty=Decimal("3"),
+            short_yesterday_qty=Decimal("4"),
+            long_avg_price=Decimal("3400"),
+            short_avg_price=Decimal("3600"),
+            realized_pnl=Decimal("10"),
+            unrealized_pnl=Decimal("20"),
+            margin_used=Decimal("77"),
+        )
+        session.add(position)
+        session.flush()
+
+        updated = SQLAlchemyPositionRepository(session).roll_today_to_yesterday_for_settlement(
+            "account-1",
+            "rb2601",
+            expected_version=0,
+        )
+
+    assert updated.long_today_qty == Decimal("0E-8")
+    assert updated.long_yesterday_qty == Decimal("3.00000000")
+    assert updated.short_today_qty == Decimal("0E-8")
+    assert updated.short_yesterday_qty == Decimal("7.00000000")
+    assert updated.long_avg_price == Decimal("3400.00000000")
+    assert updated.short_avg_price == Decimal("3600.00000000")
+    assert updated.realized_pnl == Decimal("10.00000000")
+    assert updated.unrealized_pnl == Decimal("20.00000000")
+    assert updated.margin_used == Decimal("77.00000000")
+    assert updated.version == 1
+
+
+def test_settlement_snapshot_repository_duplicate_and_conflict(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    snapshot = _settlement_snapshot()
+    with db_session_factory.begin() as session:
+        repository = SQLAlchemySettlementSnapshotRepository(session)
+        appended = repository.append_settlement_snapshot(snapshot)
+        duplicate = repository.append_settlement_snapshot(
+            snapshot.model_copy(update={"created_at": datetime(2026, 6, 4, 16, tzinfo=UTC)})
+        )
+
+        with pytest.raises(SettlementSnapshotConflictError):
+            repository.append_settlement_snapshot(
+                snapshot.model_copy(update={"cash_after": Decimal("999")})
+            )
+
+    assert appended.id is not None
+    assert duplicate == appended
+
+
+def test_settlement_engine_persists_account_snapshot_rolls_positions_and_duplicates_noop(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        position = Position(
+            account_id="account-1",
+            instrument_id="rb2601",
+            long_today_qty=Decimal("1"),
+            long_yesterday_qty=Decimal("2"),
+            short_today_qty=Decimal("1"),
+            long_avg_price=Decimal("3400"),
+            short_avg_price=Decimal("3600"),
+            realized_pnl=Decimal("10"),
+            unrealized_pnl=Decimal("20"),
+            margin_used=Decimal("77"),
+        )
+        session.add(position)
+        session.flush()
+        domain_position = SQLAlchemyPositionRepository(session).get_by_account_instrument(
+            "account-1",
+            "rb2601",
+        )
+        margin_snapshot = SQLAlchemyMarginSnapshotRepository(session).append_margin_snapshot(
+            _margin_snapshot(position_version=0, calculation_key="settlement-margin")
+        )
+        pnl_snapshot = SQLAlchemyPnLSnapshotRepository(session).append_pnl_snapshot(
+            _pnl_snapshot(
+                position_version=0,
+                calculation_key="settlement-pnl",
+                trade_id=None,
+            ).model_copy(update={"price_basis": PnLPriceBasis.SETTLEMENT_PRICE})
+        )
+    assert domain_position is not None
+
+    context = SettlementContext(
+        account_id="account-1",
+        trading_day=date(2026, 6, 4),
+        account_before=_settlement_account_context(),
+        positions=(domain_position,),
+        pnl_snapshots=(pnl_snapshot,),
+        margin_snapshots=(margin_snapshot,),
+        settlement_prices=(_settlement_price(),),
+        calculation_key="account-1:2026-06-04:settlement",
+        settled_at=datetime(2026, 6, 4, 15, tzinfo=UTC),
+    )
+    engine = SettlementEngine(lambda: SQLAlchemyUnitOfWork(session_factory=db_session_factory))
+
+    first = engine.settle(context)
+    duplicate = engine.settle(context)
+
+    with db_session_factory() as session:
+        position_after = session.scalar(select(Position))
+        settlement_count = session.scalar(select(func.count()).select_from(SettlementSnapshotOrm))
+        account_count = session.scalar(select(func.count()).select_from(AccountSnapshotOrm))
+        pnl_count = session.scalar(select(func.count()).select_from(PnLSnapshotOrm))
+        margin_count = session.scalar(select(func.count()).select_from(MarginSnapshotOrm))
+
+    assert first.status == SettlementResultStatus.SETTLED
+    assert first.snapshot is not None
+    assert first.snapshot.account_snapshot_before_id is not None
+    assert first.snapshot.account_snapshot_after_id is not None
+    assert duplicate.status == SettlementResultStatus.DUPLICATE
+    assert position_after is not None
+    assert position_after.long_today_qty == Decimal("0E-8")
+    assert position_after.long_yesterday_qty == Decimal("3.00000000")
+    assert position_after.short_today_qty == Decimal("0E-8")
+    assert position_after.short_yesterday_qty == Decimal("1.00000000")
+    assert position_after.long_avg_price == Decimal("3400.00000000")
+    assert position_after.realized_pnl == Decimal("10.00000000")
+    assert position_after.margin_used == Decimal("77.00000000")
+    assert position_after.version == 1
+    assert settlement_count == 1
+    assert account_count == 2
+    assert pnl_count == 1
+    assert margin_count == 1
+
+
+def test_settlement_engine_rejected_frozen_qty_has_no_persistence(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        position = Position(
+            account_id="account-1",
+            instrument_id="rb2601",
+            long_today_qty=Decimal("1"),
+            frozen_long_qty=Decimal("1"),
+        )
+        session.add(position)
+        session.flush()
+        domain_position = SQLAlchemyPositionRepository(session).get_by_account_instrument(
+            "account-1",
+            "rb2601",
+        )
+        margin_snapshot = SQLAlchemyMarginSnapshotRepository(session).append_margin_snapshot(
+            _margin_snapshot(position_version=0, calculation_key="settlement-margin")
+        )
+        pnl_snapshot = SQLAlchemyPnLSnapshotRepository(session).append_pnl_snapshot(
+            _pnl_snapshot(
+                position_version=0,
+                calculation_key="settlement-pnl",
+                trade_id=None,
+            ).model_copy(update={"price_basis": PnLPriceBasis.SETTLEMENT_PRICE})
+        )
+    assert domain_position is not None
+
+    engine = SettlementEngine(lambda: SQLAlchemyUnitOfWork(session_factory=db_session_factory))
+    result = engine.settle(
+        SettlementContext(
+            account_id="account-1",
+            trading_day=date(2026, 6, 4),
+            account_before=_settlement_account_context(),
+            positions=(domain_position,),
+            pnl_snapshots=(pnl_snapshot,),
+            margin_snapshots=(margin_snapshot,),
+            settlement_prices=(_settlement_price(),),
+            calculation_key="account-1:2026-06-04:settlement",
+            settled_at=datetime(2026, 6, 4, 15, tzinfo=UTC),
+        )
+    )
+
+    with db_session_factory() as session:
+        settlement_count = session.scalar(select(func.count()).select_from(SettlementSnapshotOrm))
+        account_count = session.scalar(select(func.count()).select_from(AccountSnapshotOrm))
+        position_after = session.scalar(select(Position))
+
+    assert result.status == SettlementResultStatus.REJECTED_FROZEN_POSITION
+    assert result.snapshot is None
+    assert settlement_count == 0
+    assert account_count == 0
+    assert position_after is not None
+    assert position_after.version == 0
+    assert position_after.long_today_qty == Decimal("1.00000000")
+
+
+def test_settlement_replay_detects_live_position_divergence(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        position = Position(
+            account_id="account-1",
+            instrument_id="rb2601",
+            long_today_qty=Decimal("1"),
+            long_yesterday_qty=Decimal("2"),
+            long_avg_price=Decimal("3400"),
+        )
+        session.add(position)
+        session.flush()
+        domain_position = SQLAlchemyPositionRepository(session).get_by_account_instrument(
+            "account-1",
+            "rb2601",
+        )
+        margin_snapshot = SQLAlchemyMarginSnapshotRepository(session).append_margin_snapshot(
+            _margin_snapshot(position_version=0, calculation_key="settlement-margin")
+        )
+        pnl_snapshot = SQLAlchemyPnLSnapshotRepository(session).append_pnl_snapshot(
+            _pnl_snapshot(
+                position_version=0,
+                calculation_key="settlement-pnl",
+                trade_id=None,
+            ).model_copy(update={"price_basis": PnLPriceBasis.SETTLEMENT_PRICE})
+        )
+    assert domain_position is not None
+
+    context = SettlementContext(
+        account_id="account-1",
+        trading_day=date(2026, 6, 4),
+        account_before=_settlement_account_context(),
+        positions=(domain_position,),
+        pnl_snapshots=(pnl_snapshot,),
+        margin_snapshots=(margin_snapshot,),
+        settlement_prices=(_settlement_price(),),
+        calculation_key="account-1:2026-06-04:settlement",
+        settled_at=datetime(2026, 6, 4, 15, tzinfo=UTC),
+    )
+    engine = SettlementEngine(lambda: SQLAlchemyUnitOfWork(session_factory=db_session_factory))
+    assert engine.settle(context).status == SettlementResultStatus.SETTLED
+
+    with db_session_factory.begin() as session:
+        live_position = session.scalar(select(Position))
+        assert live_position is not None
+        live_position.long_yesterday_qty = Decimal("999")
+
+    replay = engine.replay_settlement(context)
+
+    with db_session_factory() as session:
+        settlement_count = session.scalar(select(func.count()).select_from(SettlementSnapshotOrm))
+        position_after = session.scalar(select(Position))
+
+    assert replay.status == SettlementResultStatus.CONFLICT
+    assert replay.reason == "live_position_diverged_from_settlement_snapshot"
+    assert settlement_count == 1
+    assert position_after is not None
+    assert position_after.long_yesterday_qty == Decimal("999.00000000")
+    assert position_after.version == 1

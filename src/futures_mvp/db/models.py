@@ -312,16 +312,35 @@ class AccountSnapshot(Base):
 
 class SettlementSnapshot(Base):
     __tablename__ = "settlement_snapshots"
+    __table_args__ = (
+        UniqueConstraint("account_id", "trading_day", name="uq_settlement_account_day"),
+        Index("ix_settlement_snapshots_account_day", "account_id", "trading_day"),
+        Index("ix_settlement_snapshots_calculation_key", "calculation_key"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     trading_day: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     account_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    calculation_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(512))
     cash_before: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
     cash_after: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    realized_pnl: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    unrealized_pnl: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    margin_used: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
     positions_before: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
     positions_after: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
     settlement_prices: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
-    raw_payload: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    pnl_snapshot_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    margin_snapshot_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    account_snapshot_before_id: Mapped[int | None] = mapped_column(
+        ForeignKey("account_snapshots.id")
+    )
+    account_snapshot_after_id: Mapped[int | None] = mapped_column(
+        ForeignKey("account_snapshots.id")
+    )
+    raw_payload: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

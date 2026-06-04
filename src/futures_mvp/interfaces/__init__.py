@@ -1,6 +1,7 @@
 """Abstract module interfaces for the futures MVP skeleton."""
 
 from futures_mvp.interfaces.repositories import (
+    AccountSnapshotRepository,
     DuplicateClientOrderError,
     EventAlreadyExistsError,
     IdempotencyConflictError,
@@ -16,12 +17,15 @@ from futures_mvp.interfaces.repositories import (
     PositionEventRepository,
     PositionRepository,
     RepositoryError,
+    SettlementSnapshotConflictError,
+    SettlementSnapshotRepository,
     TradeIdempotencyConflictError,
     TradeRepository,
     UnitOfWork,
 )
 
 __all__ = [
+    "AccountSnapshotRepository",
     "DuplicateClientOrderError",
     "EventAlreadyExistsError",
     "IdempotencyConflictError",
@@ -37,6 +41,8 @@ __all__ = [
     "PositionEventRepository",
     "PositionRepository",
     "RepositoryError",
+    "SettlementSnapshotConflictError",
+    "SettlementSnapshotRepository",
     "TradeIdempotencyConflictError",
     "TradeRepository",
     "UnitOfWork",

@@ -1,3 +1,4 @@
+from datetime import date
 from decimal import Decimal
 from types import TracebackType
 from typing import Protocol, runtime_checkable
@@ -5,6 +6,7 @@ from typing import Protocol, runtime_checkable
 from futures_mvp.domain.enums import EventSource, OrderStatus
 from futures_mvp.domain.errors import FuturesMvpError
 from futures_mvp.domain.models import (
+    AccountSnapshot,
     MarginSnapshot,
     OrderEvent,
     OrderRequest,
@@ -12,6 +14,7 @@ from futures_mvp.domain.models import (
     PnLSnapshot,
     Position,
     PositionEvent,
+    SettlementSnapshot,
     Trade,
 )
 
@@ -54,6 +57,10 @@ class MarginSnapshotConflictError(RepositoryError):
 
 class PnLSnapshotConflictError(RepositoryError):
     """Raised when a PnL calculation key is reused with different facts."""
+
+
+class SettlementSnapshotConflictError(RepositoryError):
+    """Raised when a settlement account/day is reused with different facts."""
 
 
 @runtime_checkable
@@ -136,6 +143,14 @@ class PositionRepository(Protocol):
         expected_version: int | None = None,
     ) -> Position: ...
 
+    def roll_today_to_yesterday_for_settlement(
+        self,
+        account_id: str,
+        instrument_id: str,
+        *,
+        expected_version: int,
+    ) -> Position: ...
+
     def list_by_account(self, account_id: str) -> list[Position]: ...
 
 
@@ -195,6 +210,39 @@ class PnLSnapshotRepository(Protocol):
 
 
 @runtime_checkable
+class AccountSnapshotRepository(Protocol):
+    def append_account_snapshot(self, snapshot: AccountSnapshot) -> AccountSnapshot: ...
+
+    def get_by_id(self, snapshot_id: str) -> AccountSnapshot | None: ...
+
+    def get_latest(self, account_id: str) -> AccountSnapshot | None: ...
+
+    def list_by_account(self, account_id: str) -> list[AccountSnapshot]: ...
+
+
+@runtime_checkable
+class SettlementSnapshotRepository(Protocol):
+    def append_settlement_snapshot(self, snapshot: SettlementSnapshot) -> SettlementSnapshot: ...
+
+    def get_by_account_trading_day(
+        self,
+        account_id: str,
+        trading_day: date,
+    ) -> SettlementSnapshot | None: ...
+
+    def get_by_calculation_key(
+        self,
+        account_id: str,
+        trading_day: date,
+        calculation_key: str,
+    ) -> SettlementSnapshot | None: ...
+
+    def list_by_account(self, account_id: str) -> list[SettlementSnapshot]: ...
+
+    def list_by_trading_day(self, trading_day: date) -> list[SettlementSnapshot]: ...
+
+
+@runtime_checkable
 class UnitOfWork(Protocol):
     orders: OrderRepository
     order_events: OrderEventRepository
@@ -203,6 +251,8 @@ class UnitOfWork(Protocol):
     position_events: PositionEventRepository
     margin_snapshots: MarginSnapshotRepository
     pnl_snapshots: PnLSnapshotRepository
+    account_snapshots: AccountSnapshotRepository
+    settlement_snapshots: SettlementSnapshotRepository
 
     def commit(self) -> None: ...
 

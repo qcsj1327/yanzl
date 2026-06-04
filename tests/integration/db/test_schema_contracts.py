@@ -1,4 +1,23 @@
-from sqlalchemy import DateTime, Integer, Numeric, UniqueConstraint
+from datetime import UTC, date, datetime
+from decimal import Decimal
+from importlib import util
+from pathlib import Path
+from types import ModuleType
+
+from sqlalchemy import (
+    JSON,
+    Column,
+    Date,
+    DateTime,
+    Integer,
+    MetaData,
+    Numeric,
+    String,
+    Table,
+    UniqueConstraint,
+    create_engine,
+    select,
+)
 
 from futures_mvp.db.models import (
     Base,
@@ -7,8 +26,11 @@ from futures_mvp.db.models import (
     PnLSnapshot,
     Position,
     PositionEvent,
+    SettlementSnapshot,
     Trade,
 )
+from futures_mvp.domain.enums import SettlementResultStatus
+from futures_mvp.domain.models import SettlementSnapshot as DomainSettlementSnapshot
 
 
 def _unique_constraint_columns(model: type[object], name: str) -> tuple[str, ...]:
@@ -16,6 +38,16 @@ def _unique_constraint_columns(model: type[object], name: str) -> tuple[str, ...
         if isinstance(constraint, UniqueConstraint) and constraint.name == name:
             return tuple(column.name for column in constraint.columns)
     raise AssertionError(f"missing unique constraint {name}")
+
+
+def _load_stage_f_migration() -> ModuleType:
+    migration_path = Path("alembic/versions/0007_stage_f_settlement_engine.py")
+    spec = util.spec_from_file_location("stage_f_settlement_migration", migration_path)
+    if spec is None or spec.loader is None:
+        raise AssertionError("failed to load stage f migration")
+    migration = util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    return migration
 
 
 def test_required_tables_are_declared() -> None:
@@ -166,3 +198,100 @@ def test_pnl_snapshots_match_stage_e_idempotency_contract() -> None:
     assert isinstance(PnLSnapshot.__table__.columns["mark_price"].type, Numeric)
     assert isinstance(PnLSnapshot.__table__.columns["realized_pnl"].type, Numeric)
     assert PnLSnapshot.__table__.columns["created_at"].nullable is False
+
+
+def test_settlement_snapshots_match_stage_f_account_day_contract() -> None:
+    assert _unique_constraint_columns(
+        SettlementSnapshot,
+        "uq_settlement_account_day",
+    ) == ("account_id", "trading_day")
+    for column_name in [
+        "id",
+        "account_id",
+        "trading_day",
+        "calculation_key",
+        "status",
+        "reason",
+        "positions_before",
+        "positions_after",
+        "settlement_prices",
+        "pnl_snapshot_ids",
+        "margin_snapshot_ids",
+        "account_snapshot_before_id",
+        "account_snapshot_after_id",
+        "cash_before",
+        "cash_after",
+        "realized_pnl",
+        "unrealized_pnl",
+        "margin_used",
+        "created_at",
+    ]:
+        assert column_name in SettlementSnapshot.__table__.columns
+
+    assert isinstance(SettlementSnapshot.__table__.columns["cash_before"].type, Numeric)
+    assert isinstance(SettlementSnapshot.__table__.columns["cash_after"].type, Numeric)
+    assert isinstance(SettlementSnapshot.__table__.columns["margin_used"].type, Numeric)
+    assert SettlementSnapshot.__table__.columns["calculation_key"].nullable is False
+    assert {
+        "ix_settlement_snapshots_account_id",
+        "ix_settlement_snapshots_trading_day",
+        "ix_settlement_snapshots_account_day",
+        "ix_settlement_snapshots_calculation_key",
+    }.issubset({index.name for index in SettlementSnapshot.__table__.indexes})
+
+
+def test_stage_f_migration_backfills_legacy_calculation_key() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    metadata = MetaData()
+    settlement_snapshots = Table(
+        "settlement_snapshots",
+        metadata,
+        Column("id", Integer, primary_key=True),
+        Column("trading_day", Date, nullable=False),
+        Column("account_id", String(length=64), nullable=False),
+        Column("cash_before", Numeric(precision=28, scale=8), nullable=False),
+        Column("cash_after", Numeric(precision=28, scale=8), nullable=False),
+        Column("positions_before", JSON, nullable=False),
+        Column("positions_after", JSON, nullable=False),
+        Column("settlement_prices", JSON, nullable=False),
+        Column("raw_payload", JSON, nullable=False),
+        Column("calculation_key", String(length=256), nullable=False, server_default=""),
+    )
+    metadata.create_all(engine)
+
+    with engine.begin() as connection:
+        connection.execute(
+            settlement_snapshots.insert().values(
+                id=7,
+                trading_day=date(2026, 6, 4),
+                account_id="account-1",
+                cash_before=Decimal("10000"),
+                cash_after=Decimal("10100"),
+                positions_before=[],
+                positions_after=[],
+                settlement_prices=[],
+                raw_payload={},
+            )
+        )
+        migration = _load_stage_f_migration()
+        migration._backfill_legacy_calculation_keys(connection)  # type: ignore[attr-defined]
+        row = connection.execute(select(settlement_snapshots)).mappings().one()
+
+    assert row["calculation_key"] == "legacy:account-1:2026-06-04:7"
+    DomainSettlementSnapshot(
+        account_id=row["account_id"],
+        trading_day=row["trading_day"],
+        calculation_key=row["calculation_key"],
+        positions_before=(),
+        positions_after=(),
+        settlement_prices=(),
+        pnl_snapshot_ids=(),
+        margin_snapshot_ids=(),
+        cash_before=row["cash_before"],
+        cash_after=row["cash_after"],
+        realized_pnl=Decimal("0"),
+        unrealized_pnl=Decimal("0"),
+        margin_used=Decimal("0"),
+        status=SettlementResultStatus.SETTLED,
+        created_at=datetime(2026, 6, 4, 15, tzinfo=UTC),
+    )

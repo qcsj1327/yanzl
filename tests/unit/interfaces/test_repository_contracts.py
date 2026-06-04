@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -9,8 +9,10 @@ from futures_mvp.domain.enums import (
     OrderStatus,
     OrderType,
     PnLPriceBasis,
+    SettlementResultStatus,
 )
 from futures_mvp.domain.models import (
+    AccountSnapshot,
     MarginSnapshot,
     OrderEvent,
     OrderRequest,
@@ -19,15 +21,18 @@ from futures_mvp.domain.models import (
     Position,
     PositionEvent,
     PositionSnapshot,
+    SettlementSnapshot,
     Trade,
 )
 from futures_mvp.interfaces.repositories import (
+    AccountSnapshotRepository,
     MarginSnapshotRepository,
     OrderEventRepository,
     OrderRepository,
     PnLSnapshotRepository,
     PositionEventRepository,
     PositionRepository,
+    SettlementSnapshotRepository,
     TradeRepository,
     UnitOfWork,
 )
@@ -149,6 +154,62 @@ def _pnl_snapshot() -> PnLSnapshot:
         total_pnl=Decimal("150"),
         fee_amount=Decimal("2"),
         calculated_at=datetime.now(UTC),
+    )
+
+
+def _account_snapshot(snapshot_id: str | None = "1") -> AccountSnapshot:
+    return AccountSnapshot(
+        id=snapshot_id,
+        account_id="account-1",
+        equity=Decimal("10150"),
+        available_cash=Decimal("6650"),
+        margin_used=Decimal("3500"),
+        frozen_margin=Decimal("0"),
+        realized_pnl=Decimal("100"),
+        unrealized_pnl=Decimal("50"),
+        snapshot_time=datetime.now(UTC),
+    )
+
+
+def _settlement_snapshot() -> SettlementSnapshot:
+    return SettlementSnapshot(
+        account_id="account-1",
+        trading_day=date(2026, 6, 4),
+        calculation_key="account-1:2026-06-04:settlement",
+        positions_before=(
+            {
+                "account_id": "account-1",
+                "instrument_id": "rb2601",
+                "long_today_qty": "1",
+                "long_yesterday_qty": "0",
+                "short_today_qty": "0",
+                "short_yesterday_qty": "0",
+                "version": 1,
+            },
+        ),
+        positions_after=(
+            {
+                "account_id": "account-1",
+                "instrument_id": "rb2601",
+                "long_today_qty": "0",
+                "long_yesterday_qty": "1",
+                "short_today_qty": "0",
+                "short_yesterday_qty": "0",
+                "version": 2,
+            },
+        ),
+        settlement_prices=({"instrument_id": "rb2601", "price": "3500"},),
+        pnl_snapshot_ids=("1",),
+        margin_snapshot_ids=("1",),
+        account_snapshot_before_id="1",
+        account_snapshot_after_id="2",
+        cash_before=Decimal("10000"),
+        cash_after=Decimal("10100"),
+        realized_pnl=Decimal("100"),
+        unrealized_pnl=Decimal("50"),
+        margin_used=Decimal("3500"),
+        status=SettlementResultStatus.SETTLED,
+        created_at=datetime.now(UTC),
     )
 
 
@@ -289,6 +350,27 @@ class FakePositionRepository:
         self.positions[(account_id, instrument_id)] = updated
         return updated
 
+    def roll_today_to_yesterday_for_settlement(
+        self,
+        account_id: str,
+        instrument_id: str,
+        *,
+        expected_version: int,
+    ) -> Position:
+        current = self.positions[(account_id, instrument_id)]
+        assert current.version == expected_version
+        updated = current.model_copy(
+            update={
+                "long_yesterday_qty": current.long_yesterday_qty + current.long_today_qty,
+                "short_yesterday_qty": current.short_yesterday_qty + current.short_today_qty,
+                "long_today_qty": Decimal("0"),
+                "short_today_qty": Decimal("0"),
+                "version": current.version + 1,
+            }
+        )
+        self.positions[(account_id, instrument_id)] = updated
+        return updated
+
     def list_by_account(self, account_id: str) -> list[Position]:
         return [
             position
@@ -409,6 +491,68 @@ class FakePnLSnapshotRepository:
         )
 
 
+class FakeAccountSnapshotRepository:
+    def __init__(self) -> None:
+        self.snapshots: dict[str, AccountSnapshot] = {}
+
+    def append_account_snapshot(self, snapshot: AccountSnapshot) -> AccountSnapshot:
+        snapshot_id = snapshot.id or str(len(self.snapshots) + 1)
+        saved = snapshot.model_copy(update={"id": snapshot_id})
+        self.snapshots[snapshot_id] = saved
+        return saved
+
+    def get_by_id(self, snapshot_id: str) -> AccountSnapshot | None:
+        return self.snapshots.get(snapshot_id)
+
+    def get_latest(self, account_id: str) -> AccountSnapshot | None:
+        matches = [
+            snapshot for snapshot in self.snapshots.values() if snapshot.account_id == account_id
+        ]
+        return matches[-1] if matches else None
+
+    def list_by_account(self, account_id: str) -> list[AccountSnapshot]:
+        return [
+            snapshot for snapshot in self.snapshots.values() if snapshot.account_id == account_id
+        ]
+
+
+class FakeSettlementSnapshotRepository:
+    def __init__(self) -> None:
+        self.snapshots: dict[tuple[str, date], SettlementSnapshot] = {}
+
+    def append_settlement_snapshot(self, snapshot: SettlementSnapshot) -> SettlementSnapshot:
+        self.snapshots[(snapshot.account_id, snapshot.trading_day)] = snapshot
+        return snapshot
+
+    def get_by_account_trading_day(
+        self,
+        account_id: str,
+        trading_day: date,
+    ) -> SettlementSnapshot | None:
+        return self.snapshots.get((account_id, trading_day))
+
+    def get_by_calculation_key(
+        self,
+        account_id: str,
+        trading_day: date,
+        calculation_key: str,
+    ) -> SettlementSnapshot | None:
+        snapshot = self.snapshots.get((account_id, trading_day))
+        if snapshot and snapshot.calculation_key == calculation_key:
+            return snapshot
+        return None
+
+    def list_by_account(self, account_id: str) -> list[SettlementSnapshot]:
+        return [
+            snapshot for snapshot in self.snapshots.values() if snapshot.account_id == account_id
+        ]
+
+    def list_by_trading_day(self, trading_day: date) -> list[SettlementSnapshot]:
+        return [
+            snapshot for snapshot in self.snapshots.values() if snapshot.trading_day == trading_day
+        ]
+
+
 class FakeUnitOfWork:
     def __init__(self) -> None:
         self.orders = FakeOrderRepository()
@@ -418,6 +562,8 @@ class FakeUnitOfWork:
         self.position_events = FakePositionEventRepository()
         self.margin_snapshots = FakeMarginSnapshotRepository()
         self.pnl_snapshots = FakePnLSnapshotRepository()
+        self.account_snapshots = FakeAccountSnapshotRepository()
+        self.settlement_snapshots = FakeSettlementSnapshotRepository()
         self.commit_count = 0
         self.rollback_count = 0
 
@@ -448,6 +594,8 @@ def test_repository_protocols_can_be_implemented_by_fakes() -> None:
     position_event_repo = FakePositionEventRepository()
     margin_snapshot_repo = FakeMarginSnapshotRepository()
     pnl_snapshot_repo = FakePnLSnapshotRepository()
+    account_snapshot_repo = FakeAccountSnapshotRepository()
+    settlement_snapshot_repo = FakeSettlementSnapshotRepository()
 
     assert isinstance(order_repo, OrderRepository)
     assert isinstance(event_repo, OrderEventRepository)
@@ -456,6 +604,8 @@ def test_repository_protocols_can_be_implemented_by_fakes() -> None:
     assert isinstance(position_event_repo, PositionEventRepository)
     assert isinstance(margin_snapshot_repo, MarginSnapshotRepository)
     assert isinstance(pnl_snapshot_repo, PnLSnapshotRepository)
+    assert isinstance(account_snapshot_repo, AccountSnapshotRepository)
+    assert isinstance(settlement_snapshot_repo, SettlementSnapshotRepository)
 
     order = order_repo.create_order(_order_request(), client_order_id="client-1")
     event = event_repo.append_event(_order_event(order.order_id))
@@ -464,6 +614,10 @@ def test_repository_protocols_can_be_implemented_by_fakes() -> None:
     position_event = position_event_repo.append_position_event(_position_event(trade))
     margin_snapshot = margin_snapshot_repo.append_margin_snapshot(_margin_snapshot())
     pnl_snapshot = pnl_snapshot_repo.append_pnl_snapshot(_pnl_snapshot())
+    account_snapshot = account_snapshot_repo.append_account_snapshot(_account_snapshot())
+    settlement_snapshot = settlement_snapshot_repo.append_settlement_snapshot(
+        _settlement_snapshot()
+    )
 
     assert order_repo.get_by_id(order.order_id) == order
     assert order_repo.get_by_client_order_id("client-1") == order
@@ -478,6 +632,20 @@ def test_repository_protocols_can_be_implemented_by_fakes() -> None:
     assert (
         pnl_snapshot_repo.get_by_calculation_key("account-1", "rb2601", "account-1:rb2601:1:pnl")
         == pnl_snapshot
+    )
+    assert account_snapshot_repo.get_latest("account-1") == account_snapshot
+    assert account_snapshot_repo.get_by_id("1") == account_snapshot
+    assert (
+        settlement_snapshot_repo.get_by_account_trading_day("account-1", date(2026, 6, 4))
+        == settlement_snapshot
+    )
+    assert (
+        settlement_snapshot_repo.get_by_calculation_key(
+            "account-1",
+            date(2026, 6, 4),
+            "account-1:2026-06-04:settlement",
+        )
+        == settlement_snapshot
     )
 
 

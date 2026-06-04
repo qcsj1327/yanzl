@@ -18,6 +18,7 @@ from futures_mvp.domain.enums import (
     PnLResultStatus,
     PositionManagerResultStatus,
     RiskDecision,
+    SettlementResultStatus,
 )
 
 
@@ -373,6 +374,36 @@ class AccountContext(DomainModel):
         return require_non_negative_decimal(value, field_name="available_cash")
 
 
+class AccountSnapshot(DomainModel):
+    id: str | None = None
+    account_id: str
+    equity: Decimal
+    available_cash: Decimal
+    margin_used: Decimal
+    frozen_margin: Decimal
+    realized_pnl: Decimal
+    unrealized_pnl: Decimal
+    snapshot_time: datetime
+
+    @field_validator(
+        "equity",
+        "available_cash",
+        "margin_used",
+        "frozen_margin",
+        "realized_pnl",
+        "unrealized_pnl",
+        mode="before",
+    )
+    @classmethod
+    def _decimal_only(cls, value: Any) -> Decimal:
+        return require_decimal(value)
+
+    @field_validator("available_cash", "margin_used", "frozen_margin")
+    @classmethod
+    def _non_negative(cls, value: Decimal) -> Decimal:
+        return require_non_negative_decimal(value, field_name="account_snapshot_value")
+
+
 class MarginRequirement(DomainModel):
     account_id: str
     instrument_id: str
@@ -605,6 +636,104 @@ class PnLResult(DomainModel):
     reason: str | None = None
     account_id: str | None = None
     instrument_id: str | None = None
+
+
+class SettlementPrice(DomainModel):
+    instrument_id: str
+    exchange: str
+    trading_day: date
+    price: Decimal
+    source: str | None = None
+    received_at: datetime
+
+    @field_validator("price", mode="before")
+    @classmethod
+    def _decimal_only(cls, value: Any) -> Decimal:
+        return require_decimal(value)
+
+    @field_validator("price")
+    @classmethod
+    def _price_positive(cls, value: Decimal) -> Decimal:
+        return require_positive_decimal(value, field_name="settlement_price")
+
+
+class SettlementContext(DomainModel):
+    account_id: str
+    trading_day: date
+    account_before: AccountContext | AccountSnapshot
+    positions: tuple[Position, ...]
+    pnl_snapshots: tuple[PnLSnapshot, ...]
+    margin_snapshots: tuple[MarginSnapshot, ...]
+    settlement_prices: tuple[SettlementPrice, ...]
+    calculation_key: str
+    settled_at: datetime
+
+    @field_validator("calculation_key")
+    @classmethod
+    def _calculation_key_required(cls, value: str) -> str:
+        if not value or not value.strip():
+            raise ValueError("calculation_key is required")
+        return value
+
+    @model_validator(mode="after")
+    def _account_identity_matches(self) -> "SettlementContext":
+        if self.account_before.account_id != self.account_id:
+            raise ValueError("account_before.account_id must match account_id")
+        return self
+
+
+class SettlementSnapshot(DomainModel):
+    id: str | None = None
+    account_id: str
+    trading_day: date
+    calculation_key: str
+    positions_before: tuple[dict[str, Any], ...]
+    positions_after: tuple[dict[str, Any], ...]
+    settlement_prices: tuple[dict[str, Any], ...]
+    pnl_snapshot_ids: tuple[str, ...]
+    margin_snapshot_ids: tuple[str, ...]
+    account_snapshot_before_id: str | None = None
+    account_snapshot_after_id: str | None = None
+    cash_before: Decimal
+    cash_after: Decimal
+    realized_pnl: Decimal
+    unrealized_pnl: Decimal
+    margin_used: Decimal
+    status: SettlementResultStatus
+    reason: str | None = None
+    created_at: datetime
+
+    @field_validator(
+        "cash_before",
+        "cash_after",
+        "realized_pnl",
+        "unrealized_pnl",
+        "margin_used",
+        mode="before",
+    )
+    @classmethod
+    def _decimal_only(cls, value: Any) -> Decimal:
+        return require_decimal(value)
+
+    @field_validator("margin_used")
+    @classmethod
+    def _margin_used_non_negative(cls, value: Decimal) -> Decimal:
+        return require_non_negative_decimal(value, field_name="margin_used")
+
+    @field_validator("calculation_key")
+    @classmethod
+    def _snapshot_calculation_key_required(cls, value: str) -> str:
+        if not value or not value.strip():
+            raise ValueError("calculation_key is required")
+        return value
+
+
+class SettlementResult(DomainModel):
+    status: SettlementResultStatus
+    snapshot: SettlementSnapshot | None = None
+    reason: str | None = None
+    account_id: str | None = None
+    trading_day: date | None = None
 
 
 class TradingCalendar(DomainModel):

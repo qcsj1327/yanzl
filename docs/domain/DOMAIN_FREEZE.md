@@ -715,6 +715,8 @@ Stage E 不实现 daily settlement、today -> yesterday roll、settlement snapsh
 
 Stage F 冻结 Settlement Engine 契约。Settlement 是日终状态归档、PnL / Margin fact finalization、account snapshot 和 today -> yesterday roll 边界；它不是 PnL/Margin 重新计算器，也不是 broker reconciliation 或交易所结算单接入器。
 
+Stage F 当前已实现：Settlement domain objects、SettlementCalculator / planner、SettlementEngine、replay path、SettlementSnapshotRepository、AccountSnapshotRepository、settlement-only position roll method、UoW integration 和 `0007_stage_f_settlement_engine` migration。实现仍遵守下列 source-of-truth 和边界。
+
 Settlement 只能消费：
 
 - `Position` live projection。

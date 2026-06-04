@@ -1,4 +1,5 @@
 from collections.abc import Iterable
+from datetime import date, datetime
 from decimal import Decimal
 from typing import cast
 
@@ -7,12 +8,14 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from futures_mvp.db.models import AccountSnapshot as AccountSnapshotOrm
 from futures_mvp.db.models import MarginSnapshot as MarginSnapshotOrm
 from futures_mvp.db.models import Order
 from futures_mvp.db.models import OrderEvent as OrderEventOrm
 from futures_mvp.db.models import PnLSnapshot as PnLSnapshotOrm
 from futures_mvp.db.models import Position as PositionOrm
 from futures_mvp.db.models import PositionEvent as PositionEventOrm
+from futures_mvp.db.models import SettlementSnapshot as SettlementSnapshotOrm
 from futures_mvp.db.models import Trade as TradeOrm
 from futures_mvp.domain.enums import (
     Direction,
@@ -21,8 +24,10 @@ from futures_mvp.domain.enums import (
     OrderStatus,
     OrderType,
     PnLPriceBasis,
+    SettlementResultStatus,
 )
 from futures_mvp.domain.models import (
+    AccountSnapshot,
     MarginSnapshot,
     OrderEvent,
     OrderRequest,
@@ -31,6 +36,7 @@ from futures_mvp.domain.models import (
     Position,
     PositionEvent,
     PositionSnapshot,
+    SettlementSnapshot,
     Trade,
 )
 from futures_mvp.interfaces.repositories import (
@@ -42,6 +48,7 @@ from futures_mvp.interfaces.repositories import (
     PnLSnapshotConflictError,
     PositionEventConflictError,
     RepositoryError,
+    SettlementSnapshotConflictError,
     TradeIdempotencyConflictError,
 )
 
@@ -209,8 +216,57 @@ def pnl_snapshot_to_domain(snapshot: PnLSnapshotOrm) -> PnLSnapshot:
     )
 
 
+def account_snapshot_to_domain(snapshot: AccountSnapshotOrm) -> AccountSnapshot:
+    return AccountSnapshot(
+        id=str(snapshot.id),
+        account_id=snapshot.account_id,
+        equity=snapshot.equity,
+        available_cash=snapshot.available_cash,
+        margin_used=snapshot.margin_used,
+        frozen_margin=snapshot.frozen_margin,
+        realized_pnl=snapshot.realized_pnl,
+        unrealized_pnl=snapshot.unrealized_pnl,
+        snapshot_time=snapshot.snapshot_time,
+    )
+
+
+def settlement_snapshot_to_domain(snapshot: SettlementSnapshotOrm) -> SettlementSnapshot:
+    created_at = snapshot.created_at or datetime.now()
+    return SettlementSnapshot(
+        id=str(snapshot.id),
+        account_id=snapshot.account_id,
+        trading_day=snapshot.trading_day,
+        calculation_key=snapshot.calculation_key,
+        positions_before=tuple(cast(list[dict[str, object]], snapshot.positions_before)),
+        positions_after=tuple(cast(list[dict[str, object]], snapshot.positions_after)),
+        settlement_prices=tuple(cast(list[dict[str, object]], snapshot.settlement_prices)),
+        pnl_snapshot_ids=tuple(snapshot.pnl_snapshot_ids),
+        margin_snapshot_ids=tuple(snapshot.margin_snapshot_ids),
+        account_snapshot_before_id=str(snapshot.account_snapshot_before_id)
+        if snapshot.account_snapshot_before_id is not None
+        else None,
+        account_snapshot_after_id=str(snapshot.account_snapshot_after_id)
+        if snapshot.account_snapshot_after_id is not None
+        else None,
+        cash_before=snapshot.cash_before,
+        cash_after=snapshot.cash_after,
+        realized_pnl=snapshot.realized_pnl,
+        unrealized_pnl=snapshot.unrealized_pnl,
+        margin_used=snapshot.margin_used,
+        status=SettlementResultStatus(snapshot.status),
+        reason=snapshot.reason,
+        created_at=created_at,
+    )
+
+
 def _snapshot_to_json(snapshot: PositionSnapshot) -> dict[str, object]:
     return cast(dict[str, object], snapshot.model_dump(mode="json"))
+
+
+def _payload_tuple(
+    payload: tuple[dict[str, object], ...] | list[dict[str, object]],
+) -> tuple[object, ...]:
+    return tuple(tuple(sorted(item.items())) for item in payload)
 
 
 def _canonical_snapshot_payload(
@@ -492,6 +548,57 @@ def _same_pnl_position_version_payload(
     return _pnl_position_version_payload_from_orm(
         existing
     ) == _pnl_position_version_payload_from_domain(snapshot)
+
+
+def _canonical_settlement_snapshot_payload_from_domain(
+    snapshot: SettlementSnapshot,
+) -> tuple[object, ...]:
+    return (
+        snapshot.account_id,
+        snapshot.trading_day,
+        snapshot.calculation_key,
+        _payload_tuple(snapshot.positions_before),
+        _payload_tuple(snapshot.positions_after),
+        _payload_tuple(snapshot.settlement_prices),
+        snapshot.pnl_snapshot_ids,
+        snapshot.margin_snapshot_ids,
+        snapshot.cash_before,
+        snapshot.cash_after,
+        snapshot.realized_pnl,
+        snapshot.unrealized_pnl,
+        snapshot.margin_used,
+        snapshot.status.value,
+    )
+
+
+def _canonical_settlement_snapshot_payload_from_orm(
+    snapshot: SettlementSnapshotOrm,
+) -> tuple[object, ...]:
+    return (
+        snapshot.account_id,
+        snapshot.trading_day,
+        snapshot.calculation_key,
+        _payload_tuple(cast(list[dict[str, object]], snapshot.positions_before)),
+        _payload_tuple(cast(list[dict[str, object]], snapshot.positions_after)),
+        _payload_tuple(cast(list[dict[str, object]], snapshot.settlement_prices)),
+        tuple(snapshot.pnl_snapshot_ids),
+        tuple(snapshot.margin_snapshot_ids),
+        snapshot.cash_before,
+        snapshot.cash_after,
+        snapshot.realized_pnl,
+        snapshot.unrealized_pnl,
+        snapshot.margin_used,
+        snapshot.status,
+    )
+
+
+def _same_canonical_settlement_snapshot_payload(
+    existing: SettlementSnapshotOrm,
+    snapshot: SettlementSnapshot,
+) -> bool:
+    return _canonical_settlement_snapshot_payload_from_orm(
+        existing
+    ) == _canonical_settlement_snapshot_payload_from_domain(snapshot)
 
 
 class SQLAlchemyOrderRepository:
@@ -901,6 +1008,47 @@ class SQLAlchemyPositionRepository:
         if result.rowcount != 1:
             if expected_version is None:
                 raise RepositoryError(f"position not found: {account_id}/{instrument_id}")
+            raise OptimisticLockError(
+                "position "
+                f"{account_id}/{instrument_id} version mismatch: expected {expected_version}"
+            )
+        self._session.flush()
+        updated = self._get_orm_by_account_instrument(account_id, instrument_id)
+        if updated is None:
+            raise RepositoryError(f"position updated but not found: {account_id}/{instrument_id}")
+        return position_to_domain(updated)
+
+    def roll_today_to_yesterday_for_settlement(
+        self,
+        account_id: str,
+        instrument_id: str,
+        *,
+        expected_version: int,
+    ) -> Position:
+        current = self._get_orm_by_account_instrument(account_id, instrument_id)
+        if current is None:
+            raise RepositoryError(f"position not found: {account_id}/{instrument_id}")
+        conditions = [
+            PositionOrm.account_id == account_id,
+            PositionOrm.instrument_id == instrument_id,
+            PositionOrm.version == expected_version,
+        ]
+        result = cast(
+            CursorResult[object],
+            self._session.execute(
+                update(PositionOrm)
+                .where(*conditions)
+                .values(
+                    long_yesterday_qty=current.long_yesterday_qty + current.long_today_qty,
+                    short_yesterday_qty=current.short_yesterday_qty + current.short_today_qty,
+                    long_today_qty=Decimal("0"),
+                    short_today_qty=Decimal("0"),
+                    version=PositionOrm.version + 1,
+                )
+                .execution_options(synchronize_session=False)
+            ),
+        )
+        if result.rowcount != 1:
             raise OptimisticLockError(
                 "position "
                 f"{account_id}/{instrument_id} version mismatch: expected {expected_version}"
@@ -1336,3 +1484,166 @@ class SQLAlchemyPnLSnapshotRepository:
                 f"{snapshot.position_version}"
             )
         return pnl_snapshot_to_domain(existing)
+
+
+class SQLAlchemyAccountSnapshotRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def append_account_snapshot(self, snapshot: AccountSnapshot) -> AccountSnapshot:
+        snapshot_orm = AccountSnapshotOrm(
+            account_id=snapshot.account_id,
+            equity=snapshot.equity,
+            available_cash=snapshot.available_cash,
+            margin_used=snapshot.margin_used,
+            frozen_margin=snapshot.frozen_margin,
+            realized_pnl=snapshot.realized_pnl,
+            unrealized_pnl=snapshot.unrealized_pnl,
+            snapshot_time=snapshot.snapshot_time,
+        )
+        self._session.add(snapshot_orm)
+        self._session.flush()
+        return account_snapshot_to_domain(snapshot_orm)
+
+    def get_by_id(self, snapshot_id: str) -> AccountSnapshot | None:
+        snapshot = self._session.scalar(
+            select(AccountSnapshotOrm).where(AccountSnapshotOrm.id == parse_order_id(snapshot_id))
+        )
+        return account_snapshot_to_domain(snapshot) if snapshot else None
+
+    def get_latest(self, account_id: str) -> AccountSnapshot | None:
+        snapshot = self._session.scalar(
+            select(AccountSnapshotOrm)
+            .where(AccountSnapshotOrm.account_id == account_id)
+            .order_by(AccountSnapshotOrm.snapshot_time.desc(), AccountSnapshotOrm.id.desc())
+        )
+        return account_snapshot_to_domain(snapshot) if snapshot else None
+
+    def list_by_account(self, account_id: str) -> list[AccountSnapshot]:
+        snapshots = self._session.scalars(
+            select(AccountSnapshotOrm)
+            .where(AccountSnapshotOrm.account_id == account_id)
+            .order_by(AccountSnapshotOrm.snapshot_time.asc(), AccountSnapshotOrm.id.asc())
+        ).all()
+        return [account_snapshot_to_domain(snapshot) for snapshot in snapshots]
+
+
+class SQLAlchemySettlementSnapshotRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def append_settlement_snapshot(self, snapshot: SettlementSnapshot) -> SettlementSnapshot:
+        existing = self._get_orm_by_account_trading_day(
+            snapshot.account_id,
+            snapshot.trading_day,
+        )
+        if existing is not None:
+            return self._existing_settlement_snapshot_for_append(existing, snapshot)
+
+        try:
+            with self._session.begin_nested():
+                snapshot_orm = SettlementSnapshotOrm(
+                    account_id=snapshot.account_id,
+                    trading_day=snapshot.trading_day,
+                    calculation_key=snapshot.calculation_key,
+                    status=snapshot.status.value,
+                    reason=snapshot.reason,
+                    cash_before=snapshot.cash_before,
+                    cash_after=snapshot.cash_after,
+                    realized_pnl=snapshot.realized_pnl,
+                    unrealized_pnl=snapshot.unrealized_pnl,
+                    margin_used=snapshot.margin_used,
+                    positions_before=list(snapshot.positions_before),
+                    positions_after=list(snapshot.positions_after),
+                    settlement_prices=list(snapshot.settlement_prices),
+                    pnl_snapshot_ids=list(snapshot.pnl_snapshot_ids),
+                    margin_snapshot_ids=list(snapshot.margin_snapshot_ids),
+                    account_snapshot_before_id=parse_order_id(snapshot.account_snapshot_before_id)
+                    if snapshot.account_snapshot_before_id
+                    else None,
+                    account_snapshot_after_id=parse_order_id(snapshot.account_snapshot_after_id)
+                    if snapshot.account_snapshot_after_id
+                    else None,
+                    raw_payload={},
+                    created_at=snapshot.created_at,
+                )
+                self._session.add(snapshot_orm)
+                self._session.flush()
+            return settlement_snapshot_to_domain(snapshot_orm)
+        except IntegrityError as exc:
+            existing_after_conflict = self._get_orm_by_account_trading_day(
+                snapshot.account_id,
+                snapshot.trading_day,
+            )
+            if existing_after_conflict is None:
+                raise RepositoryError(
+                    "settlement snapshot unique conflict but snapshot not found: "
+                    f"{snapshot.account_id}/{snapshot.trading_day}"
+                ) from exc
+            return self._existing_settlement_snapshot_for_append(
+                existing_after_conflict,
+                snapshot,
+            )
+
+    def get_by_account_trading_day(
+        self,
+        account_id: str,
+        trading_day: date,
+    ) -> SettlementSnapshot | None:
+        snapshot = self._get_orm_by_account_trading_day(account_id, trading_day)
+        return settlement_snapshot_to_domain(snapshot) if snapshot else None
+
+    def get_by_calculation_key(
+        self,
+        account_id: str,
+        trading_day: date,
+        calculation_key: str,
+    ) -> SettlementSnapshot | None:
+        snapshot = self._session.scalar(
+            select(SettlementSnapshotOrm).where(
+                SettlementSnapshotOrm.account_id == account_id,
+                SettlementSnapshotOrm.trading_day == trading_day,
+                SettlementSnapshotOrm.calculation_key == calculation_key,
+            )
+        )
+        return settlement_snapshot_to_domain(snapshot) if snapshot else None
+
+    def list_by_account(self, account_id: str) -> list[SettlementSnapshot]:
+        snapshots = self._session.scalars(
+            select(SettlementSnapshotOrm)
+            .where(SettlementSnapshotOrm.account_id == account_id)
+            .order_by(SettlementSnapshotOrm.trading_day.asc(), SettlementSnapshotOrm.id.asc())
+        ).all()
+        return [settlement_snapshot_to_domain(snapshot) for snapshot in snapshots]
+
+    def list_by_trading_day(self, trading_day: date) -> list[SettlementSnapshot]:
+        snapshots = self._session.scalars(
+            select(SettlementSnapshotOrm)
+            .where(SettlementSnapshotOrm.trading_day == trading_day)
+            .order_by(SettlementSnapshotOrm.account_id.asc(), SettlementSnapshotOrm.id.asc())
+        ).all()
+        return [settlement_snapshot_to_domain(snapshot) for snapshot in snapshots]
+
+    def _get_orm_by_account_trading_day(
+        self,
+        account_id: str,
+        trading_day: date,
+    ) -> SettlementSnapshotOrm | None:
+        return self._session.scalar(
+            select(SettlementSnapshotOrm).where(
+                SettlementSnapshotOrm.account_id == account_id,
+                SettlementSnapshotOrm.trading_day == trading_day,
+            )
+        )
+
+    def _existing_settlement_snapshot_for_append(
+        self,
+        existing: SettlementSnapshotOrm,
+        snapshot: SettlementSnapshot,
+    ) -> SettlementSnapshot:
+        if not _same_canonical_settlement_snapshot_payload(existing, snapshot):
+            raise SettlementSnapshotConflictError(
+                "account/trading_day reused with different settlement snapshot payload: "
+                f"{snapshot.account_id}/{snapshot.trading_day}"
+            )
+        return settlement_snapshot_to_domain(existing)

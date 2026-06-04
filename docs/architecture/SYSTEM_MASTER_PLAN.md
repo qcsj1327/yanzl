@@ -330,6 +330,13 @@ Stage E 当前实现说明：
 
 ### Stage F: Settlement Engine
 
+Stage F 当前实现说明：
+
+- 已实现 Settlement domain objects、SettlementCalculator / planner、SettlementEngine、replay path、SettlementSnapshotRepository、AccountSnapshotRepository、settlement-only position roll method、UoW integration 和 `0007_stage_f_settlement_engine` migration。
+- Successful settlement 在同一 UoW 内创建 / 引用 account before snapshot、创建 account after snapshot、append SettlementSnapshot、roll today -> yesterday；任一步失败 rollback。
+- Duplicate same canonical 返回 `DUPLICATE` no-op；different canonical 返回 `CONFLICT`；replay 会读取 live position / account row 检查 divergence。
+- Rejected settlement 不落库、不 roll、不更新 account。Stage F 仍不接 Broker / Risk / Execution / Runtime，不消费 `OrderStatus` / `OrderEvent` / `ExchangeReport` / `raw_payload` facts，不修改历史 Trade / PositionEvent / PnLSnapshot / MarginSnapshot。
+
 - Goal：执行日终结算、settlement price finalization、PnL / Margin fact finalization、account snapshot、today -> yesterday roll。
 - Inputs：Position live projection、PnLSnapshot、MarginSnapshot、AccountContext / AccountSnapshot、typed SettlementPrice input、TradingCalendar / trading_day。Trade / PositionEvent 只可用于 audit / replay proof，不作为 primary live settlement path。
 - Outputs：SettlementEngine、SettlementSnapshot、SettlementResult、SettlementSnapshotRepository、account snapshot after-state、settlement-only position roll。
