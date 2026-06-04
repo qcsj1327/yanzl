@@ -138,7 +138,13 @@ class Trade(Base):
     offset: Mapped[str] = mapped_column(String(32), nullable=False)
     price: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
     quantity: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    fee_amount: Mapped[Decimal | None] = mapped_column(DECIMAL)
+    fee_currency: Mapped[str | None] = mapped_column(String(16))
+    fee_source: Mapped[str | None] = mapped_column(String(32))
     trade_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    trading_day: Mapped[date | None] = mapped_column(Date)
+    source_exchange_report_id: Mapped[str | None] = mapped_column(String(128))
+    raw_payload: Mapped[dict[str, object] | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     order: Mapped[Order] = relationship(back_populates="trades")

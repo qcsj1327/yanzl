@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pytest
@@ -13,6 +13,7 @@ from futures_mvp.domain.enums import (
 )
 from futures_mvp.domain.errors import DecimalRequiredError
 from futures_mvp.domain.models import (
+    FillEvent,
     OrderEvent,
     OrderEventApplicationResult,
     OrderRequest,
@@ -170,6 +171,125 @@ def test_trade_identity_uses_account_exchange_and_exchange_trade_id() -> None:
         "SHFE",
         "trade-1",
     )
+
+
+def test_fill_event_decimal_contract_and_fee_semantics() -> None:
+    fill_event = FillEvent(
+        order_id="order-1",
+        account_id="acct-1",
+        exchange="SHFE",
+        instrument_id="rb2610",
+        exchange_report_id="report-1",
+        exchange_trade_id="trade-1",
+        fill_id="fill-1",
+        direction=Direction.BUY,
+        offset=Offset.OPEN,
+        price=Decimal("3500"),
+        quantity=Decimal("1"),
+        fee_amount=Decimal("0"),
+        fee_currency="CNY",
+        fee_source="EXCHANGE_REPORT",
+        traded_at=datetime.now(UTC),
+        trading_day=date(2026, 1, 1),
+        raw_payload={"diagnostic": True},
+    )
+
+    assert fill_event.price == Decimal("3500")
+    assert fill_event.quantity == Decimal("1")
+    assert fill_event.fee_amount == Decimal("0")
+    assert fill_event.fee_currency == "CNY"
+
+
+def test_fill_event_rejects_float_facts() -> None:
+    with pytest.raises(DecimalRequiredError):
+        FillEvent(
+            order_id="order-1",
+            account_id="acct-1",
+            exchange="SHFE",
+            instrument_id="rb2610",
+            exchange_report_id="report-1",
+            exchange_trade_id="trade-1",
+            direction=Direction.BUY,
+            offset=Offset.OPEN,
+            price=3500.0,
+            quantity=Decimal("1"),
+            traded_at=datetime.now(UTC),
+        )
+
+
+def test_trade_decimal_contract_and_stage_b_fields() -> None:
+    trade = Trade(
+        account_id="acct-1",
+        exchange="SHFE",
+        exchange_trade_id="trade-1",
+        order_id="order-1",
+        instrument_id="rb2610",
+        direction=Direction.BUY,
+        offset=Offset.OPEN,
+        price=Decimal("3500"),
+        quantity=Decimal("1"),
+        fee_amount=None,
+        fee_currency=None,
+        fee_source=None,
+        trade_time=datetime.now(UTC),
+        trading_day=date(2026, 1, 1),
+        source_exchange_report_id="report-1",
+        raw_payload={"diagnostic": True},
+    )
+
+    assert trade.price == Decimal("3500")
+    assert trade.quantity == Decimal("1")
+    assert trade.fee_amount is None
+    assert trade.source_exchange_report_id == "report-1"
+
+
+def test_trade_rejects_float_facts() -> None:
+    with pytest.raises(DecimalRequiredError):
+        Trade(
+            account_id="acct-1",
+            exchange="SHFE",
+            exchange_trade_id="trade-1",
+            order_id="order-1",
+            instrument_id="rb2610",
+            direction=Direction.BUY,
+            offset=Offset.OPEN,
+            price=Decimal("3500"),
+            quantity=1.0,
+            trade_time=datetime.now(UTC),
+        )
+
+
+def test_fee_currency_is_required_iff_fee_amount_is_known() -> None:
+    with pytest.raises(ValueError):
+        Trade(
+            account_id="acct-1",
+            exchange="SHFE",
+            exchange_trade_id="trade-1",
+            order_id="order-1",
+            instrument_id="rb2610",
+            direction=Direction.BUY,
+            offset=Offset.OPEN,
+            price=Decimal("3500"),
+            quantity=Decimal("1"),
+            fee_amount=Decimal("1.2"),
+            trade_time=datetime.now(UTC),
+        )
+
+    with pytest.raises(ValueError):
+        FillEvent(
+            order_id="order-1",
+            account_id="acct-1",
+            exchange="SHFE",
+            instrument_id="rb2610",
+            exchange_report_id="report-1",
+            exchange_trade_id="trade-1",
+            direction=Direction.BUY,
+            offset=Offset.OPEN,
+            price=Decimal("3500"),
+            quantity=Decimal("1"),
+            fee_currency="CNY",
+            traded_at=datetime.now(UTC),
+        )
 
 
 def test_position_is_single_row_with_long_short_today_yesterday_fields() -> None:

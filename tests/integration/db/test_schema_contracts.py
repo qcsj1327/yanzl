@@ -57,6 +57,18 @@ def test_trades_unique_constraint_matches_exchange_trade_identity() -> None:
     )
 
 
+def test_trades_have_stage_b_typed_fact_fields() -> None:
+    for column_name in [
+        "fee_amount",
+        "fee_currency",
+        "fee_source",
+        "trading_day",
+        "source_exchange_report_id",
+        "raw_payload",
+    ]:
+        assert column_name in Trade.__table__.columns
+
+
 def test_positions_are_single_row_per_account_and_instrument() -> None:
     assert _unique_constraint_columns(Position, "uq_positions_account_inst") == (
         "account_id",

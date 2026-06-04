@@ -8,14 +8,16 @@ from sqlalchemy.orm import Session
 
 from futures_mvp.db.models import Order
 from futures_mvp.db.models import OrderEvent as OrderEventOrm
+from futures_mvp.db.models import Trade as TradeOrm
 from futures_mvp.domain.enums import Direction, EventSource, Offset, OrderStatus, OrderType
-from futures_mvp.domain.models import OrderEvent, OrderRequest, OrderState
+from futures_mvp.domain.models import OrderEvent, OrderRequest, OrderState, Trade
 from futures_mvp.interfaces.repositories import (
     EventAlreadyExistsError,
     IdempotencyConflictError,
     OptimisticLockError,
     OrderNotFoundError,
     RepositoryError,
+    TradeIdempotencyConflictError,
 )
 
 OPEN_RECOVERY_STATUSES = frozenset(
@@ -73,6 +75,28 @@ def order_event_to_domain(event: OrderEventOrm) -> OrderEvent:
     )
 
 
+def trade_to_domain(trade: TradeOrm) -> Trade:
+    return Trade(
+        id=str(trade.id),
+        account_id=trade.account_id,
+        exchange=trade.exchange,
+        exchange_trade_id=trade.exchange_trade_id,
+        order_id=str(trade.order_id),
+        instrument_id=trade.instrument_id,
+        direction=Direction(trade.direction),
+        offset=Offset(trade.offset),
+        price=trade.price,
+        quantity=trade.quantity,
+        fee_amount=trade.fee_amount,
+        fee_currency=trade.fee_currency,
+        fee_source=trade.fee_source,
+        trade_time=trade.trade_time,
+        trading_day=trade.trading_day,
+        source_exchange_report_id=trade.source_exchange_report_id,
+        raw_payload=trade.raw_payload or {},
+    )
+
+
 def _status_values(statuses: Iterable[OrderStatus]) -> list[str]:
     return [status.value for status in statuses]
 
@@ -106,6 +130,52 @@ def _canonical_order_payload_from_orm(order: Order) -> tuple[object, ...]:
 def _same_canonical_order_payload(order: Order, order_request: OrderRequest) -> bool:
     return _canonical_order_payload_from_orm(order) == _canonical_order_payload_from_request(
         order_request
+    )
+
+
+def _canonical_trade_payload_from_domain(trade: Trade) -> tuple[object, ...]:
+    return (
+        trade.account_id,
+        trade.exchange,
+        trade.exchange_trade_id,
+        trade.order_id,
+        trade.instrument_id,
+        trade.direction.value,
+        trade.offset.value,
+        trade.price,
+        trade.quantity,
+        trade.fee_amount,
+        trade.fee_currency,
+        trade.fee_source,
+        trade.trade_time,
+        trade.trading_day,
+        trade.source_exchange_report_id,
+    )
+
+
+def _canonical_trade_payload_from_orm(trade: TradeOrm) -> tuple[object, ...]:
+    return (
+        trade.account_id,
+        trade.exchange,
+        trade.exchange_trade_id,
+        str(trade.order_id),
+        trade.instrument_id,
+        trade.direction,
+        trade.offset,
+        trade.price,
+        trade.quantity,
+        trade.fee_amount,
+        trade.fee_currency,
+        trade.fee_source,
+        trade.trade_time,
+        trade.trading_day,
+        trade.source_exchange_report_id,
+    )
+
+
+def _same_canonical_trade_payload(existing: TradeOrm, trade: Trade) -> bool:
+    return _canonical_trade_payload_from_orm(existing) == _canonical_trade_payload_from_domain(
+        trade
     )
 
 
@@ -278,3 +348,87 @@ class SQLAlchemyOrderEventRepository:
             .order_by(OrderEventOrm.id.asc())
         ).all()
         return [order_event_to_domain(event) for event in events]
+
+
+class SQLAlchemyTradeRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def create_or_get_trade(self, trade: Trade) -> Trade:
+        existing = self._get_orm_by_exchange_trade_id(
+            trade.account_id,
+            trade.exchange,
+            trade.exchange_trade_id,
+        )
+        if existing is not None:
+            return self._existing_trade_for_create(existing, trade)
+
+        try:
+            with self._session.begin_nested():
+                trade_orm = self._new_trade(trade)
+                self._session.add(trade_orm)
+                self._session.flush()
+            return trade_to_domain(trade_orm)
+        except IntegrityError as exc:
+            existing_after_conflict = self._get_orm_by_exchange_trade_id(
+                trade.account_id,
+                trade.exchange,
+                trade.exchange_trade_id,
+            )
+            if existing_after_conflict is None:
+                raise RepositoryError(
+                    "trade unique conflict but trade not found: "
+                    f"{trade.account_id}/{trade.exchange}/{trade.exchange_trade_id}"
+                ) from exc
+            return self._existing_trade_for_create(existing_after_conflict, trade)
+
+    def get_by_exchange_trade_id(
+        self,
+        account_id: str,
+        exchange: str,
+        exchange_trade_id: str,
+    ) -> Trade | None:
+        trade = self._get_orm_by_exchange_trade_id(account_id, exchange, exchange_trade_id)
+        return trade_to_domain(trade) if trade else None
+
+    def _new_trade(self, trade: Trade) -> TradeOrm:
+        return TradeOrm(
+            account_id=trade.account_id,
+            exchange=trade.exchange,
+            exchange_trade_id=trade.exchange_trade_id,
+            order_id=parse_order_id(trade.order_id),
+            instrument_id=trade.instrument_id,
+            direction=trade.direction.value,
+            offset=trade.offset.value,
+            price=trade.price,
+            quantity=trade.quantity,
+            fee_amount=trade.fee_amount,
+            fee_currency=trade.fee_currency,
+            fee_source=trade.fee_source,
+            trade_time=trade.trade_time,
+            trading_day=trade.trading_day,
+            source_exchange_report_id=trade.source_exchange_report_id,
+            raw_payload=trade.raw_payload,
+        )
+
+    def _get_orm_by_exchange_trade_id(
+        self,
+        account_id: str,
+        exchange: str,
+        exchange_trade_id: str,
+    ) -> TradeOrm | None:
+        return self._session.scalar(
+            select(TradeOrm).where(
+                TradeOrm.account_id == account_id,
+                TradeOrm.exchange == exchange,
+                TradeOrm.exchange_trade_id == exchange_trade_id,
+            )
+        )
+
+    def _existing_trade_for_create(self, existing: TradeOrm, trade: Trade) -> Trade:
+        if not _same_canonical_trade_payload(existing, trade):
+            raise TradeIdempotencyConflictError(
+                "exchange_trade_id reused with different canonical payload: "
+                f"{trade.account_id}/{trade.exchange}/{trade.exchange_trade_id}"
+            )
+        return trade_to_domain(existing)

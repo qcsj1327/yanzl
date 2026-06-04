@@ -3,10 +3,11 @@ from decimal import Decimal
 from pathlib import Path
 
 from futures_mvp.domain.enums import Direction, EventSource, Offset, OrderStatus, OrderType
-from futures_mvp.domain.models import OrderEvent, OrderRequest, OrderState
+from futures_mvp.domain.models import OrderEvent, OrderRequest, OrderState, Trade
 from futures_mvp.interfaces.repositories import (
     OrderEventRepository,
     OrderRepository,
+    TradeRepository,
     UnitOfWork,
 )
 
@@ -38,6 +39,22 @@ def _order_event(order_id: str = "1", external_event_id: str = "event-1") -> Ord
         external_event_id=external_event_id,
         raw_payload={"diagnostic": True},
         occurred_at=datetime.now(UTC),
+    )
+
+
+def _trade(order_id: str = "1", exchange_trade_id: str = "trade-1") -> Trade:
+    return Trade(
+        account_id="account-1",
+        exchange="SHFE",
+        exchange_trade_id=exchange_trade_id,
+        order_id=order_id,
+        instrument_id="rb2601",
+        direction=Direction.BUY,
+        offset=Offset.OPEN,
+        price=Decimal("3500"),
+        quantity=Decimal("1"),
+        trade_time=datetime.now(UTC),
+        source_exchange_report_id="report-1",
     )
 
 
@@ -102,10 +119,29 @@ class FakeOrderEventRepository:
         return [event for event in self.events if event.order_id == order_id]
 
 
+class FakeTradeRepository:
+    def __init__(self) -> None:
+        self.trades: dict[tuple[str, str, str], Trade] = {}
+
+    def create_or_get_trade(self, trade: Trade) -> Trade:
+        key = (trade.account_id, trade.exchange, trade.exchange_trade_id)
+        self.trades.setdefault(key, trade)
+        return self.trades[key]
+
+    def get_by_exchange_trade_id(
+        self,
+        account_id: str,
+        exchange: str,
+        exchange_trade_id: str,
+    ) -> Trade | None:
+        return self.trades.get((account_id, exchange, exchange_trade_id))
+
+
 class FakeUnitOfWork:
     def __init__(self) -> None:
         self.orders = FakeOrderRepository()
         self.order_events = FakeOrderEventRepository()
+        self.trades = FakeTradeRepository()
         self.commit_count = 0
         self.rollback_count = 0
 
@@ -131,17 +167,21 @@ class FakeUnitOfWork:
 def test_repository_protocols_can_be_implemented_by_fakes() -> None:
     order_repo = FakeOrderRepository()
     event_repo = FakeOrderEventRepository()
+    trade_repo = FakeTradeRepository()
 
     assert isinstance(order_repo, OrderRepository)
     assert isinstance(event_repo, OrderEventRepository)
+    assert isinstance(trade_repo, TradeRepository)
 
     order = order_repo.create_order(_order_request(), client_order_id="client-1")
     event = event_repo.append_event(_order_event(order.order_id))
+    trade = trade_repo.create_or_get_trade(_trade(order.order_id))
 
     assert order_repo.get_by_id(order.order_id) == order
     assert order_repo.get_by_client_order_id("client-1") == order
     assert event_repo.get_by_event_key(EventSource.OMS, event.external_event_id) == event
     assert event_repo.list_by_order_id(order.order_id) == [event]
+    assert trade_repo.get_by_exchange_trade_id("account-1", "SHFE", "trade-1") == trade
 
 
 def test_unit_of_work_protocol_supports_commit_and_rollback() -> None:
@@ -196,6 +236,7 @@ def test_repository_methods_do_not_auto_commit_unit_of_work() -> None:
     order = uow.orders.create_order(_order_request(), client_order_id="client-1")
     uow.orders.update_status(order.order_id, OrderStatus.RISK_CHECKING)
     uow.order_events.append_event(_order_event(order.order_id))
+    uow.trades.create_or_get_trade(_trade(order.order_id))
 
     assert uow.commit_count == 0
     assert uow.rollback_count == 0

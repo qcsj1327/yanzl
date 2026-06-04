@@ -169,7 +169,21 @@ Phase 4.1 pure mapper 只有拿到 `order_id` 才能产出 `OrderEvent`。若 re
 - `EXCHANGE_UNAVAILABLE` requires `operation + delivery_phase`。
 - `ACK` / `REJECTED` 是 submit-side report；若显式提供 `operation`，必须为 `SUBMIT`。
 - `CANCELED` / `CANCEL_REJECTED` 是 cancel-side report；若显式提供 `operation`，必须为 `CANCEL`。
-- `PARTIAL_FILL` / `FULL_FILL` require order identity，但 Phase 4.1 status-only mapper 不要求 fill quantity / fill price / trade id。
+- `PARTIAL_FILL` / `FULL_FILL` require order identity。Stage B typed fill mode 还要求类型化成交字段，不得只放在 `raw_payload`。
+
+Stage B typed fill fields：
+
+- `exchange_trade_id: str`
+- `fill_id: str | None`
+- `fill_price: Decimal`
+- `fill_quantity: Decimal`
+- `fee_amount: Decimal | None`
+- `fee_currency: str | None`
+- `fee_source: str | None`
+- `traded_at: datetime`
+- `trading_day: date | None`
+
+`fee_currency` 在 `fee_amount is not None` 时必填。`fee_amount is None` 表示未知，`fee_amount == Decimal("0")` 表示明确为零。
 
 可选诊断字段：
 
@@ -193,8 +207,9 @@ Phase 4.1 must define `MappingContext`：
 - `expected_previous_status` 缺失且 mapper 需要构造 `OrderEvent.previous_status` 时，可使用 `current_order_status`；两者均缺失时返回 `INSUFFICIENT_CONTEXT`。
 - `known_exchange_report_ids` 用于 duplicate 判断；缺失时 mapper 不得声称 duplicate。
 - `operation` 可作为 report 缺失 operation 时的上下文补充，但只允许来自类型化 context，不得来自 `raw_payload`。
-- `allow_status_only_fill=True` 时，`PARTIAL_FILL` / `FULL_FILL` 只能映射订单状态。
-- `allow_status_only_fill=False` 时，fill report 返回 `DOMAIN_FIELD_UNSUPPORTED`，直到完成 Domain / interface / schema migration。
+- `allow_status_only_fill=True` 时，`PARTIAL_FILL` / `FULL_FILL` 保持兼容行为，只映射订单状态。
+- `allow_status_only_fill=False` 且 typed fill fields 完整时，`PARTIAL_FILL` / `FULL_FILL` 允许产出 typed fill / trade fact。
+- `allow_status_only_fill=False` 但 typed fill fields 缺失时，返回 typed non-event result：字段缺失用 `MAPPING_ERROR`，缺上下文用 `INSUFFICIENT_CONTEXT`，当前契约无法承载时用 `DOMAIN_FIELD_UNSUPPORTED`。
 
 ### MappingResultStatus Draft
 
@@ -209,6 +224,31 @@ Phase 4.1 must define `MappingResultStatus`：
 - `DOMAIN_FIELD_UNSUPPORTED`：当前 Domain 无法承载事实字段，例如真实 fill quantity / fill price / trade id。
 
 Phase 4.1 mapper 不得返回裸字符串。
+
+### Stage B MappingResult Extension
+
+Stage B 选择扩展 `MappingResult`，而不是新增独立 `FillMappingResult` / `TradeExtractionResult`。
+
+冻结后的 `MappingResult` 语义：
+
+- `status: MappingResultStatus`
+- `order_event: OrderEvent | None`
+- `fill_event: FillEvent | None`
+- `trade: Trade | None`
+- `error: MappingError | None`
+
+选择原因：
+
+- `PARTIAL_FILL` / `FULL_FILL` 同时影响订单状态和成交事实；同一个 report 需要在一个 pure mapper result 中表达 `OrderEvent + FillEvent + Trade` bundle。
+- Orchestrator 已经按 `MappingResult` 做分流，扩展同一 result 可减少并行结果类型造成的 routing drift。
+- Mapper 仍保持纯函数，只产出类型化事实，不写 DB、不更新 OMS、不更新 Position。
+
+Stage B 路由边界：
+
+- `order_event` 只交给 OMS apply。
+- `fill_event` 只作为 execution typed fact，不直接更新 Position。
+- `trade` 只交给 `TradeRepository.create_or_get_trade(...)` 或后续 accounting application service。
+- `DUPLICATE_REPORT`、`IGNORED_REPORT`、`INSUFFICIENT_CONTEXT`、`MAPPING_ERROR`、`DOMAIN_FIELD_UNSUPPORTED` 和 `ENTER_UNKNOWN_CANDIDATE` 不写 Trade。
 
 ### MappingErrorReason Draft
 
@@ -281,6 +321,7 @@ Illegal same-status：
 - mapper 产出的普通 `OrderEvent` 必须满足 OMS 状态机合法迁移。
 - 禁止 `SUBMIT_TIMEOUT -> SUBMIT_TIMEOUT` 普通事件。
 - 禁止 `CANCEL_FAILED -> CANCEL_FAILED` 普通事件。
+- `PARTIALLY_FILLED -> PARTIALLY_FILLED` 继续允许，用于多次部分成交的合法状态事件；它仍不代表 Trade ledger 已入账。
 - 这类重复、迟到或同态异常返回 `IGNORED_REPORT`、`DUPLICATE_REPORT` 或 `MAPPING_ERROR`，不得生成普通 `OrderEvent`。
 
 ### raw_payload Contract Done
@@ -299,8 +340,41 @@ Illegal same-status：
 - `fill price`
 - `trade id`
 - `fill id`
+- `exchange_trade_id`
+- `fee amount`
+- `fee currency`
+- `fee source`
+- `traded_at`
+- `trading_day`
 
 Phase 4.1 status-only fill mapping 不承载 fill quantity / fill price / trade id / fill id。真实成交事实必须先做 Domain / interface / schema migration 或 Trade / Fill 专属契约。
+
+Stage B 后，`allow_status_only_fill=True` 仍保留旧行为，只映射订单状态；`allow_status_only_fill=False` 必须使用 typed fill fields 产出 `FillEvent` / `Trade`，缺 typed fields 时不得从 `raw_payload` 补事实。
+
+### Stage B Trade Repository Contract
+
+Stage B 冻结 `TradeRepository`：
+
+- `create_or_get_trade(trade)`：以 `account_id + exchange + exchange_trade_id` 幂等写入或返回 existing。
+- `get_by_exchange_trade_id(account_id, exchange, exchange_trade_id)`：按交易所成交身份查询。
+- duplicate same payload 返回 existing。
+- duplicate different payload 抛 `TradeIdempotencyConflictError`。
+- repository 不更新 Position，不修改 OMS，不调用 mapper，不消费 `OrderEvent`。
+
+`UNIQUE(account_id, exchange, exchange_trade_id)` 是 `trades` ledger 必须保留的唯一约束。如 broker 无 `exchange_trade_id`，不能用随机 id；必须先冻结稳定替代键，否则不允许入账。
+
+### Stage B Not Allowed
+
+Stage B 不实现：
+
+- Position update。
+- Margin update。
+- PnL update。
+- Settlement。
+- broker reconciliation。
+- OMS public UNKNOWN entry。
+- Runtime infra。
+- CTP / SimNow / broker adapter。
 
 ### Phase 4.1 Not Allowed In This Phase
 
@@ -339,9 +413,6 @@ Phase 4.2+ 仍不接真实交易接口，除非另开真实 adapter 契约阶段
 
 Later Phase：
 
-- true fill / trade modeling。
-- Fill / Trade 专属契约。
-- Domain / interface / schema migration for fill quantity / fill price / trade id / fill id。
 - Position update。
 - Margin update。
 - PnL update。

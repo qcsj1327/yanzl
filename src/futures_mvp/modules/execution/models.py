@@ -1,10 +1,11 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 from enum import StrEnum
 
-from futures_mvp.domain.enums import EventSource, OrderStatus
-from futures_mvp.domain.models import OrderEvent
+from futures_mvp.domain.enums import Direction, EventSource, Offset, OrderStatus
+from futures_mvp.domain.models import FillEvent, OrderEvent, Trade
 
 
 class ExchangeReportType(StrEnum):
@@ -68,8 +69,22 @@ class ExchangeReport:
     event_source: EventSource | str | None = None
     order_id: str | None = None
     client_order_id: str | None = None
+    account_id: str | None = None
+    exchange: str | None = None
+    instrument_id: str | None = None
+    direction: Direction | str | None = None
+    offset: Offset | str | None = None
     operation: ExecutionOperation | str | None = None
     delivery_phase: DeliveryPhase | str | None = None
+    exchange_trade_id: str | None = None
+    fill_id: str | None = None
+    fill_price: Decimal | None = None
+    fill_quantity: Decimal | None = None
+    fee_amount: Decimal | None = None
+    fee_currency: str | None = None
+    fee_source: str | None = None
+    trade_time: datetime | None = None
+    trading_day: date | None = None
     raw_payload: Mapping[str, object] | None = None
 
 
@@ -92,4 +107,6 @@ class MappingError:
 class MappingResult:
     status: MappingResultStatus
     order_event: OrderEvent | None = None
+    fill_event: FillEvent | None = None
+    trade: Trade | None = None
     error: MappingError | None = None

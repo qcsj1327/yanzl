@@ -1,10 +1,11 @@
 import ast
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
-from futures_mvp.domain.enums import EventSource, OrderStatus
+from futures_mvp.domain.enums import Direction, EventSource, Offset, OrderStatus
 from futures_mvp.modules.execution import (
     DeliveryPhase,
     ExchangeReport,
@@ -27,8 +28,22 @@ def report(
     event_source: EventSource | str | None = EventSource.EXCHANGE,
     order_id: str | None = "order-1",
     client_order_id: str | None = None,
+    account_id: str | None = None,
+    exchange: str | None = None,
+    instrument_id: str | None = None,
+    direction: Direction | str | None = None,
+    offset: Offset | str | None = None,
     operation: ExecutionOperation | str | None = None,
     delivery_phase: DeliveryPhase | str | None = None,
+    exchange_trade_id: str | None = None,
+    fill_id: str | None = None,
+    fill_price: Decimal | None = None,
+    fill_quantity: Decimal | None = None,
+    fee_amount: Decimal | None = None,
+    fee_currency: str | None = None,
+    fee_source: str | None = None,
+    trade_time: datetime | None = None,
+    trading_day: date | None = None,
     raw_payload: dict[str, object] | None = None,
 ) -> ExchangeReport:
     return ExchangeReport(
@@ -38,8 +53,22 @@ def report(
         event_source=event_source,
         order_id=order_id,
         client_order_id=client_order_id,
+        account_id=account_id,
+        exchange=exchange,
+        instrument_id=instrument_id,
+        direction=direction,
+        offset=offset,
         operation=operation,
         delivery_phase=delivery_phase,
+        exchange_trade_id=exchange_trade_id,
+        fill_id=fill_id,
+        fill_price=fill_price,
+        fill_quantity=fill_quantity,
+        fee_amount=fee_amount,
+        fee_currency=fee_currency,
+        fee_source=fee_source,
+        trade_time=trade_time,
+        trading_day=trading_day,
         raw_payload=raw_payload,
     )
 
@@ -58,6 +87,34 @@ def context(
         known_exchange_report_ids=known_exchange_report_ids,
         operation=operation,
         allow_status_only_fill=allow_status_only_fill,
+    )
+
+
+def typed_fill_report(
+    report_type: ExchangeReportType,
+    *,
+    exchange_report_id: str = "report-1",
+    exchange_trade_id: str = "trade-1",
+    fee_amount: Decimal | None = Decimal("1.2"),
+    fee_currency: str | None = "CNY",
+) -> ExchangeReport:
+    return report(
+        report_type,
+        exchange_report_id=exchange_report_id,
+        account_id="acct-1",
+        exchange="SHFE",
+        instrument_id="rb2610",
+        direction=Direction.BUY,
+        offset=Offset.OPEN,
+        exchange_trade_id=exchange_trade_id,
+        fill_id="fill-1",
+        fill_price=Decimal("3500.5"),
+        fill_quantity=Decimal("1"),
+        fee_amount=fee_amount,
+        fee_currency=fee_currency,
+        fee_source="EXCHANGE_REPORT" if fee_amount is not None else None,
+        trade_time=NOW,
+        trading_day=date(2026, 1, 1),
     )
 
 
@@ -558,6 +615,111 @@ def test_expected_previous_partially_filled_same_status_remains_mappable() -> No
     assert result.order_event is not None
     assert result.order_event.previous_status is OrderStatus.PARTIALLY_FILLED
     assert result.order_event.new_status is OrderStatus.PARTIALLY_FILLED
+
+
+@pytest.mark.parametrize(
+    ("report_type", "expected_status", "previous_status"),
+    [
+        (ExchangeReportType.PARTIAL_FILL, OrderStatus.PARTIALLY_FILLED, OrderStatus.ACKED),
+        (ExchangeReportType.FULL_FILL, OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED),
+    ],
+)
+def test_typed_fill_report_maps_order_event_fill_event_and_trade(
+    report_type: ExchangeReportType,
+    expected_status: OrderStatus,
+    previous_status: OrderStatus,
+) -> None:
+    result = map_exchange_report(
+        typed_fill_report(report_type),
+        context(current_order_status=previous_status, allow_status_only_fill=False),
+    )
+
+    assert result.status is MappingResultStatus.MAPPED_ORDER_EVENT
+    assert result.order_event is not None
+    assert result.order_event.previous_status is previous_status
+    assert result.order_event.new_status is expected_status
+
+    assert result.fill_event is not None
+    assert result.fill_event.order_id == "order-1"
+    assert result.fill_event.account_id == "acct-1"
+    assert result.fill_event.exchange == "SHFE"
+    assert result.fill_event.instrument_id == "rb2610"
+    assert result.fill_event.exchange_report_id == "report-1"
+    assert result.fill_event.exchange_trade_id == "trade-1"
+    assert result.fill_event.fill_id == "fill-1"
+    assert result.fill_event.direction is Direction.BUY
+    assert result.fill_event.offset is Offset.OPEN
+    assert result.fill_event.price == Decimal("3500.5")
+    assert result.fill_event.quantity == Decimal("1")
+    assert result.fill_event.fee_amount == Decimal("1.2")
+    assert result.fill_event.fee_currency == "CNY"
+    assert result.fill_event.fee_source == "EXCHANGE_REPORT"
+    assert result.fill_event.traded_at == NOW
+    assert result.fill_event.trading_day == date(2026, 1, 1)
+
+    assert result.trade is not None
+    assert result.trade.account_id == "acct-1"
+    assert result.trade.exchange == "SHFE"
+    assert result.trade.exchange_trade_id == "trade-1"
+    assert result.trade.order_id == "order-1"
+    assert result.trade.instrument_id == "rb2610"
+    assert result.trade.direction is Direction.BUY
+    assert result.trade.offset is Offset.OPEN
+    assert result.trade.price == Decimal("3500.5")
+    assert result.trade.quantity == Decimal("1")
+    assert result.trade.fee_amount == Decimal("1.2")
+    assert result.trade.fee_currency == "CNY"
+    assert result.trade.trade_time == NOW
+    assert result.trade.trading_day == date(2026, 1, 1)
+    assert result.trade.source_exchange_report_id == "report-1"
+
+
+def test_typed_partial_fill_same_status_still_maps_fill_facts() -> None:
+    result = map_exchange_report(
+        typed_fill_report(ExchangeReportType.PARTIAL_FILL),
+        context(
+            current_order_status=OrderStatus.PARTIALLY_FILLED,
+            allow_status_only_fill=False,
+        ),
+    )
+
+    assert result.status is MappingResultStatus.MAPPED_ORDER_EVENT
+    assert result.order_event is not None
+    assert result.order_event.previous_status is OrderStatus.PARTIALLY_FILLED
+    assert result.order_event.new_status is OrderStatus.PARTIALLY_FILLED
+    assert result.fill_event is not None
+    assert result.trade is not None
+
+
+def test_status_only_fill_ignores_typed_fill_fields_when_compatibility_enabled() -> None:
+    result = map_exchange_report(
+        typed_fill_report(ExchangeReportType.PARTIAL_FILL),
+        context(current_order_status=OrderStatus.ACKED, allow_status_only_fill=True),
+    )
+
+    assert result.status is MappingResultStatus.MAPPED_ORDER_EVENT
+    assert result.order_event is not None
+    assert result.order_event.new_status is OrderStatus.PARTIALLY_FILLED
+    assert result.fill_event is None
+    assert result.trade is None
+
+
+def test_typed_fill_fee_currency_rule_is_enforced() -> None:
+    result = map_exchange_report(
+        typed_fill_report(
+            ExchangeReportType.PARTIAL_FILL,
+            fee_amount=Decimal("1.2"),
+            fee_currency=None,
+        ),
+        context(current_order_status=OrderStatus.ACKED, allow_status_only_fill=False),
+    )
+
+    assert result.status is MappingResultStatus.MAPPING_ERROR
+    assert result.error is not None
+    assert result.error.reason is MappingErrorReason.DOMAIN_FIELD_UNSUPPORTED
+    assert result.order_event is None
+    assert result.fill_event is None
+    assert result.trade is None
 
 
 @pytest.mark.parametrize(

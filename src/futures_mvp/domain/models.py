@@ -2,7 +2,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from futures_mvp.domain.decimal import require_decimal
 from futures_mvp.domain.enums import (
@@ -90,7 +90,44 @@ class OrderEventApplicationResult(DomainModel):
     reason: str | None = None
 
 
+class FillEvent(DomainModel):
+    id: str | None = None
+    order_id: str
+    account_id: str
+    exchange: str
+    instrument_id: str
+    exchange_report_id: str
+    exchange_trade_id: str
+    fill_id: str | None = None
+    direction: Direction
+    offset: Offset
+    price: Decimal
+    quantity: Decimal
+    fee_amount: Decimal | None = None
+    fee_currency: str | None = None
+    fee_source: str | None = None
+    traded_at: datetime
+    trading_day: date | None = None
+    raw_payload: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("price", "quantity", "fee_amount", mode="before")
+    @classmethod
+    def _decimal_only(cls, value: Any) -> Decimal | None:
+        if value is None:
+            return None
+        return require_decimal(value)
+
+    @model_validator(mode="after")
+    def _fee_currency_required_when_fee_known(self) -> "FillEvent":
+        if self.fee_amount is not None and self.fee_currency is None:
+            raise ValueError("fee_currency is required when fee_amount is not None")
+        if self.fee_amount is None and self.fee_currency is not None:
+            raise ValueError("fee_currency requires fee_amount")
+        return self
+
+
 class Trade(DomainModel):
+    id: str | None = None
     account_id: str
     exchange: str
     exchange_trade_id: str
@@ -100,12 +137,28 @@ class Trade(DomainModel):
     offset: Offset
     price: Decimal
     quantity: Decimal
+    fee_amount: Decimal | None = None
+    fee_currency: str | None = None
+    fee_source: str | None = None
     trade_time: datetime
+    trading_day: date | None = None
+    source_exchange_report_id: str | None = None
+    raw_payload: dict[str, Any] = Field(default_factory=dict)
 
-    @field_validator("price", "quantity", mode="before")
+    @field_validator("price", "quantity", "fee_amount", mode="before")
     @classmethod
-    def _decimal_only(cls, value: Any) -> Decimal:
+    def _decimal_only(cls, value: Any) -> Decimal | None:
+        if value is None:
+            return None
         return require_decimal(value)
+
+    @model_validator(mode="after")
+    def _fee_currency_required_when_fee_known(self) -> "Trade":
+        if self.fee_amount is not None and self.fee_currency is None:
+            raise ValueError("fee_currency is required when fee_amount is not None")
+        if self.fee_amount is None and self.fee_currency is not None:
+            raise ValueError("fee_currency requires fee_amount")
+        return self
 
 
 class Position(DomainModel):

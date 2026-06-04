@@ -6,11 +6,15 @@
 - `Phase 4.1`
 - `Execution Runtime`
 - `Stage A`
+- `Stage B Contract`
+- `Stage B`
 - `Phase 4.2+`
 - `Later Phase`
 
 `Contract Done` 表示 Phase 4.0 文档契约已冻结，不表示实现完成。`Phase 4.1` 表示 pure mapper 阶段已实现并用单元测试覆盖。`Execution Runtime` 表示当前 Command/Report Runtime Layer 已实现并用单元测试覆盖。
 `Stage A` 表示 ApplicationExecutionOrchestrator 已实现并用单元测试覆盖。
+`Stage B Contract` 表示 Fill / Trade Domain Migration 契约已冻结，不表示代码、schema 或 repository 已实现。
+`Stage B` 表示 Fill / Trade Domain Migration 已实现并用 domain、execution mapper 和 DB integration 测试覆盖。
 
 ## Contract Done
 
@@ -57,7 +61,7 @@
 | duplicate context | `known_exchange_report_ids` 缺失时不得声称 duplicate。 | Phase 4.1 |
 | insufficient context | 缺少必要 current / expected status 时返回 `INSUFFICIENT_CONTEXT`。 | Phase 4.1 |
 | status-only fill flag | `allow_status_only_fill=True` 时 fill 只映射订单状态。 | Phase 4.1 |
-| fill unsupported flag | `allow_status_only_fill=False` 时 fill 返回 `DOMAIN_FIELD_UNSUPPORTED`。 | Phase 4.1 |
+| fill unsupported flag | Phase 4.1 中 `allow_status_only_fill=False` 时 fill 返回 `DOMAIN_FIELD_UNSUPPORTED`；Stage B 后 typed fields 完整时迁移为 typed fill/trade fact。 | Phase 4.1 |
 | `MappingResultStatus` values | 覆盖 `MAPPED_ORDER_EVENT` / `DUPLICATE_REPORT` / `IGNORED_REPORT` / `INSUFFICIENT_CONTEXT` / `ENTER_UNKNOWN_CANDIDATE` / `MAPPING_ERROR` / `DOMAIN_FIELD_UNSUPPORTED`。 | Phase 4.1 |
 | `MappingErrorReason` values | 覆盖契约列出的 missing、unsupported、mismatch、same-status、raw-payload、unknown-entry reasons。 | Phase 4.1 |
 | no bare string results | mapper 不返回裸字符串状态或裸字符串错误原因。 | Phase 4.1 |
@@ -151,13 +155,31 @@
 | UNKNOWN boundary | 不新增 OMS public UNKNOWN entry，不调用 OMS 私有 UNKNOWN 方法，不自动进入 `UNKNOWN`。 | Stage A |
 | orchestrator boundary | Orchestrator 不 import DB / Repository / UoW / ORM / Risk / Position / Margin / PnL / Settlement / broker adapter / runtime infra。 | Stage A |
 
+## Stage B Fill / Trade Contract
+
+| 场景 | 预期 | 状态 |
+|---|---|---|
+| FillEvent decimal contract | `FillEvent.price` / `FillEvent.quantity` / `fee_amount` 使用 `Decimal`，禁止 float。 | Stage B |
+| Trade decimal contract | `Trade.price` / `Trade.quantity` / `fee_amount` 使用 `Decimal`，禁止 float。 | Stage B |
+| typed fill fields | `PARTIAL_FILL` / `FULL_FILL` typed mode 必须携带 price、quantity、exchange_trade_id、traded_at 等字段。 | Stage B |
+| raw_payload forbidden | 成交价、数量、trade id、fill id、fee、trading_day 不得只存在于 `raw_payload`。 | Stage B |
+| MappingResult extension | `MappingResult` 扩展为可表达 `OrderEvent + FillEvent + Trade` bundle，mapper 仍不写 DB。 | Stage B |
+| status-only compatibility | `allow_status_only_fill=True` 保留旧状态映射，不生成 Trade。 | Stage B |
+| typed fill extraction | `allow_status_only_fill=False` 且 typed fields 完整时产出 typed fill/trade fact。 | Stage B |
+| typed fill missing fields | typed fields 缺失时返回 `MAPPING_ERROR` / `INSUFFICIENT_CONTEXT` / `DOMAIN_FIELD_UNSUPPORTED`，不得从 `raw_payload` 补。 | Stage B |
+| partial fill sequence | 多次 `PARTIAL_FILL` 保留 `PARTIALLY_FILLED -> PARTIALLY_FILLED` 合法映射，并生成独立成交事实。 | Stage B |
+| full fill sequence | `FULL_FILL` 可同时产出 `OrderStatus.FILLED` 事件和 typed trade fact。 | Stage B |
+| duplicate trade same payload | `account_id + exchange + exchange_trade_id` 重复且 payload 一致时返回 existing。 | Stage B |
+| duplicate trade conflict payload | 重复 trade key 但 payload 不一致时抛 `TradeIdempotencyConflictError`。 | Stage B |
+| repository/UoW | `TradeRepository` 和 UoW `trades` 入口存在，且不修改 OMS/Position。 | Stage B |
+| schema round trip | `trades` 字段、fee、`source_exchange_report_id`、`trading_day`、`raw_payload` 可持久化往返。 | Stage B |
+| unique constraint | 保留 `UNIQUE(account_id, exchange, exchange_trade_id)`。 | Stage B |
+| no Position mutation | Stage B 不更新 Position / Margin / PnL / Settlement。 | Stage B |
+
 ## Later Phase
 
 | 场景 | 预期 | 状态 |
 |---|---|---|
-| true fill / trade modeling | 成交数量、成交价、trade id、fill id 类型化建模。 | Later Phase |
-| Trade mapping | Exchange fill report 到 Trade / Fill 的专属契约。 | Later Phase |
-| Domain / interface / schema migration | 真实成交事实进入类型化 Domain 和 schema。 | Later Phase |
 | Position update | 成交后更新持仓。 | Later Phase |
 | Margin update | 更新保证金。 | Later Phase |
 | PnL update | 更新盯市或成交盈亏。 | Later Phase |

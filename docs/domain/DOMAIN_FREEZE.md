@@ -246,10 +246,38 @@ OMS 是订单状态唯一事实来源。
 
 `OrderEventApplicationResult` 只描述 OMS 应用层语义，不替代 `order_events` 事件流，也不进入 DB schema。
 
+### FillEvent
+
+Stage B 冻结 `FillEvent` 作为 execution report 中的类型化成交事实。它描述“收到了一条成交事实”，不直接更新 Position，也不替代 `Trade` ledger。
+
+| 字段 | 类型 | 默认值 | 语义 |
+|---|---|---|---|
+| `id` | `str` | required | FillEvent 本地身份。 |
+| `order_id` | `str` | required | OMS 订单 ID。 |
+| `account_id` | `str` | required | 账户 ID。 |
+| `exchange` | `str` | required | 交易所代码。 |
+| `instrument_id` | `str` | required | 当前期货合约 ID。 |
+| `exchange_report_id` | `str` | required | 产生该成交事实的交易所回报 ID。 |
+| `exchange_trade_id` | `str` | required | 交易所成交 ID；Trade 幂等主身份。 |
+| `fill_id` | `str \| None` | `None` | 交易所或 broker 提供的 fill 子身份；不能替代 `exchange_trade_id`。 |
+| `direction` | `Direction` | required | 买卖方向。 |
+| `offset` | `Offset` | required | 开平方向。 |
+| `price` | `Decimal` | required | 成交价。 |
+| `quantity` | `Decimal` | required | 成交数量。 |
+| `fee_amount` | `Decimal \| None` | `None` | 手续费金额；`None` 表示未知。 |
+| `fee_currency` | `str \| None` | `None` | 手续费币种；`fee_amount is not None` 时必须提供。 |
+| `fee_source` | `str \| None` | `None` | 手续费来源，例如 `EXCHANGE_REPORT`、`BROKER_QUERY`、`SETTLEMENT`。 |
+| `traded_at` | `datetime` | required | 交易所成交时间。 |
+| `trading_day` | `date \| None` | `None` | 交易日；未解析时不得用 `raw_payload` 补。 |
+| `raw_payload` | `dict[str, Any]` | required | 诊断 payload；不承载成交 source-of-truth。 |
+
+`FillEvent` 的价格、数量、trade id、fill id、fee、trading day 等 source-of-truth 字段必须类型化。`raw_payload` 只保留诊断信息。
+
 ### Trade
 
 | 字段 | 类型 | 默认值 | 语义 |
 |---|---|---|---|
+| `id` | `str` | required | Trade ledger 本地身份。 |
 | `account_id` | `str` | required | 账户 ID。 |
 | `exchange` | `str` | required | 交易所代码。 |
 | `exchange_trade_id` | `str` | required | 交易所成交 ID。 |
@@ -259,9 +287,19 @@ OMS 是订单状态唯一事实来源。
 | `offset` | `Offset` | required | 开平方向。 |
 | `price` | `Decimal` | required | 成交价。 |
 | `quantity` | `Decimal` | required | 成交数量。 |
+| `fee_amount` | `Decimal \| None` | `None` | 手续费金额；`None` 表示未知，`Decimal("0")` 表示明确为零。 |
+| `fee_currency` | `str \| None` | `None` | 手续费币种；`fee_amount is not None` 时必须提供。 |
+| `fee_source` | `str \| None` | `None` | 手续费来源，例如 `EXCHANGE_REPORT`、`BROKER_QUERY`、`SETTLEMENT`。 |
 | `trade_time` | `datetime` | required | 交易所成交时间。 |
+| `trading_day` | `date \| None` | `None` | 交易日；未解析时不得用 `raw_payload` 补。 |
+| `source_exchange_report_id` | `str` | required | 产生该 Trade 的交易所回报 ID。 |
+| `raw_payload` | `dict[str, Any]` | required | 诊断 payload；不承载成交 source-of-truth。 |
 
 成交去重基于 `account_id + exchange + exchange_trade_id`。
+
+`Trade` 是 accounting source-of-truth。Position、Margin、PnL 和 Settlement 只能消费去重后的 `Trade` ledger；`OrderStatus.FILLED`、`OrderStatus.PARTIALLY_FILLED`、`OrderEvent`、`ExchangeReport` 和 `raw_payload` 都不是成交账本事实。
+
+如 broker 无 `exchange_trade_id`，不得生成随机 ID 入账；必须先冻结稳定替代键，否则该成交不得进入 `Trade` ledger。
 
 ### Position
 
@@ -336,6 +374,15 @@ OMS 是订单状态唯一事实来源。
 - `SettlementEngine.settle(account_id: str, trading_day: str) -> None`：结算边界。
 
 `TradeProcessor`、`FuturesPositionManager`、`MarginEngine`、`PnLEngine` 和 `SettlementEngine` 是全局后续阶段接口，不属于 Phase 4.0 / Phase 4.1 status-only execution mapper。Phase 4.1 不实现、不调用、不测试这些接口，不更新 Trade / Position / Margin / PnL / Settlement。真实 fill / trade / position / margin / pnl / settlement 必须另开阶段。
+
+Stage B 冻结 `TradeRepository`：
+
+- `create_or_get_trade(trade: Trade) -> Trade`：按 `account_id + exchange + exchange_trade_id` 幂等写入或返回 existing。
+- `get_by_exchange_trade_id(account_id: str, exchange: str, exchange_trade_id: str) -> Trade | None`：按交易所成交身份查询。
+- 重复键且 canonical payload 一致时返回 existing，不重复入账。
+- 重复键但 `order_id`、`instrument_id`、`direction`、`offset`、`price`、`quantity`、`trade_time`、fee 或 source report 不一致时抛 `TradeIdempotencyConflictError`。
+- Repository 不更新 Position，不修改 OMS，不应用 `OrderEvent`，不调用 Risk、Execution 或 Runtime。
+- UnitOfWork 在 Stage B 需要暴露 `trades: TradeRepository`，但不把 `trades` 写入 OMSService 的职责边界。
 
 本阶段任何接口都不得连接真实期货柜台、CTP、SimNow 或真实交易网关。
 
@@ -480,6 +527,25 @@ OMS 是订单状态唯一事实来源。
 - `account_id` 索引
 - `instrument_id` 索引
 - `order_id` references `orders.id`
+
+当前代码中的 `trades` 表已包含基础字段、Stage B fee / lineage / diagnostic 字段，以及 `UNIQUE(account_id, exchange, exchange_trade_id)`。
+
+Stage B implemented fields：
+
+- `fee_amount`
+- `fee_currency`
+- `fee_source`
+- `trading_day`
+- `source_exchange_report_id`
+- `raw_payload`
+
+Fee 语义：
+
+- `fee_amount is None` 表示未知。
+- `fee_amount == Decimal("0")` 表示明确为零。
+- `fee_currency` 在 `fee_amount is not None` 时必填。
+- `fee_source` 表示 fee 的事实来源，例如 `EXCHANGE_REPORT`、`BROKER_QUERY`、`SETTLEMENT`。
+- Stage B 不计算 PnL。
 
 ### positions
 

@@ -174,10 +174,14 @@
 
 ### Fill / Trade
 
-- 真实成交必须有类型化 `Fill` / `Trade` 事实。
-- `Trade` ledger 是会计主链输入。
+- 真实成交必须拆分为类型化 `FillEvent` / `Trade` 事实。
+- `FillEvent` 是 execution report typed fact，不直接更新 Position，不替代 Trade ledger。
+- `Trade` ledger 是 accounting source-of-truth，也是会计主链输入。
 - 成交去重不能依赖订单状态回报 ID；应使用明确 exchange trade identity。
 - 成交价格、成交数量、trade id、fill id、手续费等不得藏在 `raw_payload`。
+- `OrderStatus.FILLED` / `OrderStatus.PARTIALLY_FILLED` 不是成交账本事实。
+- Position、Margin、PnL、Settlement 只能基于去重后的 `Trade` ledger。
+- Stage B 选择扩展 `MappingResult` 为 `OrderEvent + FillEvent + Trade` bundle；mapper 仍只产出类型化事实，不写 DB。
 
 ### Position
 
@@ -224,12 +228,22 @@
 
 - Goal：把真实成交事实从 status-only fill 迁移为类型化 Fill / Trade。
 - Inputs：Execution fill report、当前 `Trade` model、status-only fill 限制、account/exchange/order identity。
-- Outputs：Fill/Trade contract、schema/repository migration、trade dedupe rule、accounting entry point。
-- Allowed changes：Domain / DB / interface / repository / tests 的明确 migration。
-- Forbidden changes：不用 `raw_payload` 放成交价、数量、trade id、fill id；不让 mapper 直接更新 position。
-- Required tests：domain decimal contract、trade idempotency、duplicate fill、partial fill sequence、full fill, schema round trip, replay fixture。
-- Acceptance criteria：真实成交可类型化入账；重复成交不重复生成 Trade；status-only fill 不再承担会计事实。
+- Outputs：`FillEvent` contract、扩展后的 `Trade` contract、typed fill `ExchangeReport` fields、扩展 `MappingResult`、`TradeRepository`、schema migration、trade dedupe rule、accounting entry point。
+- Allowed changes：Domain / execution DTO / mapper result / DB / interface / repository / UoW / tests 的明确 migration。
+- Forbidden changes：不用 `raw_payload` 放成交价、数量、trade id、fill id、fee；不让 mapper 直接写 DB；不让 repository 更新 Position；不改 OMS 状态机；不接 broker/runtime。
+- Required tests：FillEvent decimal contract、Trade decimal contract、raw_payload forbidden、typed fill extraction、status-only compatibility、duplicate trade same payload、duplicate trade conflict payload、repository/UoW、schema round trip、partial fill sequence、full fill、no Position mutation。
+- Acceptance criteria：真实成交可类型化入账；重复成交不重复生成 Trade；status-only fill 不再承担会计事实；`PARTIALLY_FILLED -> PARTIALLY_FILLED` 继续允许；`UNIQUE(account_id, exchange, exchange_trade_id)` 保留。
 - Suggested tag：`stage-b-fill-trade-domain-migration`。
+
+Stage B 冻结说明：
+
+- `FillEvent` 字段包括 `id`、`order_id`、`account_id`、`exchange`、`instrument_id`、`exchange_report_id`、`exchange_trade_id`、`fill_id | None`、`direction`、`offset`、`price`、`quantity`、`fee_amount | None`、`fee_currency | None`、`fee_source | None`、`traded_at`、`trading_day | None`、diagnostic-only `raw_payload`。
+- `Trade` 字段包括 `id`、`account_id`、`exchange`、`exchange_trade_id`、`order_id`、`instrument_id`、`direction`、`offset`、`price`、`quantity`、`fee_amount | None`、`fee_currency | None`、`fee_source | None`、`trade_time`、`trading_day | None`、`source_exchange_report_id`、diagnostic-only `raw_payload`。
+- `fee_amount is None` 表示未知；`fee_amount == Decimal("0")` 表示明确为零；`fee_currency` 在 `fee_amount is not None` 时必填；Stage B 不计算 PnL。
+- `allow_status_only_fill=True` 保留旧行为，只映射 OrderStatus；`allow_status_only_fill=False` 且 typed fields 完整时产出 typed fill/trade fact；typed fields 缺失时返回 typed unsupported/error。
+- `TradeRepository.create_or_get_trade(trade)` 按 `account_id + exchange + exchange_trade_id` 幂等；same payload 返回 existing，different payload 抛 `TradeIdempotencyConflictError`。
+- 当前 `trades` 表已有基础字段和 `UNIQUE(account_id, exchange, exchange_trade_id)`，但 Stage B 冻结字段需要 Alembic migration 补充 fee、`trading_day`、`source_exchange_report_id` 和 `raw_payload`。
+- 如 broker 无 `exchange_trade_id`，不能用随机 id；必须先冻结稳定替代键，否则不允许入账。
 
 ### Stage C: Position Manager
 

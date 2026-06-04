@@ -9,6 +9,8 @@ from futures_mvp.interfaces.repositories import (
     OrderNotFoundError,
     OrderRepository,
     RepositoryError,
+    TradeIdempotencyConflictError,
+    TradeRepository,
     UnitOfWork,
 )
 
@@ -21,5 +23,7 @@ __all__ = [
     "OrderNotFoundError",
     "OrderRepository",
     "RepositoryError",
+    "TradeIdempotencyConflictError",
+    "TradeRepository",
     "UnitOfWork",
 ]

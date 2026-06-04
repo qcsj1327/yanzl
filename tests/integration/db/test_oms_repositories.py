@@ -1,5 +1,5 @@
 from collections.abc import Callable, Iterator
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from threading import Barrier, Thread
 from uuid import uuid4
@@ -12,20 +12,23 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from alembic import command
 from futures_mvp.db.config import settings
-from futures_mvp.db.models import Order
+from futures_mvp.db.models import Order, Position
 from futures_mvp.db.models import OrderEvent as OrderEventOrm
+from futures_mvp.db.models import Trade as TradeOrm
 from futures_mvp.db.repositories import (
     SQLAlchemyOrderEventRepository,
     SQLAlchemyOrderRepository,
+    SQLAlchemyTradeRepository,
 )
 from futures_mvp.db.unit_of_work import SQLAlchemyUnitOfWork
 from futures_mvp.domain.enums import Direction, EventSource, Offset, OrderStatus, OrderType
-from futures_mvp.domain.models import OrderEvent, OrderRequest
+from futures_mvp.domain.models import OrderEvent, OrderRequest, Trade
 from futures_mvp.interfaces.repositories import (
     EventAlreadyExistsError,
     IdempotencyConflictError,
     OptimisticLockError,
     RepositoryError,
+    TradeIdempotencyConflictError,
 )
 
 
@@ -44,10 +47,12 @@ def db_session_factory() -> Iterator[sessionmaker[Session]]:
 @pytest.fixture(autouse=True)
 def clean_orders(db_session_factory: sessionmaker[Session]) -> Iterator[None]:
     with db_session_factory.begin() as session:
+        session.execute(delete(TradeOrm))
         session.execute(delete(OrderEventOrm))
         session.execute(delete(Order))
     yield
     with db_session_factory.begin() as session:
+        session.execute(delete(TradeOrm))
         session.execute(delete(OrderEventOrm))
         session.execute(delete(Order))
 
@@ -93,6 +98,35 @@ def _order_event(
         external_event_id=external_event_id or f"event-{uuid4()}",
         raw_payload=raw_payload or {"diagnostic": True},
         occurred_at=occurred_at or datetime.now(UTC),
+    )
+
+
+def _trade(
+    order_id: str,
+    *,
+    exchange_trade_id: str = "trade-1",
+    price: Decimal = Decimal("3500.5"),
+    quantity: Decimal = Decimal("1"),
+    source_exchange_report_id: str = "report-1",
+    raw_payload: dict[str, object] | None = None,
+) -> Trade:
+    return Trade(
+        account_id="account-1",
+        exchange="SHFE",
+        exchange_trade_id=exchange_trade_id,
+        order_id=order_id,
+        instrument_id="rb2601",
+        direction=Direction.BUY,
+        offset=Offset.OPEN,
+        price=price,
+        quantity=quantity,
+        fee_amount=Decimal("1.2"),
+        fee_currency="CNY",
+        fee_source="EXCHANGE_REPORT",
+        trade_time=datetime(2026, 1, 1, 9, 1, tzinfo=UTC),
+        trading_day=date(2026, 1, 1),
+        source_exchange_report_id=source_exchange_report_id,
+        raw_payload=raw_payload or {"diagnostic": True},
     )
 
 
@@ -642,6 +676,13 @@ def test_create_order_and_append_event_commit_persists_both(
         assert _order_event_count_by_external_event_id(verification_session, event_id) == 1
 
 
+def test_unit_of_work_exposes_trade_repository(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with SQLAlchemyUnitOfWork(session_factory=db_session_factory) as uow:
+        assert isinstance(uow.trades, SQLAlchemyTradeRepository)
+
+
 def test_unit_of_work_exception_rolls_back_order_and_event(
     db_session_factory: sessionmaker[Session],
 ) -> None:
@@ -739,6 +780,106 @@ def test_order_event_occurred_at_and_raw_payload_round_trip(
     assert loaded is not None
     assert loaded.occurred_at == occurred_at
     assert loaded.raw_payload == raw_payload
+
+
+def test_trade_repository_create_and_get_by_exchange_trade_id(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        order_id = _create_order(session)
+        repository = SQLAlchemyTradeRepository(session)
+        created = repository.create_or_get_trade(_trade(order_id))
+        loaded = repository.get_by_exchange_trade_id("account-1", "SHFE", "trade-1")
+
+    assert created.id is not None
+    assert loaded is not None
+    assert loaded.id == created.id
+    assert loaded.account_id == "account-1"
+    assert loaded.exchange == "SHFE"
+    assert loaded.exchange_trade_id == "trade-1"
+    assert loaded.order_id == order_id
+    assert loaded.price == Decimal("3500.5")
+    assert loaded.quantity == Decimal("1")
+    assert loaded.fee_amount == Decimal("1.2")
+    assert loaded.fee_currency == "CNY"
+    assert loaded.fee_source == "EXCHANGE_REPORT"
+    assert loaded.trading_day == date(2026, 1, 1)
+    assert loaded.source_exchange_report_id == "report-1"
+    assert loaded.raw_payload == {"diagnostic": True}
+
+
+def test_trade_repository_duplicate_same_payload_returns_existing(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        order_id = _create_order(session)
+        repository = SQLAlchemyTradeRepository(session)
+        first = repository.create_or_get_trade(_trade(order_id))
+        second = repository.create_or_get_trade(_trade(order_id))
+        trade_count = session.scalar(select(func.count()).select_from(TradeOrm))
+
+    assert first.id == second.id
+    assert trade_count == 1
+
+
+def test_trade_repository_duplicate_same_facts_ignores_different_raw_payload(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        order_id = _create_order(session)
+        repository = SQLAlchemyTradeRepository(session)
+        first = repository.create_or_get_trade(
+            _trade(order_id, raw_payload={"source": "first"})
+        )
+        second = repository.create_or_get_trade(
+            _trade(order_id, raw_payload={"source": "second", "diagnostic": True})
+        )
+        trade_count = session.scalar(select(func.count()).select_from(TradeOrm))
+
+    assert first.id == second.id
+    assert trade_count == 1
+    assert second.price == Decimal("3500.5")
+    assert second.quantity == Decimal("1")
+    assert second.fee_amount == Decimal("1.2")
+    assert second.raw_payload == {"source": "first"}
+
+
+def test_trade_repository_duplicate_different_payload_raises_controlled_error(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        order_id = _create_order(session)
+        repository = SQLAlchemyTradeRepository(session)
+        repository.create_or_get_trade(_trade(order_id))
+
+        with pytest.raises(TradeIdempotencyConflictError):
+            repository.create_or_get_trade(_trade(order_id, price=Decimal("3501")))
+
+
+def test_trade_repository_unique_conflict_does_not_leak_integrity_error(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        order_id = _create_order(session)
+        repository = SQLAlchemyTradeRepository(session)
+        repository.create_or_get_trade(_trade(order_id))
+
+        with pytest.raises(TradeIdempotencyConflictError) as exc_info:
+            repository.create_or_get_trade(_trade(order_id, quantity=Decimal("2")))
+
+    assert not isinstance(exc_info.value, IntegrityError)
+
+
+def test_trade_repository_does_not_mutate_positions(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        order_id = _create_order(session)
+        before_count = session.scalar(select(func.count()).select_from(Position))
+        SQLAlchemyTradeRepository(session).create_or_get_trade(_trade(order_id))
+        after_count = session.scalar(select(func.count()).select_from(Position))
+
+    assert before_count == after_count == 0
 
 
 def test_unit_of_work_rollback_leaves_no_order(
