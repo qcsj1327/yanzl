@@ -386,6 +386,164 @@ PositionEvent 必须支持回答：
 - Replay 是否重复。
 - Conflict 如何判定。
 
+### Margin Engine
+
+Stage D 冻结 Margin Engine 契约。Margin 只能消费 `Position`、typed `MarginRule`、typed `AccountContext` 和 typed price input / price basis。
+
+Margin 禁止消费：
+
+- `OrderStatus`
+- `OrderEvent`
+- `ExchangeReport`
+- `raw_payload`
+- broker adapter query
+- Risk direct DB lookup
+
+`Instrument.margin_rate` 不是完整 MarginRule，只能作为兼容数据来源之一。完整保证金规则必须由 typed `MarginRule` 表达；`raw_payload` 不承载规则事实。
+
+#### MarginRule
+
+| 字段 | 类型 | 默认值 | 语义 |
+|---|---|---|---|
+| `rule_id` | `str \| None` | `None` | 可选规则身份。 |
+| `instrument_id` | `str` | required | 合约 ID。 |
+| `exchange` | `str` | required | 交易所。 |
+| `contract_multiplier` | `Decimal` | required | 合约乘数，必须 `> 0`。 |
+| `long_initial_margin_rate` | `Decimal` | required | 多头初始保证金率，必须 `>= 0`。 |
+| `short_initial_margin_rate` | `Decimal` | required | 空头初始保证金率，必须 `>= 0`。 |
+| `long_maintenance_margin_rate` | `Decimal` | required | 多头维持保证金率，必须 `>= 0`。 |
+| `short_maintenance_margin_rate` | `Decimal` | required | 空头维持保证金率，必须 `>= 0`。 |
+| `price_basis` | `str` | required | `LAST_PRICE \| SETTLEMENT_PRICE \| AVG_PRICE \| MANUAL`。 |
+| `price` | `Decimal \| None` | `None` | `price_basis=MANUAL` 时使用的 typed price。 |
+| `effective_from` | `datetime \| None` | `None` | 可选生效开始时间。 |
+| `effective_to` | `datetime \| None` | `None` | 可选生效结束时间。 |
+
+所有 rates 必须 Decimal 且 `>= 0`；`contract_multiplier` 必须 Decimal 且 `> 0`。`price_basis` 决定价格来源；如果所需价格缺失，MarginEngine 返回 `REJECTED_MISSING_PRICE` typed result。
+
+#### AccountContext
+
+| 字段 | 类型 | 默认值 | 语义 |
+|---|---|---|---|
+| `account_id` | `str` | required | 账户 ID。 |
+| `equity` | `Decimal` | required | 账户权益。 |
+| `available_cash` | `Decimal` | required | 可用资金，可为 0。 |
+| `frozen_cash` | `Decimal` | required | 冻结资金。 |
+| `currency` | `str \| None` | `None` | 币种。 |
+| `snapshot_time` | `datetime` | required | 上下文快照时间。 |
+
+`AccountContext` 的 Decimal 字段必须 Decimal-only。`AccountSnapshot` 可以是数据来源之一，但 MarginEngine 消费 typed `AccountContext`，不直接等同 DB `AccountSnapshot`。
+
+#### MarginRequirement
+
+| 字段 | 类型 | 默认值 | 语义 |
+|---|---|---|---|
+| `account_id` | `str` | required | 账户 ID。 |
+| `instrument_id` | `str` | required | 合约 ID。 |
+| `long_initial_margin` | `Decimal` | required | 多头初始保证金。 |
+| `short_initial_margin` | `Decimal` | required | 空头初始保证金。 |
+| `total_initial_margin` | `Decimal` | required | 总初始保证金。 |
+| `long_maintenance_margin` | `Decimal` | required | 多头维持保证金。 |
+| `short_maintenance_margin` | `Decimal` | required | 空头维持保证金。 |
+| `total_maintenance_margin` | `Decimal` | required | 总维持保证金。 |
+| `margin_used` | `Decimal` | required | live margin projection，等于 `total_initial_margin`。 |
+| `required_cash` | `Decimal` | required | 所需资金，等于 `total_initial_margin`。 |
+| `is_sufficient` | `bool` | required | `available_cash >= required_cash`。 |
+| `reason` | `str \| None` | `None` | typed reason。 |
+
+Insufficient cash 返回 `REJECTED_INSUFFICIENT_CASH` typed result，不抛业务异常。
+
+#### MarginSnapshot
+
+| 字段 | 类型 | 默认值 | 语义 |
+|---|---|---|---|
+| `account_id` | `str` | required | 账户 ID。 |
+| `instrument_id` | `str` | required | 合约 ID。 |
+| `position_version` | `int` | required | 输入 Position version。 |
+| `rule_id` | `str \| None` | `None` | 应用的规则身份。 |
+| `rule_version` | `str \| None` | `None` | 应用的规则版本。 |
+| `long_qty` | `Decimal` | required | `long_today_qty + long_yesterday_qty`。 |
+| `short_qty` | `Decimal` | required | `short_today_qty + short_yesterday_qty`。 |
+| `price` | `Decimal` | required | 本次计算使用的 typed price。 |
+| `contract_multiplier` | `Decimal` | required | 本次计算使用的合约乘数。 |
+| `initial_margin` | `Decimal` | required | 总初始保证金。 |
+| `maintenance_margin` | `Decimal` | required | 总维持保证金。 |
+| `margin_used` | `Decimal` | required | live margin projection。 |
+| `available_cash` | `Decimal` | required | 计算时可用资金。 |
+| `equity` | `Decimal` | required | 计算时账户权益。 |
+| `calculated_at` | `datetime` | required | 本地计算时间；若实现选择 deterministic replay key，可另行冻结 `calculation_key`。 |
+
+`MarginSnapshot` canonical payload 字段包括 `account_id`、`instrument_id`、`position_version`、`rule_id`、`rule_version`、`long_qty`、`short_qty`、`price`、`contract_multiplier`、`initial_margin`、`maintenance_margin`、`margin_used`、`available_cash`、`equity`、`calculated_at` 或明确 `calculation_key`。`raw_payload` 不参与 canonical。Same canonical 时 no-op / duplicate snapshot accepted；different canonical 时返回 `CONFLICT` / divergence；不得静默覆盖历史 snapshot。
+
+#### MarginResult
+
+`MarginResultStatus` 冻结为：
+
+- `CALCULATED`
+- `REJECTED_MISSING_RULE`
+- `REJECTED_MISSING_POSITION`
+- `REJECTED_MISSING_PRICE`
+- `REJECTED_INSUFFICIENT_CASH`
+- `CONFLICT`
+- `ERROR`
+
+| 字段 | 类型 | 默认值 | 语义 |
+|---|---|---|---|
+| `status` | `MarginResultStatus` | required | 计算结果状态。 |
+| `requirement` | `MarginRequirement \| None` | `None` | 保证金需求。 |
+| `snapshot` | `MarginSnapshot \| None` | `None` | 写入或待写入的保证金快照。 |
+| `reason` | `str \| None` | `None` | typed reason。 |
+| `account_id` | `str \| None` | `None` | 账户 ID。 |
+| `instrument_id` | `str \| None` | `None` | 合约 ID。 |
+
+#### Margin calculation rules
+
+- `long_qty = long_today_qty + long_yesterday_qty`
+- `short_qty = short_today_qty + short_yesterday_qty`
+- `long_initial = long_qty * price * contract_multiplier * long_initial_margin_rate`
+- `short_initial = short_qty * price * contract_multiplier * short_initial_margin_rate`
+- `long_maintenance = long_qty * price * contract_multiplier * long_maintenance_margin_rate`
+- `short_maintenance = short_qty * price * contract_multiplier * short_maintenance_margin_rate`
+- `total_initial = long_initial + short_initial`
+- `total_maintenance = long_maintenance + short_maintenance`
+- `margin_used = total_initial`
+- `required_cash = total_initial`
+- `is_sufficient = account.available_cash >= required_cash`
+
+所有计算必须使用 Decimal-only，不得引入 float。
+
+Price source policy：
+
+- `LAST_PRICE` 使用 typed latest price input。
+- `SETTLEMENT_PRICE` 使用 typed settlement price input。
+- `AVG_PRICE` 使用 Position avg price；mixed long/short position 下，long 使用 `long_avg_price`，short 使用 `short_avg_price`，分别计算后相加。
+- `MANUAL` 使用 `MarginRule.price`。
+- 如果 price missing，返回 `REJECTED_MISSING_PRICE`。
+- 不从 `raw_payload` 或 broker adapter query 取 price。
+
+#### positions.margin_used update boundary
+
+Stage D 可更新 `positions.margin_used`，但必须满足：
+
+- 必须和 `MarginSnapshot` 在同一 UoW / transaction。
+- 固定顺序为：先 calculate `MarginRequirement` / `MarginSnapshot`，再 append `MarginSnapshot`，最后 `update positions.margin_used using expected_version=position.version`。
+- 如果任一步失败，整个 transaction rollback。
+- 不允许只更新 `positions.margin_used` 而没有 snapshot。
+- 不允许只写 snapshot 但声称 live `margin_used` 已更新。
+- 不更新 `realized_pnl`。
+- 不更新 `unrealized_pnl`。
+- 不更新 qty / avg price。
+- 不更新 settlement fields。
+
+#### Margin replay
+
+Margin replay 使用同一 calculator 重算。输入为 Position projection + MarginRule + AccountContext + typed price input。Existing snapshot canonical same 时 no-op / duplicate snapshot accepted；canonical different 时返回 `CONFLICT` / divergence，不静默覆盖历史 snapshot。Replay 不更新 Position qty/avg。
+
+#### PnL / Settlement / Risk boundary
+
+Stage D 不实现 realized PnL、unrealized PnL、settlement、today -> yesterday roll、fee/PnL attribution 或 mark-to-market PnL。Stage D 不实现 order freeze/reservation、broker reconciliation、CTP、SimNow、broker adapter、FastAPI、Kafka、Redis、Celery、KMS、cloud runtime 或 raw_payload margin facts。
+
+Stage D 不让 RiskEngine 直接查 DB 或直接调用 MarginEngine。后续 RiskContext 由 application layer 注入 typed margin context。
+
 ### TradingCalendar
 
 | 字段 | 类型 | 默认值 | 语义 |
@@ -432,7 +590,7 @@ PositionEvent 必须支持回答：
 - `TradeProcessor.apply_trade(trade: Trade) -> bool`：成交应用，返回是否实际应用。
 - `PositionManager.apply_trade(trade: Trade) -> PositionApplicationResult`：Stage C 成交更新持仓的 application service 入口；只消费 `Trade`。
 - `PositionManager.replay_trades(trades: Sequence[Trade]) -> PositionReplayResult`：如 Stage C 实现 replay runner，则按冻结排序逐笔应用 Trade；已应用 trade no-op。
-- `MarginEngine.margin_required(order: OrderRequest) -> Decimal`：保证金计算边界。
+- `MarginEngine`：Stage D 保证金计算边界；消费 Position、MarginRule、AccountContext 和 typed price input，返回 typed MarginResult，不消费订单状态或 raw payload。
 - `PnLEngine.mark_to_market(account_id: str) -> Decimal`：盯市计算边界。
 - `SettlementEngine.settle(account_id: str, trading_day: str) -> None`：结算边界。
 
@@ -463,6 +621,15 @@ Stage C 冻结 `PositionEventRepository`：
 - `list_by_account(account_id: str) -> list[PositionEvent]`：列出账户持仓事件。
 
 Stage C `UnitOfWork` 需要暴露 `positions: PositionRepository` 和 `position_events: PositionEventRepository`。同一 Trade 首次应用时，`positions` update 与 `position_events` append 必须在同一 UoW 内完成。
+
+Stage D 冻结 `MarginSnapshotRepository`：
+
+- `append_margin_snapshot(snapshot: MarginSnapshot) -> MarginSnapshot`：追加 margin audit snapshot。
+- `get_latest(account_id: str, instrument_id: str) -> MarginSnapshot | None`：查询单合约最新 margin snapshot。
+- `list_by_account(account_id: str) -> list[MarginSnapshot]`：列出账户 margin snapshots。
+- `get_by_position_version(account_id: str, instrument_id: str, position_version: int) -> MarginSnapshot | None`：按 position version 查询 snapshot。
+
+Stage D `UnitOfWork` 需要暴露 `margin_snapshots: MarginSnapshotRepository`。首次写入某次 margin projection 时，`MarginSnapshot` append 与 `positions.margin_used` update 必须在同一 UoW 内完成。
 
 Stage C `PositionApplicationStatus` 冻结为：
 
@@ -501,6 +668,27 @@ Stage C testing matrix：
 - UoW exposes `positions` / `position_events`。
 - No OMS / Risk / Execution mapper / Broker / Runtime import。
 - No Margin / PnL / Settlement mutation。
+
+Stage D testing matrix：
+
+- Long margin。
+- Short margin。
+- Mixed margin。
+- Today + yesterday qty。
+- Contract multiplier。
+- Initial vs maintenance margin。
+- Insufficient cash typed result。
+- Missing rule typed result。
+- Missing price typed result。
+- Decimal-only。
+- Snapshot persistence。
+- Replay deterministic。
+- Replay divergence。
+- `positions.margin_used` update boundary and rollback。
+- Canonical duplicate snapshot no-op。
+- Canonical conflict。
+- No PnL / Settlement mutation。
+- No `OrderStatus` / `OrderEvent` / `ExchangeReport` / `raw_payload` consumption。
 
 本阶段任何接口都不得连接真实期货柜台、CTP、SimNow 或真实交易网关。
 
@@ -736,6 +924,40 @@ Stage C 已新增 `position_events` 表作为 idempotency + replay audit ledger�
 - `exchange_trade_id` 索引
 
 `before_snapshot` / `after_snapshot` 用于 replay audit，不替代 live `positions` source-of-truth。`raw_payload` 只诊断，不参与 position canonical payload 或 replay conflict 判定。
+
+### margin_snapshots
+
+Stage D 需要新增 `margin_snapshots` 表作为 margin audit / replay ledger。本阶段不新增 `margin_rules` 表；`MarginRule` typed input 由 application layer 注入，`margin_snapshots` 记录 `rule_id` / `rule_version`。
+
+字段：
+
+- `id`
+- `account_id`
+- `instrument_id`
+- `position_version`
+- `rule_id`
+- `rule_version`
+- `long_qty`
+- `short_qty`
+- `price`
+- `contract_multiplier`
+- `initial_margin`
+- `maintenance_margin`
+- `margin_used`
+- `available_cash`
+- `equity`
+- `calculated_at`
+
+约束和索引：
+
+- `account_id` 索引
+- `instrument_id` 索引
+- `(account_id, instrument_id)` 复合索引
+- `position_version` 索引
+
+Migration 范围只新增 `margin_snapshots` table，不新增 pnl table，不新增 settlement table，不新增 `margin_events`，不改变 `orders` / `order_events` / `trades` 事实语义。
+
+`margin_snapshots` canonical payload 字段为 `account_id`、`instrument_id`、`position_version`、`rule_id`、`rule_version`、`long_qty`、`short_qty`、`price`、`contract_multiplier`、`initial_margin`、`maintenance_margin`、`margin_used`、`available_cash`、`equity`、`calculated_at` 或明确 `calculation_key`。`raw_payload` 不参与 canonical；same canonical no-op / duplicate accepted；different canonical 返回 `CONFLICT` / divergence，不静默覆盖历史 snapshot。
 
 ### account_snapshots
 
