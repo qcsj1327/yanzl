@@ -136,7 +136,7 @@
 19. Position Manager 更新 live `positions`，处理开仓、平今、平昨和 today/yesterday bucket，并写入 `position_events` 作为 applied-trade audit。
 20. Margin Engine 基于 Position、instrument rules、account context 计算保证金。
 21. PnL Engine 基于 Trade、Position、last price、settlement price 计算 realized / unrealized PnL。
-22. Settlement Engine 在交易日边界执行结算、结算价更新、保证金重算、PnL 归集和 today -> yesterday roll。
+22. Settlement Engine 在交易日边界执行结算、settlement price finalization、Margin fact finalization、PnL fact finalization 和 today -> yesterday roll。
 23. Recovery / Replay Framework 可按 source-of-truth 重放 order events、execution reports、trades、positions、market events、settlement snapshots。
 24. Monitoring / Audit 记录 metrics、structured logs、control actions、replay divergence、deployment gate 和 incident response。
 
@@ -330,14 +330,30 @@ Stage E 当前实现说明：
 
 ### Stage F: Settlement Engine
 
-- Goal：执行日终结算、结算价更新、PnL 归集和 today -> yesterday roll。
-- Inputs：Position、PnL、Margin、settlement price、trading calendar/session。
-- Outputs：SettlementEngine、settlement snapshot、idempotent settlement record。
-- Allowed changes：settlement module、schema/repository if needed、settlement tests。
-- Forbidden changes：不把 settlement 放回 MockExchange；不通过 JSON snapshot 补 live facts。
-- Required tests：settlement idempotency、today-to-yesterday roll、PnL carry, margin recompute, duplicate settlement, replay restore。
-- Acceptance criteria：同一 `account_id + trading_day` 结算幂等；结算后 positions 与 snapshot 可对账。
+- Goal：执行日终结算、settlement price finalization、PnL / Margin fact finalization、account snapshot、today -> yesterday roll。
+- Inputs：Position live projection、PnLSnapshot、MarginSnapshot、AccountContext / AccountSnapshot、typed SettlementPrice input、TradingCalendar / trading_day。Trade / PositionEvent 只可用于 audit / replay proof，不作为 primary live settlement path。
+- Outputs：SettlementEngine、SettlementSnapshot、SettlementResult、SettlementSnapshotRepository、account snapshot after-state、settlement-only position roll。
+- Allowed changes：settlement module、settlement domain models、settlement repository / UoW port、account snapshot repository if needed、migration extending `settlement_snapshots`、settlement tests。
+- Forbidden changes：不把 settlement 放回 MockExchange；不通过 JSON snapshot 补 live facts；不消费 `OrderStatus` / `OrderEvent` / `ExchangeReport` / `raw_payload` / broker adapter query / Risk direct DB lookup；不改历史 Trade / PositionEvent / PnLSnapshot / MarginSnapshot；不实现 broker reconciliation、真实交易所结算单解析、CTP、SimNow 或 runtime infra。
+- Required tests：domain Decimal validation、non-trading day reject、missing position / PnL / Margin / settlement price、frozen qty reject、today-to-yesterday roll、avg price unchanged、PnL / Margin snapshots not mutated、account after formula、duplicate same canonical no-op、same account/day different canonical conflict、replay live position/account divergence conflict、rejected result no persistence、settlement-only position update boundary、schema unique account/day、no OMS / Risk / Execution / Broker / raw_payload dependency。
+- Acceptance criteria：同一 `account_id + trading_day` 只有一个 final settlement fact；same canonical duplicate returns `DUPLICATE` / existing no-op；different canonical returns `CONFLICT`；successful settlement appends SettlementSnapshot, creates/references account after snapshot, and rolls positions in one UoW; rejected settlement does not persist or roll.
 - Suggested tag：`stage-f-settlement-engine`。
+
+Stage F contract freeze：
+
+- Settlement source-of-truth 只能是 typed Position live projection、PnLSnapshot、MarginSnapshot、AccountContext / AccountSnapshot、typed SettlementPrice input、TradingCalendar / trading_day。Trade / PositionEvent 只提供 audit / replay proof，不驱动 primary live settlement。
+- `SettlementResultStatus` 冻结为 `SETTLED`、`DUPLICATE`、`REJECTED_NON_TRADING_DAY`、`REJECTED_MISSING_POSITION`、`REJECTED_MISSING_PNL`、`REJECTED_MISSING_MARGIN`、`REJECTED_MISSING_SETTLEMENT_PRICE`、`REJECTED_FROZEN_POSITION`、`CONFLICT`、`ERROR`。
+- Today -> yesterday roll：`long_yesterday_qty += long_today_qty`，`short_yesterday_qty += short_today_qty`，`long_today_qty = 0`，`short_today_qty = 0`。Stage F 不改 avg price，不重算 realized / unrealized PnL，不重算 `margin_used`。如 `frozen_long_qty > 0` 或 `frozen_short_qty > 0`，返回 `REJECTED_FROZEN_POSITION`，不 roll、不 append settlement snapshot、不更新 account。
+- PnL finalization：Settlement 消费 `PnLSnapshot` facts，不重新计算 Stage E PnL；必须校验每个 settled instrument 有 relevant PnLSnapshot，`PnLSnapshot.price_basis == SETTLEMENT_PRICE` 或明确 settlement-compatible，且 `PnLSnapshot.mark_price == SettlementPrice.price`；不 mutate historical `pnl_snapshots`。
+- Margin finalization：Settlement 消费 `MarginSnapshot.margin_used`，不重新计算 Stage D margin；如需要 settlement-price margin，Stage D 必须先生成 MarginSnapshot；Settlement 不 mutate historical `margin_snapshots`。
+- Account formula 冻结为 typed formula：`cash_after = cash_before + realized_pnl`；`equity_after = cash_after + unrealized_pnl`；`available_cash_after = cash_after - margin_used`；`frozen_cash_after = account_before.frozen_cash`。不做 fee recomputation，realized PnL 来自 already-net PnLSnapshot，unrealized PnL 来自 PnLSnapshot，margin_used 来自 MarginSnapshot；不查 broker cash，不读 raw payload。
+- Stage F creates or references `account_snapshot_after`; `account_snapshot_before` may be referenced or constructed from typed AccountContext. SettlementSnapshot stores account before/after ids and typed cash/equity/PnL/margin values. Account update, settlement snapshot append, and position roll must be in the same UoW; any failure rolls back all.
+- `SettlementSnapshotRepository` freezes: `append_settlement_snapshot(snapshot)`、`get_by_account_trading_day(account_id, trading_day)`、`get_by_calculation_key(account_id, trading_day, calculation_key)`、`list_by_account(account_id)`、`list_by_trading_day(trading_day)`。
+- Migration: existing `settlement_snapshots` is insufficient. Stage F must extend or replace it without breaking history, adding `calculation_key`、`status`、`reason`、`positions_before`、`positions_after`、`settlement_prices`、`pnl_snapshot_ids`、`margin_snapshot_ids`、`account_snapshot_before_id`、`account_snapshot_after_id`、`cash_before`、`cash_after`、`realized_pnl`、`unrealized_pnl`、`margin_used`; add `UNIQUE(account_id, trading_day)`, indexes on `account_id`, `trading_day`, `(account_id, trading_day)`, and `calculation_key`. Do not add `settlement_events`, broker reconciliation table, or risk table in Stage F.
+- Canonical payload includes `account_id`、`trading_day`、`calculation_key`、`positions_before`、`positions_after`、`settlement_prices`、`pnl_snapshot_ids`、`margin_snapshot_ids`、`cash_before`、`cash_after`、`realized_pnl`、`unrealized_pnl`、`margin_used`、`status`; `calculated_at` / `created_at` and `raw_payload` are not canonical facts.
+- Replay uses the same settlement calculator / engine. Existing same canonical returns `DUPLICATE` / no-op; existing different canonical returns `CONFLICT`; live position/account projection divergence from snapshot after-state returns `CONFLICT`. Replay must not mutate historical trades, position_events, pnl_snapshots, or margin_snapshots.
+- Settlement position roll must use a settlement-only repository method such as `PositionRepository.roll_today_to_yesterday_for_settlement(...)` with `expected_version`. It may update only `long_today_qty`, `long_yesterday_qty`, `short_today_qty`, `short_yesterday_qty`, `version`, and `updated_at`; it must not update avg price, realized/unrealized PnL, `margin_used`, or settlement price fields.
+- Non-trading day returns `REJECTED_NON_TRADING_DAY`; trading day must come from typed input or TradingCalendar repository, never inferred from system date.
 
 ### Stage G: Market Data / Feature Snapshot
 

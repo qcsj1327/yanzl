@@ -711,6 +711,261 @@ PnL 不使用 `margin_used` 参与公式。`MarginSnapshot` 只可作为 audit c
 
 Stage E 不实现 daily settlement、today -> yesterday roll、settlement snapshots、settlement price finalization、daily PnL carry、account equity mutation、broker reconciliation、CTP、SimNow、broker adapter、FastAPI、Kafka、Redis、Celery、KMS、cloud runtime、Risk direct DB integration 或 raw_payload PnL facts。
 
+### Settlement Engine
+
+Stage F 冻结 Settlement Engine 契约。Settlement 是日终状态归档、PnL / Margin fact finalization、account snapshot 和 today -> yesterday roll 边界；它不是 PnL/Margin 重新计算器，也不是 broker reconciliation 或交易所结算单接入器。
+
+Settlement 只能消费：
+
+- `Position` live projection。
+- `PnLSnapshot`。
+- `MarginSnapshot`。
+- `AccountContext` / `AccountSnapshot`。
+- typed `SettlementPrice` input。
+- `TradingCalendar` / typed `trading_day`。
+- `Trade` / `PositionEvent` only for audit / replay proof, not as primary live settlement path。
+
+Settlement 禁止消费：
+
+- `OrderStatus`
+- `OrderEvent`
+- `ExchangeReport`
+- `raw_payload`
+- broker adapter query
+- Risk direct DB lookup
+
+#### SettlementResultStatus
+
+`SettlementResultStatus` 冻结为：
+
+- `SETTLED`
+- `DUPLICATE`
+- `REJECTED_NON_TRADING_DAY`
+- `REJECTED_MISSING_POSITION`
+- `REJECTED_MISSING_PNL`
+- `REJECTED_MISSING_MARGIN`
+- `REJECTED_MISSING_SETTLEMENT_PRICE`
+- `REJECTED_FROZEN_POSITION`
+- `CONFLICT`
+- `ERROR`
+
+#### SettlementPrice
+
+| 字段 | 类型 | 默认值 | 语义 |
+|---|---|---|---|
+| `instrument_id` | `str` | required | 合约身份。 |
+| `exchange` | `str` | required | 交易所。 |
+| `trading_day` | `date` | required | 结算交易日。 |
+| `price` | `Decimal` | required | typed settlement price。 |
+| `source` | `str \| None` | `None` | typed 来源标签；不是 raw payload。 |
+| `received_at` | `datetime` | required | 收到该 typed input 的时间。 |
+
+`price` 必须 Decimal 且 `> 0`。Settlement price 不得从 `raw_payload`、broker query 或 system date 推导。
+
+#### SettlementContext
+
+| 字段 | 类型 | 默认值 | 语义 |
+|---|---|---|---|
+| `account_id` | `str` | required | 账户身份。 |
+| `trading_day` | `date` | required | 结算交易日。 |
+| `account_before` | `AccountContext \| AccountSnapshot` | required | 结算前 typed account state。 |
+| `positions` | `Sequence[Position]` | required | 结算前 live positions。 |
+| `pnl_snapshots` | `Sequence[PnLSnapshot]` | required | Stage E PnL facts。 |
+| `margin_snapshots` | `Sequence[MarginSnapshot]` | required | Stage D margin facts。 |
+| `settlement_prices` | `Sequence[SettlementPrice]` | required | typed settlement price inputs。 |
+| `calculation_key` | `str` | required | deterministic settlement identity。 |
+| `settled_at` | `datetime` | required | settlement calculation time。 |
+
+`calculation_key` 必须由 application layer 提供 deterministic value，不得使用随机 UUID 或当前时间生成。
+
+#### SettlementSnapshot
+
+| 字段 | 类型 | 默认值 | 语义 |
+|---|---|---|---|
+| `id` | `str \| None` | `None` | 持久化 ID。 |
+| `account_id` | `str` | required | 账户身份。 |
+| `trading_day` | `date` | required | 结算交易日。 |
+| `calculation_key` | `str` | required | deterministic settlement identity。 |
+| `positions_before` | typed snapshot payload | required | 结算前 positions typed representation。 |
+| `positions_after` | typed snapshot payload | required | 结算后 positions typed representation。 |
+| `settlement_prices` | typed snapshot payload | required | typed settlement prices representation。 |
+| `pnl_snapshot_ids` | `Sequence[str]` | required | 被 finalization 的 PnL facts。 |
+| `margin_snapshot_ids` | `Sequence[str]` | required | 被 finalization 的 Margin facts。 |
+| `account_snapshot_before_id` | `str \| None` | `None` | 结算前 account snapshot identity。 |
+| `account_snapshot_after_id` | `str \| None` | `None` | 结算后 account snapshot identity。 |
+| `cash_before` | `Decimal` | required | 结算前 cash。 |
+| `cash_after` | `Decimal` | required | 结算后 cash。 |
+| `realized_pnl` | `Decimal` | required | 来自 PnLSnapshot 的已实现盈亏。 |
+| `unrealized_pnl` | `Decimal` | required | 来自 PnLSnapshot 的未实现盈亏。 |
+| `margin_used` | `Decimal` | required | 来自 MarginSnapshot 的 margin used。 |
+| `status` | `SettlementResultStatus` | required | settlement result status。 |
+| `reason` | `str \| None` | `None` | typed reason。 |
+| `created_at` | `datetime` | required | DB 创建时间。 |
+
+`positions_before`、`positions_after`、`settlement_prices` 是 typed snapshot payload，不是 raw source payload。`raw_payload` 不允许作为 Settlement fact 或 canonical payload。
+
+#### SettlementResult
+
+| 字段 | 类型 | 默认值 | 语义 |
+|---|---|---|---|
+| `status` | `SettlementResultStatus` | required | typed result status。 |
+| `snapshot` | `SettlementSnapshot \| None` | `None` | 写入或 existing settlement snapshot。 |
+| `reason` | `str \| None` | `None` | typed reason。 |
+| `account_id` | `str \| None` | `None` | 账户身份。 |
+| `trading_day` | `date \| None` | `None` | 结算交易日。 |
+
+#### Today -> yesterday roll
+
+Stage F today -> yesterday roll 冻结为：
+
+- `long_yesterday_qty = long_yesterday_qty + long_today_qty`
+- `short_yesterday_qty = short_yesterday_qty + short_today_qty`
+- `long_today_qty = Decimal("0")`
+- `short_today_qty = Decimal("0")`
+
+Stage F 不改变 `long_avg_price` / `short_avg_price`。Stage F 不重新计算 `realized_pnl` / `unrealized_pnl`。Stage F 不重新计算 `margin_used`。
+
+如果任一 position 的 `frozen_long_qty > 0` 或 `frozen_short_qty > 0`：
+
+- 返回 `REJECTED_FROZEN_POSITION`。
+- 不 roll。
+- 不 append `SettlementSnapshot`。
+- 不创建 / 更新 account after snapshot。
+- 不静默清空 frozen qty。
+
+#### PnL finalization
+
+Settlement 消费 `PnLSnapshot` facts。Settlement 不重新计算 Stage E PnL，且不修改历史 `pnl_snapshots`。
+
+Settlement 必须校验：
+
+- 每个 settled instrument 有 relevant `PnLSnapshot`。
+- `PnLSnapshot.price_basis == PnLPriceBasis.SETTLEMENT_PRICE`，或该 PnLSnapshot 被明确标记为 settlement-compatible typed fact。
+- `PnLSnapshot.mark_price == SettlementPrice.price`。
+
+`realized_pnl` 必须来自 PnLSnapshot，且 fee 已由 Stage E policy 决定。Settlement 不做 fee recomputation。
+
+#### Margin finalization
+
+Settlement 消费 `MarginSnapshot` facts 和 `margin_used`。Settlement 不重新计算 Stage D margin，且不修改历史 `margin_snapshots`。
+
+如果 settlement-price margin 是业务要求，Stage D 必须在 Settlement 前生成对应 `MarginSnapshot`。Settlement 只引用该 fact。
+
+#### Account formula and snapshots
+
+Stage F 账户公式冻结为 typed formula：
+
+- `cash_after = cash_before + realized_pnl`
+- `equity_after = cash_after + unrealized_pnl`
+- `available_cash_after = cash_after - margin_used`
+- `frozen_cash_after = account_before.frozen_cash`
+
+公式输入必须是 typed facts：
+
+- `cash_before` / `frozen_cash` 来自 `AccountContext` 或 `AccountSnapshot`。
+- `realized_pnl` / `unrealized_pnl` 来自 `PnLSnapshot`。
+- `margin_used` 来自 `MarginSnapshot`。
+
+Settlement 不查询 broker cash，不从 `raw_payload` 取账户事实，不重新计算 fee。
+
+Stage F 必须创建或引用 `account_snapshot_after`。`account_snapshot_before` 可以引用 existing snapshot，或由 typed `AccountContext` 构造。`SettlementSnapshot` 必须记录 account before / after IDs 和 typed cash / PnL / margin values。
+
+Successful settlement 的 `SettlementSnapshot` append、account after snapshot 创建 / 更新、position roll 必须在同一 UoW / transaction。任一步失败必须 rollback all。
+
+#### Position roll update boundary
+
+Settlement 需要 settlement-only position roll repository method，例如：
+
+- `PositionRepository.roll_today_to_yesterday_for_settlement(...)`
+
+该方法必须使用 `expected_version`，且只允许更新：
+
+- `long_today_qty`
+- `long_yesterday_qty`
+- `short_today_qty`
+- `short_yesterday_qty`
+- `version`
+- `updated_at`
+
+该方法不得更新：
+
+- `long_avg_price`
+- `short_avg_price`
+- `realized_pnl`
+- `unrealized_pnl`
+- `margin_used`
+- settlement price fields
+
+#### Settlement rejected result persistence
+
+Stage F rejected results 不持久化：
+
+- 不 append `SettlementSnapshot`。
+- 不 roll position。
+- 不创建 / 更新 account snapshot。
+
+Stage F 不引入 rejected audit snapshots；如未来需要 rejected audit，必须另行冻结 status、schema 和 idempotency。
+
+#### Trading calendar
+
+`trading_day` 必须来自 typed input，并由 typed `TradingCalendar` 或 trading calendar repository 校验。
+
+- 非交易日返回 `REJECTED_NON_TRADING_DAY`。
+- invalid `trading_day` 不允许 settlement。
+- 不得从 system date 推导 settlement trading day。
+
+#### Settlement idempotency and canonical payload
+
+同一 `account_id + trading_day` 只能有一个 final settlement fact。
+
+- Same canonical payload：返回 `DUPLICATE` / existing no-op。
+- Different canonical payload：返回 `CONFLICT`。
+- `calculated_at` / `created_at` 不参与 canonical。
+- `raw_payload` 不参与 canonical，也不是 Settlement fact。
+
+Settlement canonical payload 包括：
+
+- `account_id`
+- `trading_day`
+- `calculation_key`
+- `positions_before`
+- `positions_after`
+- `settlement_prices`
+- `pnl_snapshot_ids`
+- `margin_snapshot_ids`
+- `cash_before`
+- `cash_after`
+- `realized_pnl`
+- `unrealized_pnl`
+- `margin_used`
+- `status`
+
+#### Settlement replay
+
+Settlement replay 使用同一 settlement calculator / engine。
+
+- Existing same canonical：返回 `DUPLICATE` / no-op。
+- Existing different canonical：返回 `CONFLICT`。
+- Live position projection 或 live account projection 与 `SettlementSnapshot.positions_after` / account after-state divergence：返回 `CONFLICT`。
+- Replay 不得静默覆盖 live projection。
+- Replay 不得修改历史 `Trade`、`PositionEvent`、`PnLSnapshot` 或 `MarginSnapshot`。
+
+#### Settlement boundary
+
+Stage F 不实现：
+
+- Broker reconciliation。
+- 真实 exchange settlement file ingestion。
+- CTP / SimNow。
+- Risk direct integration。
+- runtime infra。
+- 修改历史 trades。
+- 修改历史 position_events。
+- 修改历史 pnl_snapshots。
+- 修改历史 margin_snapshots。
+- raw_payload settlement facts。
+- Settlement file parser。
+
 ### TradingCalendar
 
 | 字段 | 类型 | 默认值 | 语义 |
@@ -815,6 +1070,22 @@ Repository behavior：
 
 Stage E `UnitOfWork` 需要暴露 `pnl_snapshots: PnLSnapshotRepository`。首次写入某次 PnL projection 时，`PnLSnapshot` append 与 `positions.realized_pnl` / `positions.unrealized_pnl` update 必须在同一 UoW 内完成。Position PnL update 必须通过 pnl-only repository method，不得复用会写 qty / avg price / margin / settlement fields 的通用 update。
 
+Stage F 冻结 `SettlementSnapshotRepository`：
+
+- `append_settlement_snapshot(snapshot: SettlementSnapshot) -> SettlementSnapshot`：追加 settlement final snapshot。
+- `get_by_account_trading_day(account_id: str, trading_day: date) -> SettlementSnapshot | None`：按 one-final-fact identity 查询。
+- `get_by_calculation_key(account_id: str, trading_day: date, calculation_key: str) -> SettlementSnapshot | None`：按 deterministic calculation identity 查询。
+- `list_by_account(account_id: str) -> list[SettlementSnapshot]`：列出账户 settlement snapshots。
+- `list_by_trading_day(trading_day: date) -> list[SettlementSnapshot]`：列出交易日 settlement snapshots。
+
+Repository behavior：
+
+- Same canonical payload 时返回 existing / `DUPLICATE` no-op。
+- Different canonical payload 时返回 `CONFLICT` 或抛 typed settlement conflict error。
+- 不裸露 `IntegrityError`。
+
+Stage F `UnitOfWork` 需要暴露 `settlement_snapshots: SettlementSnapshotRepository`，并需要 account snapshot write/read port。成功 settlement 时，`SettlementSnapshot` append、account after snapshot 创建 / 更新、`positions` settlement roll 必须在同一 UoW 内完成。Position roll 必须通过 settlement-only repository method，不得复用会写 avg / PnL / margin fields 的通用 update。
+
 Stage C `PositionApplicationStatus` 冻结为：
 
 - `APPLIED`：Trade 首次应用，position 已更新并写入 PositionEvent。
@@ -899,6 +1170,34 @@ Stage E testing matrix：
 - Same position version duplicate PnL fact guard。
 - No Margin mutation。
 - No Settlement mutation。
+- No `OrderStatus` / `OrderEvent` / `ExchangeReport` / `raw_payload` consumption。
+
+Stage F testing matrix：
+
+- Domain Decimal validation。
+- Non-trading day returns `REJECTED_NON_TRADING_DAY`。
+- Missing position returns `REJECTED_MISSING_POSITION`。
+- Missing PnL returns `REJECTED_MISSING_PNL`。
+- Missing Margin returns `REJECTED_MISSING_MARGIN`。
+- Missing settlement price returns `REJECTED_MISSING_SETTLEMENT_PRICE`。
+- Frozen qty returns `REJECTED_FROZEN_POSITION`。
+- Rejected result no persistence。
+- Today -> yesterday roll。
+- Avg price unchanged。
+- `realized_pnl` / `unrealized_pnl` not recalculated。
+- `margin_used` not recalculated。
+- PnL snapshots not mutated。
+- Margin snapshots not mutated。
+- Account after formula。
+- SettlementSnapshot append and DB round trip。
+- Duplicate same canonical no-op / `DUPLICATE`。
+- Same account/day different canonical `CONFLICT`。
+- Replay same canonical no-op / `DUPLICATE`。
+- Replay live position divergence `CONFLICT`。
+- Replay live account divergence `CONFLICT`。
+- Settlement-only position update boundary。
+- Schema unique `(account_id, trading_day)`。
+- No OMS / Risk / Execution / Broker / Runtime import。
 - No `OrderStatus` / `OrderEvent` / `ExchangeReport` / `raw_payload` consumption。
 
 本阶段任何接口都不得连接真实期货柜台、CTP、SimNow 或真实交易网关。
@@ -1232,25 +1531,41 @@ Migration 范围只新增 `pnl_snapshots` table，不新增 settlement table，�
 
 ### settlement_snapshots
 
+Existing `settlement_snapshots` table is insufficient for Stage F. Stage F migration must extend or replace it without breaking existing history.
+
 字段：
 
 - `id`
-- `trading_day`
 - `account_id`
-- `cash_before`
-- `cash_after`
+- `trading_day`
+- `calculation_key`
 - `positions_before`
 - `positions_after`
 - `settlement_prices`
-- `raw_payload`
+- `pnl_snapshot_ids`
+- `margin_snapshot_ids`
+- `account_snapshot_before_id`
+- `account_snapshot_after_id`
+- `cash_before`
+- `cash_after`
+- `realized_pnl`
+- `unrealized_pnl`
+- `margin_used`
+- `status`
+- `reason`
 - `created_at`
 
-索引：
+约束和索引：
 
-- `trading_day` 索引
+- `UNIQUE(account_id, trading_day)`
 - `account_id` 索引
+- `trading_day` 索引
+- `(account_id, trading_day)` 复合索引
+- `calculation_key` 索引
 
-快照不是 live source of truth。`raw_payload` 不得承载缺失的类型化 source-of-truth 字段。
+同一 `account_id + trading_day` 只能有一个 final settlement fact。`calculation_key` 参与 canonical payload，但不得允许同一账户同一交易日写入多个 final settlement facts。
+
+Stage F migration 不新增 `settlement_events`、broker reconciliation table 或 risk table，不改变 Stage B / C / D / E facts schema。如历史兼容要求保留 `raw_payload` column，该字段只能作为非事实诊断字段，不参与 canonical payload，不承载缺失的 typed source-of-truth 字段。
 
 ### risk_events
 
