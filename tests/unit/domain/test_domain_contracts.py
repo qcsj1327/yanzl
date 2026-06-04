@@ -12,11 +12,14 @@ from futures_mvp.domain.enums import (
     Offset,
     OrderStatus,
     OrderType,
+    PnLPriceBasis,
+    PnLResultStatus,
     PositionManagerResultStatus,
 )
 from futures_mvp.domain.errors import DecimalRequiredError
 from futures_mvp.domain.models import (
     AccountContext,
+    CloseTradeContext,
     FillEvent,
     MarginRequirement,
     MarginResult,
@@ -26,12 +29,16 @@ from futures_mvp.domain.models import (
     OrderEventApplicationResult,
     OrderRequest,
     OrderState,
+    PnLResult,
+    PnLSnapshot,
     Position,
     PositionEvent,
     PositionManagerResult,
     PositionSnapshot,
+    RealizedPnL,
     Signal,
     Trade,
+    UnrealizedPnL,
 )
 
 
@@ -96,6 +103,27 @@ def test_margin_result_status_complete_contract() -> None:
         "REJECTED_MISSING_POSITION",
         "REJECTED_MISSING_PRICE",
         "REJECTED_INSUFFICIENT_CASH",
+        "CONFLICT",
+        "ERROR",
+    ]
+
+
+def test_pnl_price_basis_complete_contract() -> None:
+    assert [basis.value for basis in PnLPriceBasis] == [
+        "LAST_PRICE",
+        "SETTLEMENT_PRICE",
+        "MANUAL",
+    ]
+
+
+def test_pnl_result_status_complete_contract() -> None:
+    assert [status.value for status in PnLResultStatus] == [
+        "CALCULATED",
+        "REJECTED_MISSING_POSITION",
+        "REJECTED_MISSING_PRICE",
+        "REJECTED_MISSING_MULTIPLIER",
+        "REJECTED_MISSING_FEE",
+        "DOMAIN_FIELD_UNSUPPORTED",
         "CONFLICT",
         "ERROR",
     ]
@@ -278,6 +306,112 @@ def test_margin_requirement_snapshot_and_result_contracts() -> None:
     assert result.snapshot == snapshot
     assert "calculation_key" in MarginSnapshot.model_fields
     assert "raw_payload" not in MarginSnapshot.model_fields
+
+
+def test_pnl_domain_contracts_and_decimal_validation() -> None:
+    context = CloseTradeContext(
+        account_id="acct-1",
+        instrument_id="rb2610",
+        position_version=1,
+        avg_cost=Decimal("100"),
+        available_qty=Decimal("2"),
+        contract_multiplier=Decimal("10"),
+    )
+    realized = RealizedPnL(
+        account_id="acct-1",
+        instrument_id="rb2610",
+        trade_id="trade-1",
+        direction=Direction.SELL,
+        offset=Offset.CLOSE_TODAY,
+        quantity=Decimal("1"),
+        close_price=Decimal("110"),
+        avg_cost=context.avg_cost,
+        contract_multiplier=context.contract_multiplier,
+        gross_realized_pnl=Decimal("100"),
+        fee_amount=None,
+        net_realized_pnl=None,
+        calculated_at=datetime.now(UTC),
+    )
+    unrealized = UnrealizedPnL(
+        account_id="acct-1",
+        instrument_id="rb2610",
+        long_qty=Decimal("1"),
+        short_qty=Decimal("0"),
+        long_avg_price=Decimal("100"),
+        short_avg_price=Decimal("0"),
+        price_basis=PnLPriceBasis.MANUAL,
+        mark_price=Decimal("105"),
+        contract_multiplier=Decimal("10"),
+        gross_unrealized_pnl=Decimal("50"),
+        net_unrealized_pnl=Decimal("50"),
+    )
+    snapshot = PnLSnapshot(
+        account_id="acct-1",
+        instrument_id="rb2610",
+        position_version=1,
+        trade_id="trade-1",
+        margin_snapshot_id="margin-1",
+        calculation_key="acct-1:rb2610:1:pnl",
+        price_basis=PnLPriceBasis.MANUAL,
+        mark_price=Decimal("105"),
+        contract_multiplier=Decimal("10"),
+        realized_pnl=Decimal("100"),
+        unrealized_pnl=Decimal("50"),
+        total_pnl=Decimal("150"),
+        fee_amount=None,
+        calculated_at=datetime.now(UTC),
+    )
+    result = PnLResult(
+        status=PnLResultStatus.CALCULATED,
+        realized=realized,
+        unrealized=unrealized,
+        snapshot=snapshot,
+        reason="fee_unknown",
+    )
+
+    assert result.snapshot == snapshot
+    assert result.realized is not None
+    assert result.realized.fee_amount is None
+    assert result.realized.net_realized_pnl is None
+    assert "raw_payload" not in CloseTradeContext.model_fields
+    assert "raw_payload" not in PnLSnapshot.model_fields
+    with pytest.raises(ValueError):
+        CloseTradeContext(
+            account_id="acct-1",
+            instrument_id="rb2610",
+            position_version=1,
+            avg_cost=Decimal("100"),
+            available_qty=Decimal("1"),
+            contract_multiplier=Decimal("0"),
+        )
+    with pytest.raises(DecimalRequiredError):
+        PnLSnapshot(
+            account_id="acct-1",
+            instrument_id="rb2610",
+            position_version=1,
+            calculation_key="acct-1:rb2610:1:pnl",
+            price_basis=PnLPriceBasis.MANUAL,
+            mark_price=105.0,
+            contract_multiplier=Decimal("10"),
+            realized_pnl=Decimal("0"),
+            unrealized_pnl=Decimal("0"),
+            total_pnl=Decimal("0"),
+            calculated_at=datetime.now(UTC),
+        )
+    with pytest.raises(ValueError):
+        PnLSnapshot(
+            account_id="acct-1",
+            instrument_id="rb2610",
+            position_version=1,
+            calculation_key="",
+            price_basis=PnLPriceBasis.MANUAL,
+            mark_price=Decimal("105"),
+            contract_multiplier=Decimal("10"),
+            realized_pnl=Decimal("0"),
+            unrealized_pnl=Decimal("0"),
+            total_pnl=Decimal("0"),
+            calculated_at=datetime.now(UTC),
+        )
 
 
 def test_order_state_version_defaults_to_zero_for_optimistic_locking() -> None:

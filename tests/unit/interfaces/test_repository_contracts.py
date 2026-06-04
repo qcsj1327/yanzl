@@ -2,12 +2,20 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
-from futures_mvp.domain.enums import Direction, EventSource, Offset, OrderStatus, OrderType
+from futures_mvp.domain.enums import (
+    Direction,
+    EventSource,
+    Offset,
+    OrderStatus,
+    OrderType,
+    PnLPriceBasis,
+)
 from futures_mvp.domain.models import (
     MarginSnapshot,
     OrderEvent,
     OrderRequest,
     OrderState,
+    PnLSnapshot,
     Position,
     PositionEvent,
     PositionSnapshot,
@@ -17,6 +25,7 @@ from futures_mvp.interfaces.repositories import (
     MarginSnapshotRepository,
     OrderEventRepository,
     OrderRepository,
+    PnLSnapshotRepository,
     PositionEventRepository,
     PositionRepository,
     TradeRepository,
@@ -120,6 +129,25 @@ def _margin_snapshot() -> MarginSnapshot:
         margin_used=Decimal("3500"),
         available_cash=Decimal("10000"),
         equity=Decimal("20000"),
+        calculated_at=datetime.now(UTC),
+    )
+
+
+def _pnl_snapshot() -> PnLSnapshot:
+    return PnLSnapshot(
+        account_id="account-1",
+        instrument_id="rb2601",
+        position_version=1,
+        trade_id="trade-1",
+        margin_snapshot_id="margin-1",
+        calculation_key="account-1:rb2601:1:pnl",
+        price_basis=PnLPriceBasis.MANUAL,
+        mark_price=Decimal("3500"),
+        contract_multiplier=Decimal("10"),
+        realized_pnl=Decimal("100"),
+        unrealized_pnl=Decimal("50"),
+        total_pnl=Decimal("150"),
+        fee_amount=Decimal("2"),
         calculated_at=datetime.now(UTC),
     )
 
@@ -242,6 +270,25 @@ class FakePositionRepository:
         self.positions[(account_id, instrument_id)] = updated
         return updated
 
+    def update_pnl(
+        self,
+        account_id: str,
+        instrument_id: str,
+        realized_pnl: Decimal,
+        unrealized_pnl: Decimal,
+        *,
+        expected_version: int | None = None,
+    ) -> Position:
+        del expected_version
+        current = self.positions.get((account_id, instrument_id))
+        if current is None:
+            current = Position(id="1", account_id=account_id, instrument_id=instrument_id)
+        updated = current.model_copy(
+            update={"realized_pnl": realized_pnl, "unrealized_pnl": unrealized_pnl}
+        )
+        self.positions[(account_id, instrument_id)] = updated
+        return updated
+
     def list_by_account(self, account_id: str) -> list[Position]:
         return [
             position
@@ -311,6 +358,57 @@ class FakeMarginSnapshotRepository:
         return self.snapshots.get((account_id, instrument_id, position_version))
 
 
+class FakePnLSnapshotRepository:
+    def __init__(self) -> None:
+        self.snapshots: dict[tuple[str, str, str], PnLSnapshot] = {}
+
+    def append_pnl_snapshot(self, snapshot: PnLSnapshot) -> PnLSnapshot:
+        self.snapshots[
+            (snapshot.account_id, snapshot.instrument_id, snapshot.calculation_key)
+        ] = snapshot
+        return snapshot
+
+    def get_latest(self, account_id: str, instrument_id: str) -> PnLSnapshot | None:
+        matches = [
+            snapshot
+            for snapshot in self.snapshots.values()
+            if snapshot.account_id == account_id and snapshot.instrument_id == instrument_id
+        ]
+        return matches[-1] if matches else None
+
+    def list_by_account(self, account_id: str) -> list[PnLSnapshot]:
+        return [
+            snapshot
+            for snapshot in self.snapshots.values()
+            if snapshot.account_id == account_id
+        ]
+
+    def get_by_calculation_key(
+        self,
+        account_id: str,
+        instrument_id: str,
+        calculation_key: str,
+    ) -> PnLSnapshot | None:
+        return self.snapshots.get((account_id, instrument_id, calculation_key))
+
+    def get_by_position_version(
+        self,
+        account_id: str,
+        instrument_id: str,
+        position_version: int,
+    ) -> PnLSnapshot | None:
+        return next(
+            (
+                snapshot
+                for snapshot in self.snapshots.values()
+                if snapshot.account_id == account_id
+                and snapshot.instrument_id == instrument_id
+                and snapshot.position_version == position_version
+            ),
+            None,
+        )
+
+
 class FakeUnitOfWork:
     def __init__(self) -> None:
         self.orders = FakeOrderRepository()
@@ -319,6 +417,7 @@ class FakeUnitOfWork:
         self.positions = FakePositionRepository()
         self.position_events = FakePositionEventRepository()
         self.margin_snapshots = FakeMarginSnapshotRepository()
+        self.pnl_snapshots = FakePnLSnapshotRepository()
         self.commit_count = 0
         self.rollback_count = 0
 
@@ -348,6 +447,7 @@ def test_repository_protocols_can_be_implemented_by_fakes() -> None:
     position_repo = FakePositionRepository()
     position_event_repo = FakePositionEventRepository()
     margin_snapshot_repo = FakeMarginSnapshotRepository()
+    pnl_snapshot_repo = FakePnLSnapshotRepository()
 
     assert isinstance(order_repo, OrderRepository)
     assert isinstance(event_repo, OrderEventRepository)
@@ -355,6 +455,7 @@ def test_repository_protocols_can_be_implemented_by_fakes() -> None:
     assert isinstance(position_repo, PositionRepository)
     assert isinstance(position_event_repo, PositionEventRepository)
     assert isinstance(margin_snapshot_repo, MarginSnapshotRepository)
+    assert isinstance(pnl_snapshot_repo, PnLSnapshotRepository)
 
     order = order_repo.create_order(_order_request(), client_order_id="client-1")
     event = event_repo.append_event(_order_event(order.order_id))
@@ -362,6 +463,7 @@ def test_repository_protocols_can_be_implemented_by_fakes() -> None:
     position = position_repo.create_or_get_position("account-1", "rb2601")
     position_event = position_event_repo.append_position_event(_position_event(trade))
     margin_snapshot = margin_snapshot_repo.append_margin_snapshot(_margin_snapshot())
+    pnl_snapshot = pnl_snapshot_repo.append_pnl_snapshot(_pnl_snapshot())
 
     assert order_repo.get_by_id(order.order_id) == order
     assert order_repo.get_by_client_order_id("client-1") == order
@@ -372,6 +474,11 @@ def test_repository_protocols_can_be_implemented_by_fakes() -> None:
     assert position_event_repo.get_by_trade_key("account-1", "SHFE", "trade-1") == position_event
     assert margin_snapshot_repo.get_latest("account-1", "rb2601") == margin_snapshot
     assert margin_snapshot_repo.get_by_position_version("account-1", "rb2601", 1) == margin_snapshot
+    assert pnl_snapshot_repo.get_latest("account-1", "rb2601") == pnl_snapshot
+    assert (
+        pnl_snapshot_repo.get_by_calculation_key("account-1", "rb2601", "account-1:rb2601:1:pnl")
+        == pnl_snapshot
+    )
 
 
 def test_unit_of_work_protocol_supports_commit_and_rollback() -> None:

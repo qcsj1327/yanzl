@@ -266,6 +266,36 @@ class MarginSnapshot(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class PnLSnapshot(Base):
+    __tablename__ = "pnl_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "account_id",
+            "instrument_id",
+            "calculation_key",
+            name="uq_pnl_snapshots_account_instrument_calculation",
+        ),
+        Index("ix_pnl_snapshots_account_instrument", "account_id", "instrument_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    instrument_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    position_version: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    trade_id: Mapped[str | None] = mapped_column(String(128), index=True)
+    margin_snapshot_id: Mapped[str | None] = mapped_column(String(128))
+    calculation_key: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
+    price_basis: Mapped[str] = mapped_column(String(32), nullable=False)
+    mark_price: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    contract_multiplier: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    realized_pnl: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    unrealized_pnl: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    total_pnl: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    fee_amount: Mapped[Decimal | None] = mapped_column(DECIMAL)
+    calculated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class AccountSnapshot(Base):
     __tablename__ = "account_snapshots"
 

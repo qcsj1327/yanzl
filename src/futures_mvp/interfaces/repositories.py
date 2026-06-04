@@ -9,6 +9,7 @@ from futures_mvp.domain.models import (
     OrderEvent,
     OrderRequest,
     OrderState,
+    PnLSnapshot,
     Position,
     PositionEvent,
     Trade,
@@ -49,6 +50,10 @@ class PositionEventConflictError(RepositoryError):
 
 class MarginSnapshotConflictError(RepositoryError):
     """Raised when a margin calculation key is reused with different facts."""
+
+
+class PnLSnapshotConflictError(RepositoryError):
+    """Raised when a PnL calculation key is reused with different facts."""
 
 
 @runtime_checkable
@@ -121,6 +126,16 @@ class PositionRepository(Protocol):
         expected_version: int | None = None,
     ) -> Position: ...
 
+    def update_pnl(
+        self,
+        account_id: str,
+        instrument_id: str,
+        realized_pnl: Decimal,
+        unrealized_pnl: Decimal,
+        *,
+        expected_version: int | None = None,
+    ) -> Position: ...
+
     def list_by_account(self, account_id: str) -> list[Position]: ...
 
 
@@ -157,6 +172,29 @@ class MarginSnapshotRepository(Protocol):
 
 
 @runtime_checkable
+class PnLSnapshotRepository(Protocol):
+    def append_pnl_snapshot(self, snapshot: PnLSnapshot) -> PnLSnapshot: ...
+
+    def get_latest(self, account_id: str, instrument_id: str) -> PnLSnapshot | None: ...
+
+    def list_by_account(self, account_id: str) -> list[PnLSnapshot]: ...
+
+    def get_by_calculation_key(
+        self,
+        account_id: str,
+        instrument_id: str,
+        calculation_key: str,
+    ) -> PnLSnapshot | None: ...
+
+    def get_by_position_version(
+        self,
+        account_id: str,
+        instrument_id: str,
+        position_version: int,
+    ) -> PnLSnapshot | None: ...
+
+
+@runtime_checkable
 class UnitOfWork(Protocol):
     orders: OrderRepository
     order_events: OrderEventRepository
@@ -164,6 +202,7 @@ class UnitOfWork(Protocol):
     positions: PositionRepository
     position_events: PositionEventRepository
     margin_snapshots: MarginSnapshotRepository
+    pnl_snapshots: PnLSnapshotRepository
 
     def commit(self) -> None: ...
 

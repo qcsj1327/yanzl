@@ -1,6 +1,14 @@
 from sqlalchemy import DateTime, Integer, Numeric, UniqueConstraint
 
-from futures_mvp.db.models import Base, Order, OrderEvent, Position, PositionEvent, Trade
+from futures_mvp.db.models import (
+    Base,
+    Order,
+    OrderEvent,
+    PnLSnapshot,
+    Position,
+    PositionEvent,
+    Trade,
+)
 
 
 def _unique_constraint_columns(model: type[object], name: str) -> tuple[str, ...]:
@@ -20,6 +28,7 @@ def test_required_tables_are_declared() -> None:
         "trades",
         "positions",
         "position_events",
+        "pnl_snapshots",
         "account_snapshots",
         "settlement_snapshots",
         "risk_events",
@@ -127,3 +136,33 @@ def test_position_events_match_stage_c_idempotency_and_audit_contract() -> None:
     assert isinstance(PositionEvent.__table__.columns["price"].type, Numeric)
     assert isinstance(PositionEvent.__table__.columns["quantity"].type, Numeric)
     assert PositionEvent.__table__.columns["created_at"].nullable is False
+
+
+def test_pnl_snapshots_match_stage_e_idempotency_contract() -> None:
+    assert _unique_constraint_columns(
+        PnLSnapshot,
+        "uq_pnl_snapshots_account_instrument_calculation",
+    ) == ("account_id", "instrument_id", "calculation_key")
+    for column_name in [
+        "id",
+        "account_id",
+        "instrument_id",
+        "position_version",
+        "trade_id",
+        "margin_snapshot_id",
+        "calculation_key",
+        "price_basis",
+        "mark_price",
+        "contract_multiplier",
+        "realized_pnl",
+        "unrealized_pnl",
+        "total_pnl",
+        "fee_amount",
+        "calculated_at",
+        "created_at",
+    ]:
+        assert column_name in PnLSnapshot.__table__.columns
+
+    assert isinstance(PnLSnapshot.__table__.columns["mark_price"].type, Numeric)
+    assert isinstance(PnLSnapshot.__table__.columns["realized_pnl"].type, Numeric)
+    assert PnLSnapshot.__table__.columns["created_at"].nullable is False

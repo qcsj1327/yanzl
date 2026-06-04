@@ -14,6 +14,8 @@ from futures_mvp.domain.enums import (
     Offset,
     OrderStatus,
     OrderType,
+    PnLPriceBasis,
+    PnLResultStatus,
     PositionManagerResultStatus,
     RiskDecision,
 )
@@ -448,6 +450,158 @@ class MarginResult(DomainModel):
     status: MarginResultStatus
     requirement: MarginRequirement | None = None
     snapshot: MarginSnapshot | None = None
+    reason: str | None = None
+    account_id: str | None = None
+    instrument_id: str | None = None
+
+
+class CloseTradeContext(DomainModel):
+    account_id: str
+    instrument_id: str
+    position_version: int
+    avg_cost: Decimal
+    available_qty: Decimal
+    contract_multiplier: Decimal
+    context_time: datetime | None = None
+
+    @field_validator("avg_cost", "available_qty", "contract_multiplier", mode="before")
+    @classmethod
+    def _decimal_only(cls, value: Any) -> Decimal:
+        return require_decimal(value)
+
+    @field_validator("avg_cost", "available_qty")
+    @classmethod
+    def _non_negative(cls, value: Decimal) -> Decimal:
+        return require_non_negative_decimal(value, field_name="pnl_context_value")
+
+    @field_validator("contract_multiplier")
+    @classmethod
+    def _contract_multiplier_positive(cls, value: Decimal) -> Decimal:
+        return require_positive_decimal(value, field_name="contract_multiplier")
+
+
+class RealizedPnL(DomainModel):
+    account_id: str
+    instrument_id: str
+    trade_id: str
+    direction: Direction
+    offset: Offset
+    quantity: Decimal
+    close_price: Decimal
+    avg_cost: Decimal
+    contract_multiplier: Decimal
+    gross_realized_pnl: Decimal
+    fee_amount: Decimal | None = None
+    net_realized_pnl: Decimal | None = None
+    currency: str | None = None
+    calculated_at: datetime
+
+    @field_validator(
+        "quantity",
+        "close_price",
+        "avg_cost",
+        "contract_multiplier",
+        "gross_realized_pnl",
+        "fee_amount",
+        "net_realized_pnl",
+        mode="before",
+    )
+    @classmethod
+    def _decimal_only(cls, value: Any) -> Decimal | None:
+        if value is None:
+            return None
+        return require_decimal(value)
+
+    @field_validator("quantity", "contract_multiplier")
+    @classmethod
+    def _positive(cls, value: Decimal) -> Decimal:
+        return require_positive_decimal(value, field_name="pnl_positive_value")
+
+
+class UnrealizedPnL(DomainModel):
+    account_id: str
+    instrument_id: str
+    long_qty: Decimal
+    short_qty: Decimal
+    long_avg_price: Decimal
+    short_avg_price: Decimal
+    price_basis: PnLPriceBasis
+    mark_price: Decimal
+    contract_multiplier: Decimal
+    gross_unrealized_pnl: Decimal
+    net_unrealized_pnl: Decimal
+
+    @field_validator(
+        "long_qty",
+        "short_qty",
+        "long_avg_price",
+        "short_avg_price",
+        "mark_price",
+        "contract_multiplier",
+        "gross_unrealized_pnl",
+        "net_unrealized_pnl",
+        mode="before",
+    )
+    @classmethod
+    def _decimal_only(cls, value: Any) -> Decimal:
+        return require_decimal(value)
+
+    @field_validator("contract_multiplier")
+    @classmethod
+    def _contract_multiplier_positive(cls, value: Decimal) -> Decimal:
+        return require_positive_decimal(value, field_name="contract_multiplier")
+
+
+class PnLSnapshot(DomainModel):
+    id: str | None = None
+    account_id: str
+    instrument_id: str
+    position_version: int
+    trade_id: str | None = None
+    margin_snapshot_id: str | None = None
+    calculation_key: str
+    price_basis: PnLPriceBasis
+    mark_price: Decimal
+    contract_multiplier: Decimal
+    realized_pnl: Decimal
+    unrealized_pnl: Decimal
+    total_pnl: Decimal
+    fee_amount: Decimal | None = None
+    calculated_at: datetime
+
+    @field_validator(
+        "mark_price",
+        "contract_multiplier",
+        "realized_pnl",
+        "unrealized_pnl",
+        "total_pnl",
+        "fee_amount",
+        mode="before",
+    )
+    @classmethod
+    def _decimal_only(cls, value: Any) -> Decimal | None:
+        if value is None:
+            return None
+        return require_decimal(value)
+
+    @field_validator("contract_multiplier")
+    @classmethod
+    def _contract_multiplier_positive(cls, value: Decimal) -> Decimal:
+        return require_positive_decimal(value, field_name="contract_multiplier")
+
+    @field_validator("calculation_key")
+    @classmethod
+    def _calculation_key_required(cls, value: str) -> str:
+        if not value:
+            raise ValueError("calculation_key is required")
+        return value
+
+
+class PnLResult(DomainModel):
+    status: PnLResultStatus
+    realized: RealizedPnL | None = None
+    unrealized: UnrealizedPnL | None = None
+    snapshot: PnLSnapshot | None = None
     reason: str | None = None
     account_id: str | None = None
     instrument_id: str | None = None

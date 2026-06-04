@@ -305,13 +305,28 @@ Stage D 当前实现说明：
 ### Stage E: PnL Engine
 
 - Goal：计算 realized / unrealized PnL。
-- Inputs：Trade、Position、last price、settlement price、cost basis。
-- Outputs：PnL projection、position PnL update、mark-to-market result。
-- Allowed changes：pnl module、price context、tests。
-- Forbidden changes：不混用成交价、最新价、结算价；不从行情 raw payload 取价格事实。
-- Required tests：realized close PnL、unrealized mark-to-market、settlement price mark、Decimal-only、replay consistency。
-- Acceptance criteria：同一 Trade / Position / price input 得到 deterministic PnL。
+- Inputs：Trade、Position 或 typed pre/post position snapshot、typed price input、typed Trade fee；MarginSnapshot 只可用于 audit correlation，不参与 PnL 公式。
+- Outputs：PnLEngine、RealizedPnL、UnrealizedPnL、PnLSnapshot、PnLResult、position PnL projection update。
+- Allowed changes：pnl domain / module、PnLSnapshot repository、pnl_snapshots migration、pnl-only position update boundary、focused tests。
+- Forbidden changes：不消费 `OrderStatus`、`OrderEvent`、`ExchangeReport`、broker adapter query 或 `raw_payload`；不让 Risk 直接 DB lookup；不实现 Settlement / today-yesterday roll / Margin recompute / broker reconciliation / CTP / SimNow / runtime infra / account equity mutation。
+- Required tests：long close realized PnL、short close realized PnL、open trade no realized PnL、fee known / zero / unknown、long unrealized、short unrealized、mixed unrealized、LAST_PRICE / SETTLEMENT_PRICE / MANUAL、missing price、missing multiplier、Decimal-only、pre-close position required、snapshot persistence、duplicate no-op、canonical conflict、replay deterministic、no Margin mutation、no Settlement mutation、no `OrderStatus` / `OrderEvent` / `ExchangeReport` / `raw_payload` consumption。
+- Acceptance criteria：同一 Trade / typed Position context / price input / multiplier / fee 得到 deterministic PnL；PnLSnapshot canonical same replay no-op，canonical different 返回 conflict/divergence 且不静默覆盖；Stage E 只通过 pnl-only repository method 更新 `positions.realized_pnl` / `positions.unrealized_pnl`。
 - Suggested tag：`stage-e-pnl-engine`。
+
+Stage E 当前实现说明：
+
+- PnL source-of-truth 只能是 `Trade`、`Position` 或 typed pre/post position snapshot、typed price input、typed Trade fee。`MarginSnapshot` 只用于 audit correlation，不参与 realized / unrealized PnL 公式。
+- `PnLPriceBasis` 冻结为 `LAST_PRICE | SETTLEMENT_PRICE | MANUAL`。缺少所需 price 返回 `REJECTED_MISSING_PRICE`；不得从 `raw_payload` 或 broker query 取价。
+- `PnLResultStatus` 冻结为 `CALCULATED`、`REJECTED_MISSING_POSITION`、`REJECTED_MISSING_PRICE`、`REJECTED_MISSING_MULTIPLIER`、`REJECTED_MISSING_FEE`、`DOMAIN_FIELD_UNSUPPORTED`、`CONFLICT`、`ERROR`。
+- Contract multiplier 必须来自 typed input 或 typed rule object，必须 Decimal 且 `> 0`；缺失返回 `REJECTED_MISSING_MULTIPLIER`。
+- Realized PnL 只处理 close trade：`SELL + CLOSE_*` closes long，`BUY + CLOSE_*` closes short。Long close gross = `(trade.price - avg_cost) * quantity * contract_multiplier`；short close gross = `(avg_cost - trade.price) * quantity * contract_multiplier`。Open trade 不产生 realized PnL。
+- Realized PnL 必须消费 typed pre-close position snapshot/context，或显式 `avg_cost`。不得用历史 close 后的 current live Position 推导 avg_cost，不得从 `raw_payload` 或 `OrderEvent` 推导 avg_cost。
+- Fee policy：`fee_amount` 为 Decimal 时 `net_realized_pnl = gross_realized_pnl - fee_amount`；`Decimal("0")` 表示明确零手续费；`fee_amount is None` 时 calculator 可返回 `CALCULATED` 和 `reason="fee_unknown"` 以保留 gross 诊断信息，但 PnLEngine 持久化 projection 必须返回 `REJECTED_MISSING_FEE`，不 append snapshot，不更新 position PnL。
+- Unrealized PnL 使用 typed mark price：long = `(mark_price - long_avg_price) * long_qty * contract_multiplier`；short = `(short_avg_price - mark_price) * short_qty * contract_multiplier`；`long_qty = long_today_qty + long_yesterday_qty`，`short_qty = short_today_qty + short_yesterday_qty`。
+- Stage E 可更新 `positions.realized_pnl` / `positions.unrealized_pnl`，但必须先 append `PnLSnapshot`，再用 pnl-only repository method 更新 position PnL fields，并且二者处于同一 UoW / transaction。不得更新 qty、avg price、`margin_used` 或 settlement fields；snapshot append 失败不得更新 position，position update 失败必须 rollback。
+- Stage E 已新增 `PnLSnapshotRepository` 和 `pnl_snapshots` table；`pnl_snapshots` canonical payload 使用 deterministic `calculation_key`，不使用 `calculated_at`；`raw_payload` 不允许进入 PnL facts。同一 `account_id + instrument_id + position_version` 不得写入第二条不同 PnL fact；除 `calculation_key` 外经济事实一致时 no-op，经济事实不一致时 conflict。
+- Replay 使用同一 calculator 和 deterministic `calculation_key`。Same canonical no-op，different canonical 返回 `CONFLICT` / divergence；即使 `calculation_key` 不同，同一 position version 的经济事实一致也必须 no-op，经济事实不一致必须 conflict；replay 不得静默覆盖 position PnL fields。Replay divergence 判定必须读取 repository / UoW 内真实 live Position row；调用方传入的 Position 只作为 calculator input。若 live position PnL 与 snapshot divergence，除非当前 transaction 正在更新它，否则必须返回 `CONFLICT`。
+- PnL 不使用 `margin_used` 参与公式，不触发 Margin recompute，MarginEngine 不调用 PnLEngine。Stage E 不实现 settlement snapshots、settlement price finalization、daily PnL carry、today -> yesterday roll 或 account equity mutation。
 
 ### Stage F: Settlement Engine
 

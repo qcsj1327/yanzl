@@ -10,15 +10,24 @@ from sqlalchemy.orm import Session
 from futures_mvp.db.models import MarginSnapshot as MarginSnapshotOrm
 from futures_mvp.db.models import Order
 from futures_mvp.db.models import OrderEvent as OrderEventOrm
+from futures_mvp.db.models import PnLSnapshot as PnLSnapshotOrm
 from futures_mvp.db.models import Position as PositionOrm
 from futures_mvp.db.models import PositionEvent as PositionEventOrm
 from futures_mvp.db.models import Trade as TradeOrm
-from futures_mvp.domain.enums import Direction, EventSource, Offset, OrderStatus, OrderType
+from futures_mvp.domain.enums import (
+    Direction,
+    EventSource,
+    Offset,
+    OrderStatus,
+    OrderType,
+    PnLPriceBasis,
+)
 from futures_mvp.domain.models import (
     MarginSnapshot,
     OrderEvent,
     OrderRequest,
     OrderState,
+    PnLSnapshot,
     Position,
     PositionEvent,
     PositionSnapshot,
@@ -30,6 +39,7 @@ from futures_mvp.interfaces.repositories import (
     MarginSnapshotConflictError,
     OptimisticLockError,
     OrderNotFoundError,
+    PnLSnapshotConflictError,
     PositionEventConflictError,
     RepositoryError,
     TradeIdempotencyConflictError,
@@ -175,6 +185,26 @@ def margin_snapshot_to_domain(snapshot: MarginSnapshotOrm) -> MarginSnapshot:
         margin_used=snapshot.margin_used,
         available_cash=snapshot.available_cash,
         equity=snapshot.equity,
+        calculated_at=snapshot.calculated_at,
+    )
+
+
+def pnl_snapshot_to_domain(snapshot: PnLSnapshotOrm) -> PnLSnapshot:
+    return PnLSnapshot(
+        id=str(snapshot.id),
+        account_id=snapshot.account_id,
+        instrument_id=snapshot.instrument_id,
+        position_version=snapshot.position_version,
+        trade_id=snapshot.trade_id,
+        margin_snapshot_id=snapshot.margin_snapshot_id,
+        calculation_key=snapshot.calculation_key,
+        price_basis=PnLPriceBasis(snapshot.price_basis),
+        mark_price=snapshot.mark_price,
+        contract_multiplier=snapshot.contract_multiplier,
+        realized_pnl=snapshot.realized_pnl,
+        unrealized_pnl=snapshot.unrealized_pnl,
+        total_pnl=snapshot.total_pnl,
+        fee_amount=snapshot.fee_amount,
         calculated_at=snapshot.calculated_at,
     )
 
@@ -374,6 +404,94 @@ def _same_canonical_margin_snapshot_payload(
     return _canonical_margin_snapshot_payload_from_orm(
         existing
     ) == _canonical_margin_snapshot_payload_from_domain(snapshot)
+
+
+def _canonical_pnl_snapshot_payload_from_domain(snapshot: PnLSnapshot) -> tuple[object, ...]:
+    return (
+        snapshot.account_id,
+        snapshot.instrument_id,
+        snapshot.position_version,
+        snapshot.trade_id,
+        snapshot.margin_snapshot_id,
+        snapshot.calculation_key,
+        snapshot.price_basis.value,
+        snapshot.mark_price,
+        snapshot.contract_multiplier,
+        snapshot.realized_pnl,
+        snapshot.unrealized_pnl,
+        snapshot.total_pnl,
+        snapshot.fee_amount,
+    )
+
+
+def _canonical_pnl_snapshot_payload_from_orm(snapshot: PnLSnapshotOrm) -> tuple[object, ...]:
+    return (
+        snapshot.account_id,
+        snapshot.instrument_id,
+        snapshot.position_version,
+        snapshot.trade_id,
+        snapshot.margin_snapshot_id,
+        snapshot.calculation_key,
+        snapshot.price_basis,
+        snapshot.mark_price,
+        snapshot.contract_multiplier,
+        snapshot.realized_pnl,
+        snapshot.unrealized_pnl,
+        snapshot.total_pnl,
+        snapshot.fee_amount,
+    )
+
+
+def _same_canonical_pnl_snapshot_payload(
+    existing: PnLSnapshotOrm,
+    snapshot: PnLSnapshot,
+) -> bool:
+    return _canonical_pnl_snapshot_payload_from_orm(
+        existing
+    ) == _canonical_pnl_snapshot_payload_from_domain(snapshot)
+
+
+def _pnl_position_version_payload_from_domain(snapshot: PnLSnapshot) -> tuple[object, ...]:
+    return (
+        snapshot.account_id,
+        snapshot.instrument_id,
+        snapshot.position_version,
+        snapshot.trade_id,
+        snapshot.margin_snapshot_id,
+        snapshot.price_basis.value,
+        snapshot.mark_price,
+        snapshot.contract_multiplier,
+        snapshot.realized_pnl,
+        snapshot.unrealized_pnl,
+        snapshot.total_pnl,
+        snapshot.fee_amount,
+    )
+
+
+def _pnl_position_version_payload_from_orm(snapshot: PnLSnapshotOrm) -> tuple[object, ...]:
+    return (
+        snapshot.account_id,
+        snapshot.instrument_id,
+        snapshot.position_version,
+        snapshot.trade_id,
+        snapshot.margin_snapshot_id,
+        snapshot.price_basis,
+        snapshot.mark_price,
+        snapshot.contract_multiplier,
+        snapshot.realized_pnl,
+        snapshot.unrealized_pnl,
+        snapshot.total_pnl,
+        snapshot.fee_amount,
+    )
+
+
+def _same_pnl_position_version_payload(
+    existing: PnLSnapshotOrm,
+    snapshot: PnLSnapshot,
+) -> bool:
+    return _pnl_position_version_payload_from_orm(
+        existing
+    ) == _pnl_position_version_payload_from_domain(snapshot)
 
 
 class SQLAlchemyOrderRepository:
@@ -751,6 +869,48 @@ class SQLAlchemyPositionRepository:
             raise RepositoryError(f"position updated but not found: {account_id}/{instrument_id}")
         return position_to_domain(updated)
 
+    def update_pnl(
+        self,
+        account_id: str,
+        instrument_id: str,
+        realized_pnl: Decimal,
+        unrealized_pnl: Decimal,
+        *,
+        expected_version: int | None = None,
+    ) -> Position:
+        conditions = [
+            PositionOrm.account_id == account_id,
+            PositionOrm.instrument_id == instrument_id,
+        ]
+        if expected_version is not None:
+            conditions.append(PositionOrm.version == expected_version)
+
+        result = cast(
+            CursorResult[object],
+            self._session.execute(
+                update(PositionOrm)
+                .where(*conditions)
+                .values(
+                    realized_pnl=realized_pnl,
+                    unrealized_pnl=unrealized_pnl,
+                    version=PositionOrm.version + 1,
+                )
+                .execution_options(synchronize_session=False)
+            ),
+        )
+        if result.rowcount != 1:
+            if expected_version is None:
+                raise RepositoryError(f"position not found: {account_id}/{instrument_id}")
+            raise OptimisticLockError(
+                "position "
+                f"{account_id}/{instrument_id} version mismatch: expected {expected_version}"
+            )
+        self._session.flush()
+        updated = self._get_orm_by_account_instrument(account_id, instrument_id)
+        if updated is None:
+            raise RepositoryError(f"position updated but not found: {account_id}/{instrument_id}")
+        return position_to_domain(updated)
+
     def list_by_account(self, account_id: str) -> list[Position]:
         positions = self._session.scalars(
             select(PositionOrm)
@@ -1010,3 +1170,169 @@ class SQLAlchemyMarginSnapshotRepository:
                 f"{snapshot.calculation_key}"
             )
         return margin_snapshot_to_domain(existing)
+
+
+class SQLAlchemyPnLSnapshotRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def append_pnl_snapshot(self, snapshot: PnLSnapshot) -> PnLSnapshot:
+        existing = self._get_orm_by_calculation_key(
+            snapshot.account_id,
+            snapshot.instrument_id,
+            snapshot.calculation_key,
+        )
+        if existing is not None:
+            return self._existing_pnl_snapshot_for_append(existing, snapshot)
+        existing_by_position_version = self._get_orm_by_position_version(
+            snapshot.account_id,
+            snapshot.instrument_id,
+            snapshot.position_version,
+        )
+        if existing_by_position_version is not None:
+            return self._existing_pnl_snapshot_for_position_version(
+                existing_by_position_version,
+                snapshot,
+            )
+
+        try:
+            with self._session.begin_nested():
+                snapshot_orm = PnLSnapshotOrm(
+                    account_id=snapshot.account_id,
+                    instrument_id=snapshot.instrument_id,
+                    position_version=snapshot.position_version,
+                    trade_id=snapshot.trade_id,
+                    margin_snapshot_id=snapshot.margin_snapshot_id,
+                    calculation_key=snapshot.calculation_key,
+                    price_basis=snapshot.price_basis.value,
+                    mark_price=snapshot.mark_price,
+                    contract_multiplier=snapshot.contract_multiplier,
+                    realized_pnl=snapshot.realized_pnl,
+                    unrealized_pnl=snapshot.unrealized_pnl,
+                    total_pnl=snapshot.total_pnl,
+                    fee_amount=snapshot.fee_amount,
+                    calculated_at=snapshot.calculated_at,
+                )
+                self._session.add(snapshot_orm)
+                self._session.flush()
+            return pnl_snapshot_to_domain(snapshot_orm)
+        except IntegrityError as exc:
+            existing_after_conflict = self._get_orm_by_calculation_key(
+                snapshot.account_id,
+                snapshot.instrument_id,
+                snapshot.calculation_key,
+            )
+            if existing_after_conflict is None:
+                raise RepositoryError(
+                    "pnl snapshot unique conflict but snapshot not found: "
+                    f"{snapshot.account_id}/{snapshot.instrument_id}/"
+                    f"{snapshot.calculation_key}"
+                ) from exc
+            return self._existing_pnl_snapshot_for_append(
+                existing_after_conflict,
+                snapshot,
+            )
+
+    def get_latest(self, account_id: str, instrument_id: str) -> PnLSnapshot | None:
+        snapshot = self._session.scalar(
+            select(PnLSnapshotOrm)
+            .where(
+                PnLSnapshotOrm.account_id == account_id,
+                PnLSnapshotOrm.instrument_id == instrument_id,
+            )
+            .order_by(
+                PnLSnapshotOrm.calculated_at.desc(),
+                PnLSnapshotOrm.created_at.desc(),
+                PnLSnapshotOrm.id.desc(),
+            )
+        )
+        return pnl_snapshot_to_domain(snapshot) if snapshot else None
+
+    def list_by_account(self, account_id: str) -> list[PnLSnapshot]:
+        snapshots = self._session.scalars(
+            select(PnLSnapshotOrm)
+            .where(PnLSnapshotOrm.account_id == account_id)
+            .order_by(
+                PnLSnapshotOrm.calculated_at.asc(),
+                PnLSnapshotOrm.id.asc(),
+            )
+        ).all()
+        return [pnl_snapshot_to_domain(snapshot) for snapshot in snapshots]
+
+    def get_by_calculation_key(
+        self,
+        account_id: str,
+        instrument_id: str,
+        calculation_key: str,
+    ) -> PnLSnapshot | None:
+        snapshot = self._get_orm_by_calculation_key(account_id, instrument_id, calculation_key)
+        return pnl_snapshot_to_domain(snapshot) if snapshot else None
+
+    def get_by_position_version(
+        self,
+        account_id: str,
+        instrument_id: str,
+        position_version: int,
+    ) -> PnLSnapshot | None:
+        snapshot = self._get_orm_by_position_version(account_id, instrument_id, position_version)
+        return pnl_snapshot_to_domain(snapshot) if snapshot else None
+
+    def _get_orm_by_position_version(
+        self,
+        account_id: str,
+        instrument_id: str,
+        position_version: int,
+    ) -> PnLSnapshotOrm | None:
+        return self._session.scalar(
+            select(PnLSnapshotOrm)
+            .where(
+                PnLSnapshotOrm.account_id == account_id,
+                PnLSnapshotOrm.instrument_id == instrument_id,
+                PnLSnapshotOrm.position_version == position_version,
+            )
+            .order_by(
+                PnLSnapshotOrm.calculated_at.desc(),
+                PnLSnapshotOrm.created_at.desc(),
+                PnLSnapshotOrm.id.desc(),
+            )
+        )
+
+    def _get_orm_by_calculation_key(
+        self,
+        account_id: str,
+        instrument_id: str,
+        calculation_key: str,
+    ) -> PnLSnapshotOrm | None:
+        return self._session.scalar(
+            select(PnLSnapshotOrm).where(
+                PnLSnapshotOrm.account_id == account_id,
+                PnLSnapshotOrm.instrument_id == instrument_id,
+                PnLSnapshotOrm.calculation_key == calculation_key,
+            )
+        )
+
+    def _existing_pnl_snapshot_for_append(
+        self,
+        existing: PnLSnapshotOrm,
+        snapshot: PnLSnapshot,
+    ) -> PnLSnapshot:
+        if not _same_canonical_pnl_snapshot_payload(existing, snapshot):
+            raise PnLSnapshotConflictError(
+                "calculation_key reused with different pnl snapshot payload: "
+                f"{snapshot.account_id}/{snapshot.instrument_id}/"
+                f"{snapshot.calculation_key}"
+            )
+        return pnl_snapshot_to_domain(existing)
+
+    def _existing_pnl_snapshot_for_position_version(
+        self,
+        existing: PnLSnapshotOrm,
+        snapshot: PnLSnapshot,
+    ) -> PnLSnapshot:
+        if not _same_pnl_position_version_payload(existing, snapshot):
+            raise PnLSnapshotConflictError(
+                "position_version reused with different pnl snapshot payload: "
+                f"{snapshot.account_id}/{snapshot.instrument_id}/"
+                f"{snapshot.position_version}"
+            )
+        return pnl_snapshot_to_domain(existing)

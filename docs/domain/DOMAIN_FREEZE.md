@@ -550,6 +550,167 @@ Stage D 不实现 realized PnL、unrealized PnL、settlement、today -> yesterda
 
 Stage D 不让 RiskEngine 直接查 DB 或直接调用 MarginEngine。后续 RiskContext 由 application layer 注入 typed margin context。
 
+### PnL Engine
+
+Stage E 已实现 PnL Engine 契约。PnL 只能消费 `Trade`、`Position` 或 typed pre/post position snapshot、typed price input 和 typed Trade fee。`MarginSnapshot` 只可用于 audit correlation，不参与 realized / unrealized PnL 公式。
+
+PnL 禁止消费：
+
+- `OrderStatus`
+- `OrderEvent`
+- `ExchangeReport`
+- `raw_payload`
+- broker adapter query
+- Risk direct DB lookup
+
+#### PnLPriceBasis
+
+`PnLPriceBasis` 冻结为：
+
+- `LAST_PRICE`
+- `SETTLEMENT_PRICE`
+- `MANUAL`
+
+#### PnLResultStatus
+
+`PnLResultStatus` 冻结为：
+
+- `CALCULATED`
+- `REJECTED_MISSING_POSITION`
+- `REJECTED_MISSING_PRICE`
+- `REJECTED_MISSING_MULTIPLIER`
+- `REJECTED_MISSING_FEE`
+- `DOMAIN_FIELD_UNSUPPORTED`
+- `CONFLICT`
+- `ERROR`
+
+#### RealizedPnL
+
+| 字段 | 类型 | 默认值 | 语义 |
+|---|---|---|---|
+| `account_id` | `str` | required | 账户身份。 |
+| `instrument_id` | `str` | required | 合约身份。 |
+| `trade_id` | `str` | required | close trade 身份。 |
+| `direction` | `Direction` | required | close trade direction。 |
+| `offset` | `Offset` | required | close trade offset。 |
+| `quantity` | `Decimal` | required | 平仓数量。 |
+| `close_price` | `Decimal` | required | 平仓成交价。 |
+| `avg_cost` | `Decimal` | required | typed pre-close avg cost 或显式 avg cost。 |
+| `contract_multiplier` | `Decimal` | required | 合约乘数。 |
+| `gross_realized_pnl` | `Decimal` | required | 未扣手续费 realized PnL。 |
+| `fee_amount` | `Decimal \| None` | `None` | typed Trade fee；`None` 表示未知。 |
+| `net_realized_pnl` | `Decimal \| None` | `None` | 扣手续费 realized PnL；fee unknown 时为 `None`。 |
+| `currency` | `str \| None` | `None` | fee / pnl currency。 |
+| `calculated_at` | `datetime` | required | 计算时间。 |
+
+Realized PnL 只处理 close trade：
+
+- `SELL + CLOSE_TODAY` / `SELL + CLOSE_YESTERDAY` closes long。
+- `BUY + CLOSE_TODAY` / `BUY + CLOSE_YESTERDAY` closes short。
+- Long close：`gross = (trade.price - avg_cost) * quantity * contract_multiplier`。
+- Short close：`gross = (avg_cost - trade.price) * quantity * contract_multiplier`。
+- Open trade 不产生 realized PnL。
+
+Fee policy：
+
+- `fee_amount` 为 Decimal 时，`net_realized_pnl = gross_realized_pnl - fee_amount`。
+- `fee_amount == Decimal("0")` 表示明确零手续费。
+- `fee_amount is None` 表示手续费未知；calculator 可返回 `CALCULATED`，`reason="fee_unknown"`，并设置 `net_realized_pnl=None` 以保留 gross 诊断信息。
+- Persistent PnL projection 必须使用 net realized PnL。PnLEngine 遇到 `net_realized_pnl is None` 必须返回 `REJECTED_MISSING_FEE`，不得 append `PnLSnapshot`，不得更新 `positions.realized_pnl`。
+
+Critical before-state requirement：
+
+- Close trade realized PnL 必须消费 typed pre-close position snapshot/context，或显式 `avg_cost`。
+- 不得从历史 close 后的 current live Position 推导 avg cost，除非该 live Position 明确就是 pre-close position。
+- 不得从 `raw_payload`、`OrderEvent` 或 broker query 推导 avg cost。
+
+#### UnrealizedPnL
+
+| 字段 | 类型 | 默认值 | 语义 |
+|---|---|---|---|
+| `account_id` | `str` | required | 账户身份。 |
+| `instrument_id` | `str` | required | 合约身份。 |
+| `long_qty` | `Decimal` | required | `long_today_qty + long_yesterday_qty`。 |
+| `short_qty` | `Decimal` | required | `short_today_qty + short_yesterday_qty`。 |
+| `long_avg_price` | `Decimal` | required | 多头 avg cost。 |
+| `short_avg_price` | `Decimal` | required | 空头 avg cost。 |
+| `price_basis` | `PnLPriceBasis` | required | mark price basis。 |
+| `mark_price` | `Decimal` | required | typed mark price。 |
+| `contract_multiplier` | `Decimal` | required | 合约乘数。 |
+| `gross_unrealized_pnl` | `Decimal` | required | 未实现盈亏。 |
+| `net_unrealized_pnl` | `Decimal` | required | Stage E 默认等于 gross；fee attribution 后置。 |
+
+Unrealized PnL calculation：
+
+- Long：`(mark_price - long_avg_price) * long_qty * contract_multiplier`。
+- Short：`(short_avg_price - mark_price) * short_qty * contract_multiplier`。
+- Mixed position 下 long / short 分别计算后相加。
+- Missing mark price 返回 `REJECTED_MISSING_PRICE`。
+- 不从 `raw_payload` 或 broker query 取 price。
+
+#### Contract multiplier
+
+`contract_multiplier` 必须来自 typed input 或 typed rule object。它必须是 Decimal 且 `> 0`。缺失或非正数返回 `REJECTED_MISSING_MULTIPLIER` 或 typed `ERROR`，不得从 `raw_payload` 推导。
+
+#### PnLSnapshot
+
+| 字段 | 类型 | 默认值 | 语义 |
+|---|---|---|---|
+| `account_id` | `str` | required | 账户身份。 |
+| `instrument_id` | `str` | required | 合约身份。 |
+| `position_version` | `int` | required | 输入 Position / snapshot version。 |
+| `trade_id` | `str \| None` | `None` | realized close trade identity；unrealized-only snapshot 可为空。 |
+| `margin_snapshot_id` | `str \| None` | `None` | audit correlation only。 |
+| `calculation_key` | `str` | required | deterministic calculation identity；不得用随机 UUID 或当前时间生成。 |
+| `price_basis` | `PnLPriceBasis` | required | mark price basis。 |
+| `mark_price` | `Decimal` | required | typed mark price。 |
+| `contract_multiplier` | `Decimal` | required | 合约乘数。 |
+| `realized_pnl` | `Decimal` | required | 本次或累计 realized PnL projection。 |
+| `unrealized_pnl` | `Decimal` | required | 本次 unrealized PnL projection。 |
+| `total_pnl` | `Decimal` | required | `realized_pnl + unrealized_pnl`。 |
+| `fee_amount` | `Decimal \| None` | `None` | typed fee；unknown 时为 `None`。 |
+| `calculated_at` | `datetime` | required | 本地计算时间；持久化但不参与 canonical equality。 |
+| `created_at` | `datetime` | required | DB 创建时间。 |
+
+`PnLSnapshot` canonical payload 字段包括 `account_id`、`instrument_id`、`position_version`、`trade_id`、`margin_snapshot_id`、`calculation_key`、`price_basis`、`mark_price`、`contract_multiplier`、`realized_pnl`、`unrealized_pnl`、`total_pnl`、`fee_amount`。`calculated_at` 不参与 canonical equality；`raw_payload` 不允许进入 PnL facts。Same canonical 时 no-op / duplicate accepted；different canonical 时返回 `CONFLICT` / divergence；不得静默覆盖历史 snapshot。同一 `account_id + instrument_id + position_version` 的 existing snapshot 已是该 position version 的 PnL fact；除 `calculation_key` 外经济事实一致时 duplicate no-op，经济事实不一致时返回 conflict/divergence，不得追加第二条 PnL fact。
+
+#### PnLResult
+
+| 字段 | 类型 | 默认值 | 语义 |
+|---|---|---|---|
+| `status` | `PnLResultStatus` | required | typed result status。 |
+| `realized` | `RealizedPnL \| None` | `None` | realized PnL result。 |
+| `unrealized` | `UnrealizedPnL \| None` | `None` | unrealized PnL result。 |
+| `snapshot` | `PnLSnapshot \| None` | `None` | 写入或待写入的 PnL snapshot。 |
+| `reason` | `str \| None` | `None` | typed reason。 |
+| `account_id` | `str \| None` | `None` | 账户身份。 |
+| `instrument_id` | `str \| None` | `None` | 合约身份。 |
+
+#### positions PnL update boundary
+
+Stage E 可更新 `positions.realized_pnl` / `positions.unrealized_pnl`，但必须满足：
+
+- 只有 successful PnL calculation 才允许 append `PnLSnapshot` 并更新 position PnL fields。
+- 必须和 `PnLSnapshot` 在同一 UoW / transaction。
+- 固定顺序为：先 calculate `RealizedPnL` / `UnrealizedPnL` / `PnLSnapshot`，再 append `PnLSnapshot`，最后用 pnl-only repository method 更新 `positions.realized_pnl` / `positions.unrealized_pnl`。
+- 如果任一步失败，整个 transaction rollback。
+- 不允许只更新 position PnL fields 而没有 snapshot。
+- 不允许只写 snapshot 但声称 live PnL fields 已更新。
+- 不更新 qty / avg price。
+- 不更新 `margin_used`。
+- 不更新 settlement fields。
+- 不触发 Margin recompute。
+
+#### PnL replay
+
+PnL replay 使用同一 calculator 重算，且必须使用 deterministic `calculation_key`。Same canonical 时 no-op；different canonical 时返回 `CONFLICT` / divergence；即使 `calculation_key` 不同，同一 position version 的经济事实一致也必须 no-op，经济事实不一致必须 conflict。Replay 不得静默覆盖 position PnL fields。Replay divergence 判定必须读取 repository / UoW 内真实 live Position row；调用方传入的 Position 只作为 calculator input，不得替代 live row。若 live position PnL fields 与 snapshot divergence，除非当前 transaction 正在更新它，否则必须返回 `CONFLICT`。
+
+#### Margin / Settlement / Risk boundary
+
+PnL 不使用 `margin_used` 参与公式。`MarginSnapshot` 只可作为 audit correlation，不参与 PnL 公式。PnL 不触发 Margin recompute；MarginEngine 不调用 PnLEngine。
+
+Stage E 不实现 daily settlement、today -> yesterday roll、settlement snapshots、settlement price finalization、daily PnL carry、account equity mutation、broker reconciliation、CTP、SimNow、broker adapter、FastAPI、Kafka、Redis、Celery、KMS、cloud runtime、Risk direct DB integration 或 raw_payload PnL facts。
+
 ### TradingCalendar
 
 | 字段 | 类型 | 默认值 | 语义 |
@@ -637,6 +798,23 @@ Stage D 冻结 `MarginSnapshotRepository`：
 
 Stage D `UnitOfWork` 需要暴露 `margin_snapshots: MarginSnapshotRepository`。首次写入某次 margin projection 时，`MarginSnapshot` append 与 `positions.margin_used` update 必须在同一 UoW 内完成。
 
+Stage E 冻结 `PnLSnapshotRepository`：
+
+- `append_pnl_snapshot(snapshot: PnLSnapshot) -> PnLSnapshot`：追加 PnL audit snapshot。
+- `get_latest(account_id: str, instrument_id: str) -> PnLSnapshot | None`：查询单合约最新 PnL snapshot。
+- `list_by_account(account_id: str) -> list[PnLSnapshot]`：列出账户 PnL snapshots。
+- `get_by_calculation_key(account_id: str, instrument_id: str, calculation_key: str) -> PnLSnapshot | None`：按 deterministic calculation identity 查询 snapshot。
+- `get_by_position_version(account_id: str, instrument_id: str, position_version: int) -> PnLSnapshot | None`：按 position version 查询 snapshot。
+
+Repository behavior：
+
+- Same canonical payload 时返回 existing / no-op。
+- Different canonical payload 时抛 `PnLSnapshotConflictError`。
+- 同一 `account_id + instrument_id + position_version` 不得写入第二条不同 PnL fact；除 `calculation_key` 外经济事实一致时返回 existing，经济事实不一致时抛 `PnLSnapshotConflictError`。
+- 不裸露 `IntegrityError`。
+
+Stage E `UnitOfWork` 需要暴露 `pnl_snapshots: PnLSnapshotRepository`。首次写入某次 PnL projection 时，`PnLSnapshot` append 与 `positions.realized_pnl` / `positions.unrealized_pnl` update 必须在同一 UoW 内完成。Position PnL update 必须通过 pnl-only repository method，不得复用会写 qty / avg price / margin / settlement fields 的通用 update。
+
 Stage C `PositionApplicationStatus` 冻结为：
 
 - `APPLIED`：Trade 首次应用，position 已更新并写入 PositionEvent。
@@ -694,6 +872,33 @@ Stage D testing matrix：
 - Canonical duplicate snapshot no-op。
 - Canonical conflict。
 - No PnL / Settlement mutation。
+- No `OrderStatus` / `OrderEvent` / `ExchangeReport` / `raw_payload` consumption。
+
+Stage E testing matrix：
+
+- Long close realized PnL。
+- Short close realized PnL。
+- Open trade no realized PnL。
+- Fee known。
+- Fee zero。
+- Fee unknown。
+- Long unrealized PnL。
+- Short unrealized PnL。
+- Mixed unrealized PnL。
+- LAST_PRICE / SETTLEMENT_PRICE / MANUAL。
+- Missing price typed result。
+- Missing multiplier typed result。
+- Decimal-only。
+- Pre-close position required。
+- Snapshot persistence。
+- Duplicate no-op。
+- Canonical conflict。
+- Replay deterministic。
+- Position PnL update boundary and rollback。
+- Fee unknown rejected for persistent projection。
+- Same position version duplicate PnL fact guard。
+- No Margin mutation。
+- No Settlement mutation。
 - No `OrderStatus` / `OrderEvent` / `ExchangeReport` / `raw_payload` consumption。
 
 本阶段任何接口都不得连接真实期货柜台、CTP、SimNow 或真实交易网关。
@@ -967,6 +1172,43 @@ Stage D 已新增 `margin_snapshots` 表作为 margin audit / replay ledger。�
 Migration 范围只新增 `margin_snapshots` table，不新增 pnl table，不新增 settlement table，不新增 `margin_events`，不改变 `orders` / `order_events` / `trades` 事实语义。
 
 `margin_snapshots` canonical payload 字段为 `account_id`、`instrument_id`、`position_version`、`rule_id`、`rule_version`、`long_qty`、`short_qty`、`price`、`contract_multiplier`、`initial_margin`、`maintenance_margin`、`margin_used`、`available_cash`、`equity`、`calculation_key`。`calculated_at` 不参与 canonical equality；`raw_payload` 不参与 canonical；same canonical no-op / duplicate accepted；different canonical 返回 `CONFLICT` / divergence，不静默覆盖历史 snapshot。
+
+### pnl_snapshots
+
+Stage E 已新增 `pnl_snapshots` 表作为 PnL audit / replay ledger。本阶段不新增 settlement table、broker reconciliation table 或 risk table；不改变 Stage B `trades` schema，不改变 `orders` / `order_events` 事实语义。
+
+字段：
+
+- `id`
+- `account_id`
+- `instrument_id`
+- `position_version`
+- `trade_id`
+- `margin_snapshot_id`
+- `calculation_key`
+- `price_basis`
+- `mark_price`
+- `contract_multiplier`
+- `realized_pnl`
+- `unrealized_pnl`
+- `total_pnl`
+- `fee_amount`
+- `calculated_at`
+- `created_at`
+
+约束和索引：
+
+- `account_id` 索引
+- `instrument_id` 索引
+- `(account_id, instrument_id)` 复合索引
+- `position_version` 索引
+- `trade_id` 索引
+- `calculation_key` 索引
+- `UNIQUE(account_id, instrument_id, calculation_key)`
+
+Migration 范围只新增 `pnl_snapshots` table，不新增 settlement table，不新增 broker reconciliation table，不新增 risk table，不改变 `orders` / `order_events` / `trades` 事实语义。
+
+`pnl_snapshots` canonical payload 字段为 `account_id`、`instrument_id`、`position_version`、`trade_id`、`margin_snapshot_id`、`calculation_key`、`price_basis`、`mark_price`、`contract_multiplier`、`realized_pnl`、`unrealized_pnl`、`total_pnl`、`fee_amount`。`calculated_at` 不参与 canonical equality；`raw_payload` 不允许进入 PnL facts；same canonical no-op / duplicate accepted；different canonical 返回 `CONFLICT` / divergence，不静默覆盖历史 snapshot。同一 `account_id + instrument_id + position_version` 不得写入第二条不同 PnL fact；除 `calculation_key` 外经济事实一致时返回 existing，经济事实不一致时 conflict。
 
 ### account_snapshots
 

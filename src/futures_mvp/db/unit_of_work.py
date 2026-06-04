@@ -7,6 +7,7 @@ from futures_mvp.db.repositories import (
     SQLAlchemyMarginSnapshotRepository,
     SQLAlchemyOrderEventRepository,
     SQLAlchemyOrderRepository,
+    SQLAlchemyPnLSnapshotRepository,
     SQLAlchemyPositionEventRepository,
     SQLAlchemyPositionRepository,
     SQLAlchemyTradeRepository,
@@ -31,6 +32,7 @@ class SQLAlchemyUnitOfWork:
         self.positions: SQLAlchemyPositionRepository
         self.position_events: SQLAlchemyPositionEventRepository
         self.margin_snapshots: SQLAlchemyMarginSnapshotRepository
+        self.pnl_snapshots: SQLAlchemyPnLSnapshotRepository
 
     def __enter__(self) -> "SQLAlchemyUnitOfWork":
         self._session = self._provided_session or self._session_factory()
@@ -40,6 +42,7 @@ class SQLAlchemyUnitOfWork:
         self.positions = SQLAlchemyPositionRepository(self._session)
         self.position_events = SQLAlchemyPositionEventRepository(self._session)
         self.margin_snapshots = SQLAlchemyMarginSnapshotRepository(self._session)
+        self.pnl_snapshots = SQLAlchemyPnLSnapshotRepository(self._session)
         return self
 
     def __exit__(

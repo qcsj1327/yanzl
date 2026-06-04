@@ -15,12 +15,14 @@ from futures_mvp.db.config import settings
 from futures_mvp.db.models import MarginSnapshot as MarginSnapshotOrm
 from futures_mvp.db.models import Order, Position
 from futures_mvp.db.models import OrderEvent as OrderEventOrm
+from futures_mvp.db.models import PnLSnapshot as PnLSnapshotOrm
 from futures_mvp.db.models import PositionEvent as PositionEventOrm
 from futures_mvp.db.models import Trade as TradeOrm
 from futures_mvp.db.repositories import (
     SQLAlchemyMarginSnapshotRepository,
     SQLAlchemyOrderEventRepository,
     SQLAlchemyOrderRepository,
+    SQLAlchemyPnLSnapshotRepository,
     SQLAlchemyPositionEventRepository,
     SQLAlchemyPositionRepository,
     SQLAlchemyTradeRepository,
@@ -34,14 +36,18 @@ from futures_mvp.domain.enums import (
     Offset,
     OrderStatus,
     OrderType,
+    PnLPriceBasis,
+    PnLResultStatus,
     PositionManagerResultStatus,
 )
 from futures_mvp.domain.models import (
     AccountContext,
+    CloseTradeContext,
     MarginRule,
     MarginSnapshot,
     OrderEvent,
     OrderRequest,
+    PnLSnapshot,
     PositionEvent,
     PositionSnapshot,
     Trade,
@@ -51,11 +57,13 @@ from futures_mvp.interfaces.repositories import (
     IdempotencyConflictError,
     MarginSnapshotConflictError,
     OptimisticLockError,
+    PnLSnapshotConflictError,
     PositionEventConflictError,
     RepositoryError,
     TradeIdempotencyConflictError,
 )
 from futures_mvp.modules.margin import MarginEngine
+from futures_mvp.modules.pnl import PnLEngine
 from futures_mvp.modules.position import PositionManager
 
 
@@ -74,6 +82,7 @@ def db_session_factory() -> Iterator[sessionmaker[Session]]:
 @pytest.fixture(autouse=True)
 def clean_orders(db_session_factory: sessionmaker[Session]) -> Iterator[None]:
     with db_session_factory.begin() as session:
+        session.execute(delete(PnLSnapshotOrm))
         session.execute(delete(MarginSnapshotOrm))
         session.execute(delete(PositionEventOrm))
         session.execute(delete(Position))
@@ -82,6 +91,7 @@ def clean_orders(db_session_factory: sessionmaker[Session]) -> Iterator[None]:
         session.execute(delete(Order))
     yield
     with db_session_factory.begin() as session:
+        session.execute(delete(PnLSnapshotOrm))
         session.execute(delete(MarginSnapshotOrm))
         session.execute(delete(PositionEventOrm))
         session.execute(delete(Position))
@@ -138,8 +148,12 @@ def _trade(
     order_id: str,
     *,
     exchange_trade_id: str = "trade-1",
+    direction: Direction = Direction.BUY,
+    offset: Offset = Offset.OPEN,
     price: Decimal = Decimal("3500.5"),
     quantity: Decimal = Decimal("1"),
+    fee_amount: Decimal | None = Decimal("1.2"),
+    fee_currency: str | None = "CNY",
     source_exchange_report_id: str = "report-1",
     raw_payload: dict[str, object] | None = None,
 ) -> Trade:
@@ -149,13 +163,13 @@ def _trade(
         exchange_trade_id=exchange_trade_id,
         order_id=order_id,
         instrument_id="rb2601",
-        direction=Direction.BUY,
-        offset=Offset.OPEN,
+        direction=direction,
+        offset=offset,
         price=price,
         quantity=quantity,
-        fee_amount=Decimal("1.2"),
-        fee_currency="CNY",
-        fee_source="EXCHANGE_REPORT",
+        fee_amount=fee_amount,
+        fee_currency=fee_currency,
+        fee_source="EXCHANGE_REPORT" if fee_amount is not None else None,
         trade_time=datetime(2026, 1, 1, 9, 1, tzinfo=UTC),
         trading_day=date(2026, 1, 1),
         source_exchange_report_id=source_exchange_report_id,
@@ -238,6 +252,43 @@ def _margin_snapshot(
         available_cash=Decimal("10000"),
         equity=Decimal("20000"),
         calculated_at=datetime(2026, 1, 1, 9, 2, tzinfo=UTC),
+    )
+
+
+def _pnl_snapshot(
+    *,
+    position_version: int = 1,
+    calculation_key: str = "account-1:rb2601:1:pnl",
+    realized_pnl: Decimal = Decimal("100"),
+    unrealized_pnl: Decimal = Decimal("50"),
+    trade_id: str | None = "trade-1",
+) -> PnLSnapshot:
+    return PnLSnapshot(
+        account_id="account-1",
+        instrument_id="rb2601",
+        position_version=position_version,
+        trade_id=trade_id,
+        margin_snapshot_id="margin-1",
+        calculation_key=calculation_key,
+        price_basis=PnLPriceBasis.MANUAL,
+        mark_price=Decimal("3500"),
+        contract_multiplier=Decimal("10"),
+        realized_pnl=realized_pnl,
+        unrealized_pnl=unrealized_pnl,
+        total_pnl=realized_pnl + unrealized_pnl,
+        fee_amount=Decimal("2"),
+        calculated_at=datetime(2026, 1, 1, 9, 3, tzinfo=UTC),
+    )
+
+
+def _close_context() -> CloseTradeContext:
+    return CloseTradeContext(
+        account_id="account-1",
+        instrument_id="rb2601",
+        position_version=0,
+        avg_cost=Decimal("3400"),
+        available_qty=Decimal("2"),
+        contract_multiplier=Decimal("10"),
     )
 
 
@@ -1779,3 +1830,615 @@ def test_margin_engine_optimistic_lock_rolls_back_snapshot_append(
     assert snapshot_count == 0
     assert position_after is not None
     assert position_after.margin_used == Decimal("0E-8")
+
+
+def test_pnl_snapshot_repository_round_trip_and_latest(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        repository = SQLAlchemyPnLSnapshotRepository(session)
+        first = repository.append_pnl_snapshot(_pnl_snapshot())
+        second = repository.append_pnl_snapshot(
+            _pnl_snapshot(
+                position_version=2,
+                calculation_key="account-1:rb2601:2:pnl",
+                realized_pnl=Decimal("200"),
+            )
+        )
+
+        latest = repository.get_latest("account-1", "rb2601")
+        by_key = repository.get_by_calculation_key("account-1", "rb2601", first.calculation_key)
+        by_version = repository.get_by_position_version("account-1", "rb2601", 1)
+        listed = repository.list_by_account("account-1")
+
+    assert first.id is not None
+    assert latest == second
+    assert by_key == first
+    assert by_version == first
+    assert listed == [first, second]
+
+
+def test_pnl_snapshot_duplicate_same_canonical_returns_existing(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        repository = SQLAlchemyPnLSnapshotRepository(session)
+        first = repository.append_pnl_snapshot(_pnl_snapshot())
+        second = repository.append_pnl_snapshot(_pnl_snapshot())
+        count = session.scalar(select(func.count()).select_from(PnLSnapshotOrm))
+
+    assert second == first
+    assert count == 1
+
+
+def test_pnl_snapshot_same_position_version_different_key_same_facts_returns_existing(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        repository = SQLAlchemyPnLSnapshotRepository(session)
+        first = repository.append_pnl_snapshot(_pnl_snapshot())
+        second = repository.append_pnl_snapshot(
+            _pnl_snapshot(calculation_key="account-1:rb2601:1:pnl-retry")
+        )
+        count = session.scalar(select(func.count()).select_from(PnLSnapshotOrm))
+
+    assert second == first
+    assert count == 1
+
+
+def test_pnl_snapshot_duplicate_different_canonical_raises_controlled_error(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        repository = SQLAlchemyPnLSnapshotRepository(session)
+        repository.append_pnl_snapshot(_pnl_snapshot())
+
+        with pytest.raises(PnLSnapshotConflictError) as exc_info:
+            repository.append_pnl_snapshot(_pnl_snapshot(realized_pnl=Decimal("999")))
+
+    assert not isinstance(exc_info.value, IntegrityError)
+
+
+def test_pnl_snapshot_same_position_version_different_key_different_canonical_conflicts(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        repository = SQLAlchemyPnLSnapshotRepository(session)
+        repository.append_pnl_snapshot(_pnl_snapshot())
+
+        with pytest.raises(PnLSnapshotConflictError):
+            repository.append_pnl_snapshot(
+                _pnl_snapshot(
+                    calculation_key="account-1:rb2601:1:pnl-retry",
+                    realized_pnl=Decimal("999"),
+                )
+            )
+        count = session.scalar(select(func.count()).select_from(PnLSnapshotOrm))
+
+    assert count == 1
+
+
+def test_unit_of_work_exposes_pnl_snapshots(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with SQLAlchemyUnitOfWork(session_factory=db_session_factory) as uow:
+        assert isinstance(uow.pnl_snapshots, SQLAlchemyPnLSnapshotRepository)
+
+
+def test_position_repository_update_pnl_updates_only_pnl_fields(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        position = Position(
+            account_id="account-1",
+            instrument_id="rb2601",
+            long_today_qty=Decimal("1"),
+            long_yesterday_qty=Decimal("2"),
+            long_avg_price=Decimal("3500"),
+            margin_used=Decimal("88"),
+        )
+        session.add(position)
+        session.flush()
+
+        updated = SQLAlchemyPositionRepository(session).update_pnl(
+            "account-1",
+            "rb2601",
+            Decimal("123"),
+            Decimal("456"),
+            expected_version=0,
+        )
+
+    assert updated.version == 1
+    assert updated.realized_pnl == Decimal("123")
+    assert updated.unrealized_pnl == Decimal("456")
+    assert updated.long_today_qty == Decimal("1")
+    assert updated.long_yesterday_qty == Decimal("2")
+    assert updated.long_avg_price == Decimal("3500")
+    assert updated.margin_used == Decimal("88")
+
+
+def test_pnl_engine_persists_snapshot_and_updates_pnl_only(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        position = Position(
+            account_id="account-1",
+            instrument_id="rb2601",
+            long_today_qty=Decimal("1"),
+            long_yesterday_qty=Decimal("1"),
+            short_today_qty=Decimal("1"),
+            long_avg_price=Decimal("3400"),
+            short_avg_price=Decimal("3600"),
+            realized_pnl=Decimal("10"),
+            unrealized_pnl=Decimal("0"),
+            margin_used=Decimal("77"),
+        )
+        session.add(position)
+        session.flush()
+        domain_position = SQLAlchemyPositionRepository(session).get_by_account_instrument(
+            "account-1",
+            "rb2601",
+        )
+    assert domain_position is not None
+
+    engine = PnLEngine(lambda: SQLAlchemyUnitOfWork(session_factory=db_session_factory))
+    result = engine.calculate_pnl(
+        domain_position,
+        trade=_trade(
+            "order-1",
+            direction=Direction.SELL,
+            offset=Offset.CLOSE_TODAY,
+            price=Decimal("3500"),
+            fee_amount=Decimal("2"),
+        ),
+        close_context=_close_context(),
+        price_basis=PnLPriceBasis.MANUAL,
+        mark_price=Decimal("3500"),
+        contract_multiplier=Decimal("10"),
+        calculation_key="account-1:rb2601:0:pnl",
+        calculated_at=datetime(2026, 1, 1, 9, 3, tzinfo=UTC),
+    )
+
+    with db_session_factory() as session:
+        updated = session.scalar(select(Position))
+        snapshot_count = session.scalar(select(func.count()).select_from(PnLSnapshotOrm))
+
+    assert result.status == PnLResultStatus.CALCULATED
+    assert result.snapshot is not None
+    assert updated is not None
+    assert updated.realized_pnl == Decimal("1008.00000000")
+    assert updated.unrealized_pnl == Decimal("3000.00000000")
+    assert updated.long_today_qty == Decimal("1.00000000")
+    assert updated.long_yesterday_qty == Decimal("1.00000000")
+    assert updated.long_avg_price == Decimal("3400.00000000")
+    assert updated.margin_used == Decimal("77.00000000")
+    assert snapshot_count == 1
+
+
+def test_pnl_engine_rejected_result_does_not_persist_or_update(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        position = Position(account_id="account-1", instrument_id="rb2601")
+        session.add(position)
+        session.flush()
+        domain_position = SQLAlchemyPositionRepository(session).get_by_account_instrument(
+            "account-1",
+            "rb2601",
+        )
+    assert domain_position is not None
+
+    engine = PnLEngine(lambda: SQLAlchemyUnitOfWork(session_factory=db_session_factory))
+    result = engine.calculate_pnl(
+        domain_position,
+        price_basis=PnLPriceBasis.MANUAL,
+        mark_price=None,
+        contract_multiplier=Decimal("10"),
+        calculation_key="account-1:rb2601:0:pnl",
+        calculated_at=datetime(2026, 1, 1, 9, 3, tzinfo=UTC),
+    )
+
+    with db_session_factory() as session:
+        updated = session.scalar(select(Position))
+        snapshot_count = session.scalar(select(func.count()).select_from(PnLSnapshotOrm))
+
+    assert result.status == PnLResultStatus.REJECTED_MISSING_PRICE
+    assert updated is not None
+    assert updated.realized_pnl == Decimal("0E-8")
+    assert updated.unrealized_pnl == Decimal("0E-8")
+    assert snapshot_count == 0
+
+
+def test_pnl_engine_fee_unknown_rejects_persistent_projection(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        position = Position(
+            account_id="account-1",
+            instrument_id="rb2601",
+            long_today_qty=Decimal("1"),
+            long_avg_price=Decimal("3400"),
+        )
+        session.add(position)
+        session.flush()
+        domain_position = SQLAlchemyPositionRepository(session).get_by_account_instrument(
+            "account-1",
+            "rb2601",
+        )
+    assert domain_position is not None
+
+    engine = PnLEngine(lambda: SQLAlchemyUnitOfWork(session_factory=db_session_factory))
+    result = engine.calculate_pnl(
+        domain_position,
+        trade=_trade(
+            "order-1",
+            direction=Direction.SELL,
+            offset=Offset.CLOSE_TODAY,
+            price=Decimal("3500"),
+            fee_amount=None,
+            fee_currency=None,
+        ),
+        close_context=_close_context(),
+        price_basis=PnLPriceBasis.MANUAL,
+        mark_price=Decimal("3500"),
+        contract_multiplier=Decimal("10"),
+        calculation_key="account-1:rb2601:0:pnl",
+        calculated_at=datetime(2026, 1, 1, 9, 3, tzinfo=UTC),
+    )
+
+    with db_session_factory() as session:
+        position_after = session.scalar(select(Position))
+        snapshot_count = session.scalar(select(func.count()).select_from(PnLSnapshotOrm))
+
+    assert result.status == PnLResultStatus.REJECTED_MISSING_FEE
+    assert result.reason == "fee_unknown"
+    assert result.realized is not None
+    assert result.realized.gross_realized_pnl == Decimal("1000")
+    assert result.realized.net_realized_pnl is None
+    assert position_after is not None
+    assert position_after.realized_pnl == Decimal("0E-8")
+    assert position_after.unrealized_pnl == Decimal("0E-8")
+    assert position_after.version == 0
+    assert snapshot_count == 0
+
+
+def test_pnl_engine_duplicate_calculate_same_canonical_noop(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        position = Position(
+            account_id="account-1",
+            instrument_id="rb2601",
+            long_today_qty=Decimal("1"),
+            long_avg_price=Decimal("3400"),
+        )
+        session.add(position)
+        session.flush()
+        domain_position = SQLAlchemyPositionRepository(session).get_by_account_instrument(
+            "account-1",
+            "rb2601",
+        )
+    assert domain_position is not None
+
+    engine = PnLEngine(lambda: SQLAlchemyUnitOfWork(session_factory=db_session_factory))
+    first = engine.calculate_pnl(
+        domain_position,
+        price_basis=PnLPriceBasis.MANUAL,
+        mark_price=Decimal("3500"),
+        contract_multiplier=Decimal("10"),
+        calculation_key="account-1:rb2601:0:pnl",
+        calculated_at=datetime(2026, 1, 1, 9, 3, tzinfo=UTC),
+    )
+    duplicate = engine.calculate_pnl(
+        domain_position,
+        price_basis=PnLPriceBasis.MANUAL,
+        mark_price=Decimal("3500"),
+        contract_multiplier=Decimal("10"),
+        calculation_key="account-1:rb2601:0:pnl",
+        calculated_at=datetime(2026, 1, 1, 9, 4, tzinfo=UTC),
+    )
+
+    with db_session_factory() as session:
+        position_after = session.scalar(select(Position))
+        snapshot_count = session.scalar(select(func.count()).select_from(PnLSnapshotOrm))
+
+    assert first.status == PnLResultStatus.CALCULATED
+    assert duplicate.status == PnLResultStatus.CALCULATED
+    assert duplicate.snapshot == first.snapshot
+    assert position_after is not None
+    assert position_after.version == 1
+    assert position_after.unrealized_pnl == Decimal("1000.00000000")
+    assert snapshot_count == 1
+
+
+def test_pnl_engine_duplicate_calculate_different_canonical_conflicts_without_update(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        position = Position(
+            account_id="account-1",
+            instrument_id="rb2601",
+            long_today_qty=Decimal("1"),
+            long_avg_price=Decimal("3400"),
+        )
+        session.add(position)
+        session.flush()
+        domain_position = SQLAlchemyPositionRepository(session).get_by_account_instrument(
+            "account-1",
+            "rb2601",
+        )
+    assert domain_position is not None
+
+    engine = PnLEngine(lambda: SQLAlchemyUnitOfWork(session_factory=db_session_factory))
+    first = engine.calculate_pnl(
+        domain_position,
+        price_basis=PnLPriceBasis.MANUAL,
+        mark_price=Decimal("3500"),
+        contract_multiplier=Decimal("10"),
+        calculation_key="account-1:rb2601:0:pnl",
+        calculated_at=datetime(2026, 1, 1, 9, 3, tzinfo=UTC),
+    )
+    conflict = engine.calculate_pnl(
+        domain_position,
+        price_basis=PnLPriceBasis.MANUAL,
+        mark_price=Decimal("3501"),
+        contract_multiplier=Decimal("10"),
+        calculation_key="account-1:rb2601:0:pnl",
+        calculated_at=datetime(2026, 1, 1, 9, 4, tzinfo=UTC),
+    )
+
+    with db_session_factory() as session:
+        position_after = session.scalar(select(Position))
+        snapshot_count = session.scalar(select(func.count()).select_from(PnLSnapshotOrm))
+
+    assert first.status == PnLResultStatus.CALCULATED
+    assert conflict.status == PnLResultStatus.CONFLICT
+    assert conflict.reason == "pnl_snapshot_diverged"
+    assert position_after is not None
+    assert position_after.version == 1
+    assert position_after.unrealized_pnl == Decimal("1000.00000000")
+    assert snapshot_count == 1
+
+
+def test_pnl_replay_duplicate_noop_and_live_divergence_conflict(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        position = Position(
+            account_id="account-1",
+            instrument_id="rb2601",
+            long_today_qty=Decimal("1"),
+            long_avg_price=Decimal("3400"),
+        )
+        session.add(position)
+        session.flush()
+        domain_position = SQLAlchemyPositionRepository(session).get_by_account_instrument(
+            "account-1",
+            "rb2601",
+        )
+    assert domain_position is not None
+
+    engine = PnLEngine(lambda: SQLAlchemyUnitOfWork(session_factory=db_session_factory))
+    first = engine.calculate_pnl(
+        domain_position,
+        price_basis=PnLPriceBasis.MANUAL,
+        mark_price=Decimal("3500"),
+        contract_multiplier=Decimal("10"),
+        calculation_key="account-1:rb2601:0:pnl",
+        calculated_at=datetime(2026, 1, 1, 9, 3, tzinfo=UTC),
+    )
+    assert first.status == PnLResultStatus.CALCULATED
+    assert first.snapshot is not None
+
+    replay_position = domain_position.model_copy(
+        update={
+            "realized_pnl": first.snapshot.realized_pnl,
+            "unrealized_pnl": first.snapshot.unrealized_pnl,
+        }
+    )
+    replay = engine.replay_pnl(
+        replay_position,
+        price_basis=PnLPriceBasis.MANUAL,
+        mark_price=Decimal("3500"),
+        contract_multiplier=Decimal("10"),
+        calculation_key="account-1:rb2601:0:pnl",
+        calculated_at=datetime(2026, 1, 1, 9, 3, tzinfo=UTC),
+    )
+    diverged = engine.replay_pnl(
+        domain_position,
+        price_basis=PnLPriceBasis.MANUAL,
+        mark_price=Decimal("3500"),
+        contract_multiplier=Decimal("10"),
+        calculation_key="account-1:rb2601:0:pnl",
+        calculated_at=datetime(2026, 1, 1, 9, 3, tzinfo=UTC),
+    )
+
+    with db_session_factory() as session:
+        snapshot_count = session.scalar(select(func.count()).select_from(PnLSnapshotOrm))
+
+    assert replay.status == PnLResultStatus.CALCULATED
+    assert diverged.status == PnLResultStatus.CALCULATED
+    assert snapshot_count == 1
+
+
+def test_pnl_replay_uses_live_position_row_for_divergence(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        position = Position(
+            account_id="account-1",
+            instrument_id="rb2601",
+            long_today_qty=Decimal("1"),
+            long_avg_price=Decimal("3400"),
+        )
+        session.add(position)
+        session.flush()
+        domain_position = SQLAlchemyPositionRepository(session).get_by_account_instrument(
+            "account-1",
+            "rb2601",
+        )
+    assert domain_position is not None
+
+    engine = PnLEngine(lambda: SQLAlchemyUnitOfWork(session_factory=db_session_factory))
+    first = engine.calculate_pnl(
+        domain_position,
+        price_basis=PnLPriceBasis.MANUAL,
+        mark_price=Decimal("3500"),
+        contract_multiplier=Decimal("10"),
+        calculation_key="account-1:rb2601:0:pnl",
+        calculated_at=datetime(2026, 1, 1, 9, 3, tzinfo=UTC),
+    )
+    assert first.status == PnLResultStatus.CALCULATED
+    assert first.snapshot is not None
+
+    with db_session_factory.begin() as session:
+        live_position = session.scalar(select(Position))
+        assert live_position is not None
+        live_position.realized_pnl = Decimal("999")
+        live_position.unrealized_pnl = Decimal("999")
+
+    forged_position = domain_position.model_copy(
+        update={
+            "realized_pnl": first.snapshot.realized_pnl,
+            "unrealized_pnl": first.snapshot.unrealized_pnl,
+        }
+    )
+    replay = engine.replay_pnl(
+        forged_position,
+        price_basis=PnLPriceBasis.MANUAL,
+        mark_price=Decimal("3500"),
+        contract_multiplier=Decimal("10"),
+        calculation_key="account-1:rb2601:0:pnl",
+        calculated_at=datetime(2026, 1, 1, 9, 3, tzinfo=UTC),
+    )
+
+    with db_session_factory() as session:
+        position_after = session.scalar(select(Position))
+        snapshot_count = session.scalar(select(func.count()).select_from(PnLSnapshotOrm))
+
+    assert replay.status == PnLResultStatus.CONFLICT
+    assert replay.reason == "live_pnl_diverged_from_snapshot"
+    assert position_after is not None
+    assert position_after.realized_pnl == Decimal("999.00000000")
+    assert position_after.unrealized_pnl == Decimal("999.00000000")
+    assert position_after.version == 1
+    assert snapshot_count == 1
+
+
+def test_pnl_replay_canonical_conflict_does_not_update_position(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        position = Position(
+            account_id="account-1",
+            instrument_id="rb2601",
+            long_today_qty=Decimal("1"),
+            long_avg_price=Decimal("3400"),
+        )
+        session.add(position)
+        session.flush()
+        domain_position = SQLAlchemyPositionRepository(session).get_by_account_instrument(
+            "account-1",
+            "rb2601",
+        )
+        SQLAlchemyPnLSnapshotRepository(session).append_pnl_snapshot(
+            _pnl_snapshot(position_version=0, calculation_key="account-1:rb2601:0:pnl")
+        )
+    assert domain_position is not None
+
+    engine = PnLEngine(lambda: SQLAlchemyUnitOfWork(session_factory=db_session_factory))
+    result = engine.replay_pnl(
+        domain_position,
+        price_basis=PnLPriceBasis.MANUAL,
+        mark_price=Decimal("3500"),
+        contract_multiplier=Decimal("10"),
+        calculation_key="account-1:rb2601:0:pnl",
+        calculated_at=datetime(2026, 1, 1, 9, 3, tzinfo=UTC),
+    )
+
+    with db_session_factory() as session:
+        position_after = session.scalar(select(Position))
+        snapshot_count = session.scalar(select(func.count()).select_from(PnLSnapshotOrm))
+
+    assert result.status == PnLResultStatus.CONFLICT
+    assert result.reason == "pnl_snapshot_replay_diverged"
+    assert position_after is not None
+    assert position_after.realized_pnl == Decimal("0E-8")
+    assert position_after.unrealized_pnl == Decimal("0E-8")
+    assert snapshot_count == 1
+
+
+def test_pnl_engine_snapshot_conflict_rolls_back_position_update(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        position = Position(account_id="account-1", instrument_id="rb2601")
+        session.add(position)
+        session.flush()
+        domain_position = SQLAlchemyPositionRepository(session).get_by_account_instrument(
+            "account-1",
+            "rb2601",
+        )
+        SQLAlchemyPnLSnapshotRepository(session).append_pnl_snapshot(
+            _pnl_snapshot(
+                position_version=0,
+                calculation_key="account-1:rb2601:0:pnl",
+                realized_pnl=Decimal("999"),
+            )
+        )
+    assert domain_position is not None
+
+    engine = PnLEngine(lambda: SQLAlchemyUnitOfWork(session_factory=db_session_factory))
+    result = engine.calculate_pnl(
+        domain_position,
+        price_basis=PnLPriceBasis.MANUAL,
+        mark_price=Decimal("3500"),
+        contract_multiplier=Decimal("10"),
+        calculation_key="account-1:rb2601:0:pnl",
+        calculated_at=datetime(2026, 1, 1, 9, 3, tzinfo=UTC),
+    )
+
+    with db_session_factory() as session:
+        position_after = session.scalar(select(Position))
+        snapshot_count = session.scalar(select(func.count()).select_from(PnLSnapshotOrm))
+
+    assert result.status == PnLResultStatus.CONFLICT
+    assert position_after is not None
+    assert position_after.realized_pnl == Decimal("0E-8")
+    assert position_after.unrealized_pnl == Decimal("0E-8")
+    assert snapshot_count == 1
+
+
+def test_pnl_engine_optimistic_lock_rolls_back_snapshot_append(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        position = Position(account_id="account-1", instrument_id="rb2601")
+        session.add(position)
+        session.flush()
+        domain_position = SQLAlchemyPositionRepository(session).get_by_account_instrument(
+            "account-1",
+            "rb2601",
+        )
+        position.version = 1
+    assert domain_position is not None
+
+    engine = PnLEngine(lambda: SQLAlchemyUnitOfWork(session_factory=db_session_factory))
+    result = engine.calculate_pnl(
+        domain_position,
+        price_basis=PnLPriceBasis.MANUAL,
+        mark_price=Decimal("3500"),
+        contract_multiplier=Decimal("10"),
+        calculation_key="account-1:rb2601:0:pnl",
+        calculated_at=datetime(2026, 1, 1, 9, 3, tzinfo=UTC),
+    )
+
+    with db_session_factory() as session:
+        snapshot_count = session.scalar(select(func.count()).select_from(PnLSnapshotOrm))
+        position_after = session.scalar(select(Position))
+
+    assert result.status == PnLResultStatus.ERROR
+    assert snapshot_count == 0
+    assert position_after is not None
+    assert position_after.realized_pnl == Decimal("0E-8")
+    assert position_after.unrealized_pnl == Decimal("0E-8")
