@@ -228,6 +228,44 @@ class PositionEvent(Base):
     position: Mapped[Position] = relationship(back_populates="events")
 
 
+class MarginSnapshot(Base):
+    __tablename__ = "margin_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "account_id",
+            "instrument_id",
+            "calculation_key",
+            name="uq_margin_snapshots_account_instrument_calculation",
+        ),
+        Index("ix_margin_snapshots_account_instrument", "account_id", "instrument_id"),
+        Index(
+            "ix_margin_snapshots_account_instrument_position_version",
+            "account_id",
+            "instrument_id",
+            "position_version",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    instrument_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    position_version: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    rule_id: Mapped[str | None] = mapped_column(String(128))
+    rule_version: Mapped[str | None] = mapped_column(String(128))
+    calculation_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    long_qty: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    short_qty: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    price: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    contract_multiplier: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    initial_margin: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    maintenance_margin: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    margin_used: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    available_cash: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    equity: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    calculated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class AccountSnapshot(Base):
     __tablename__ = "account_snapshots"
 

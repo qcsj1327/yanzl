@@ -1,9 +1,11 @@
+from decimal import Decimal
 from types import TracebackType
 from typing import Protocol, runtime_checkable
 
 from futures_mvp.domain.enums import EventSource, OrderStatus
 from futures_mvp.domain.errors import FuturesMvpError
 from futures_mvp.domain.models import (
+    MarginSnapshot,
     OrderEvent,
     OrderRequest,
     OrderState,
@@ -43,6 +45,10 @@ class TradeIdempotencyConflictError(RepositoryError):
 
 class PositionEventConflictError(RepositoryError):
     """Raised when an exchange trade id is reused with different position facts."""
+
+
+class MarginSnapshotConflictError(RepositoryError):
+    """Raised when a margin calculation key is reused with different facts."""
 
 
 @runtime_checkable
@@ -106,6 +112,15 @@ class PositionRepository(Protocol):
         expected_version: int | None = None,
     ) -> Position: ...
 
+    def update_margin_used(
+        self,
+        account_id: str,
+        instrument_id: str,
+        margin_used: Decimal,
+        *,
+        expected_version: int | None = None,
+    ) -> Position: ...
+
     def list_by_account(self, account_id: str) -> list[Position]: ...
 
 
@@ -126,12 +141,29 @@ class PositionEventRepository(Protocol):
 
 
 @runtime_checkable
+class MarginSnapshotRepository(Protocol):
+    def append_margin_snapshot(self, snapshot: MarginSnapshot) -> MarginSnapshot: ...
+
+    def get_latest(self, account_id: str, instrument_id: str) -> MarginSnapshot | None: ...
+
+    def list_by_account(self, account_id: str) -> list[MarginSnapshot]: ...
+
+    def get_by_position_version(
+        self,
+        account_id: str,
+        instrument_id: str,
+        position_version: int,
+    ) -> MarginSnapshot | None: ...
+
+
+@runtime_checkable
 class UnitOfWork(Protocol):
     orders: OrderRepository
     order_events: OrderEventRepository
     trades: TradeRepository
     positions: PositionRepository
     position_events: PositionEventRepository
+    margin_snapshots: MarginSnapshotRepository
 
     def commit(self) -> None: ...
 

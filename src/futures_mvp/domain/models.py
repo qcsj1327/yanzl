@@ -9,6 +9,8 @@ from futures_mvp.domain.enums import (
     Direction,
     EventApplicationStatus,
     EventSource,
+    MarginPriceBasis,
+    MarginResultStatus,
     Offset,
     OrderStatus,
     OrderType,
@@ -24,6 +26,12 @@ class DomainModel(BaseModel):
 def require_positive_decimal(value: Decimal, *, field_name: str) -> Decimal:
     if value <= 0:
         raise ValueError(f"{field_name} must be greater than 0")
+    return value
+
+
+def require_non_negative_decimal(value: Decimal, *, field_name: str) -> Decimal:
+    if value < 0:
+        raise ValueError(f"{field_name} must be greater than or equal to 0")
     return value
 
 
@@ -294,6 +302,153 @@ class PositionManagerResult(DomainModel):
     position_event: PositionEvent | None = None
     reason: str | None = None
     trade_id: str | None = None
+    account_id: str | None = None
+    instrument_id: str | None = None
+
+
+class MarginRule(DomainModel):
+    rule_id: str | None = None
+    instrument_id: str
+    exchange: str
+    contract_multiplier: Decimal
+    long_initial_margin_rate: Decimal
+    short_initial_margin_rate: Decimal
+    long_maintenance_margin_rate: Decimal
+    short_maintenance_margin_rate: Decimal
+    price_basis: MarginPriceBasis
+    price: Decimal | None = None
+    effective_from: datetime | None = None
+    effective_to: datetime | None = None
+    rule_version: str | None = None
+
+    @field_validator(
+        "contract_multiplier",
+        "long_initial_margin_rate",
+        "short_initial_margin_rate",
+        "long_maintenance_margin_rate",
+        "short_maintenance_margin_rate",
+        "price",
+        mode="before",
+    )
+    @classmethod
+    def _decimal_only(cls, value: Any) -> Decimal | None:
+        if value is None:
+            return None
+        return require_decimal(value)
+
+    @field_validator("contract_multiplier")
+    @classmethod
+    def _contract_multiplier_positive(cls, value: Decimal) -> Decimal:
+        return require_positive_decimal(value, field_name="contract_multiplier")
+
+    @field_validator(
+        "long_initial_margin_rate",
+        "short_initial_margin_rate",
+        "long_maintenance_margin_rate",
+        "short_maintenance_margin_rate",
+    )
+    @classmethod
+    def _rates_non_negative(cls, value: Decimal) -> Decimal:
+        return require_non_negative_decimal(value, field_name="margin_rate")
+
+
+class AccountContext(DomainModel):
+    account_id: str
+    equity: Decimal
+    available_cash: Decimal
+    frozen_cash: Decimal
+    currency: str | None = None
+    snapshot_time: datetime
+
+    @field_validator("equity", "available_cash", "frozen_cash", mode="before")
+    @classmethod
+    def _decimal_only(cls, value: Any) -> Decimal:
+        return require_decimal(value)
+
+    @field_validator("available_cash")
+    @classmethod
+    def _available_cash_non_negative(cls, value: Decimal) -> Decimal:
+        return require_non_negative_decimal(value, field_name="available_cash")
+
+
+class MarginRequirement(DomainModel):
+    account_id: str
+    instrument_id: str
+    long_initial_margin: Decimal
+    short_initial_margin: Decimal
+    total_initial_margin: Decimal
+    long_maintenance_margin: Decimal
+    short_maintenance_margin: Decimal
+    total_maintenance_margin: Decimal
+    margin_used: Decimal
+    required_cash: Decimal
+    is_sufficient: bool
+    reason: str | None = None
+
+    @field_validator(
+        "long_initial_margin",
+        "short_initial_margin",
+        "total_initial_margin",
+        "long_maintenance_margin",
+        "short_maintenance_margin",
+        "total_maintenance_margin",
+        "margin_used",
+        "required_cash",
+        mode="before",
+    )
+    @classmethod
+    def _decimal_only(cls, value: Any) -> Decimal:
+        return require_decimal(value)
+
+
+class MarginSnapshot(DomainModel):
+    id: str | None = None
+    account_id: str
+    instrument_id: str
+    position_version: int
+    rule_id: str | None = None
+    rule_version: str | None = None
+    calculation_key: str
+    long_qty: Decimal
+    short_qty: Decimal
+    price: Decimal
+    contract_multiplier: Decimal
+    initial_margin: Decimal
+    maintenance_margin: Decimal
+    margin_used: Decimal
+    available_cash: Decimal
+    equity: Decimal
+    calculated_at: datetime
+
+    @field_validator(
+        "long_qty",
+        "short_qty",
+        "price",
+        "contract_multiplier",
+        "initial_margin",
+        "maintenance_margin",
+        "margin_used",
+        "available_cash",
+        "equity",
+        mode="before",
+    )
+    @classmethod
+    def _decimal_only(cls, value: Any) -> Decimal:
+        return require_decimal(value)
+
+    @field_validator("calculation_key")
+    @classmethod
+    def _calculation_key_required(cls, value: str) -> str:
+        if not value:
+            raise ValueError("calculation_key is required")
+        return value
+
+
+class MarginResult(DomainModel):
+    status: MarginResultStatus
+    requirement: MarginRequirement | None = None
+    snapshot: MarginSnapshot | None = None
+    reason: str | None = None
     account_id: str | None = None
     instrument_id: str | None = None
 

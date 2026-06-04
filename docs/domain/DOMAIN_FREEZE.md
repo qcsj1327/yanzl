@@ -388,7 +388,7 @@ PositionEvent 必须支持回答：
 
 ### Margin Engine
 
-Stage D 冻结 Margin Engine 契约。Margin 只能消费 `Position`、typed `MarginRule`、typed `AccountContext` 和 typed price input / price basis。
+Stage D 已实现 Margin Engine 契约。Margin 只能消费 `Position`、typed `MarginRule`、typed `AccountContext` 和 typed price input / price basis。
 
 Margin 禁止消费：
 
@@ -450,7 +450,7 @@ Margin 禁止消费：
 | `is_sufficient` | `bool` | required | `available_cash >= required_cash`。 |
 | `reason` | `str \| None` | `None` | typed reason。 |
 
-Insufficient cash 返回 `REJECTED_INSUFFICIENT_CASH` typed result，不抛业务异常。
+Insufficient cash 返回 `REJECTED_INSUFFICIENT_CASH` typed result，不抛业务异常，不 append `MarginSnapshot`，不更新 `positions.margin_used`。
 
 #### MarginSnapshot
 
@@ -461,6 +461,7 @@ Insufficient cash 返回 `REJECTED_INSUFFICIENT_CASH` typed result，不抛业�
 | `position_version` | `int` | required | 输入 Position version。 |
 | `rule_id` | `str \| None` | `None` | 应用的规则身份。 |
 | `rule_version` | `str \| None` | `None` | 应用的规则版本。 |
+| `calculation_key` | `str` | required | deterministic calculation identity；不得用随机 UUID 或当前时间生成。 |
 | `long_qty` | `Decimal` | required | `long_today_qty + long_yesterday_qty`。 |
 | `short_qty` | `Decimal` | required | `short_today_qty + short_yesterday_qty`。 |
 | `price` | `Decimal` | required | 本次计算使用的 typed price。 |
@@ -470,9 +471,9 @@ Insufficient cash 返回 `REJECTED_INSUFFICIENT_CASH` typed result，不抛业�
 | `margin_used` | `Decimal` | required | live margin projection。 |
 | `available_cash` | `Decimal` | required | 计算时可用资金。 |
 | `equity` | `Decimal` | required | 计算时账户权益。 |
-| `calculated_at` | `datetime` | required | 本地计算时间；若实现选择 deterministic replay key，可另行冻结 `calculation_key`。 |
+| `calculated_at` | `datetime` | required | 本地计算时间；持久化但不参与 canonical equality。 |
 
-`MarginSnapshot` canonical payload 字段包括 `account_id`、`instrument_id`、`position_version`、`rule_id`、`rule_version`、`long_qty`、`short_qty`、`price`、`contract_multiplier`、`initial_margin`、`maintenance_margin`、`margin_used`、`available_cash`、`equity`、`calculated_at` 或明确 `calculation_key`。`raw_payload` 不参与 canonical。Same canonical 时 no-op / duplicate snapshot accepted；different canonical 时返回 `CONFLICT` / divergence；不得静默覆盖历史 snapshot。
+`MarginSnapshot` canonical payload 字段包括 `account_id`、`instrument_id`、`position_version`、`rule_id`、`rule_version`、`long_qty`、`short_qty`、`price`、`contract_multiplier`、`initial_margin`、`maintenance_margin`、`margin_used`、`available_cash`、`equity`、`calculation_key`。`calculated_at` 不参与 canonical equality；`raw_payload` 不参与 canonical。Same canonical 时 no-op / duplicate snapshot accepted；different canonical 时返回 `CONFLICT` / divergence；不得静默覆盖历史 snapshot。
 
 #### MarginResult
 
@@ -511,6 +512,8 @@ Insufficient cash 返回 `REJECTED_INSUFFICIENT_CASH` typed result，不抛业�
 
 所有计算必须使用 Decimal-only，不得引入 float。
 
+Margin calculation 必须校验 typed identity：`position.account_id == account.account_id`，`rule.instrument_id == position.instrument_id`。Mismatch 返回 typed `ERROR`，不 append `MarginSnapshot`，不更新 `positions.margin_used`。如果 Position 当前没有 exchange 字段，Stage D 暂不强制 exchange 校验；后续如为 Position 引入 exchange identity，必须同步校验 `rule.exchange`。
+
 Price source policy：
 
 - `LAST_PRICE` 使用 typed latest price input。
@@ -524,11 +527,14 @@ Price source policy：
 
 Stage D 可更新 `positions.margin_used`，但必须满足：
 
+- 只有 `MarginResultStatus.CALCULATED` 才允许 append `MarginSnapshot` 并更新 `positions.margin_used`。
+- `REJECTED_MISSING_RULE`、`REJECTED_MISSING_POSITION`、`REJECTED_MISSING_PRICE`、`REJECTED_INSUFFICIENT_CASH` 或 `ERROR` 不落库、不更新 position。
 - 必须和 `MarginSnapshot` 在同一 UoW / transaction。
 - 固定顺序为：先 calculate `MarginRequirement` / `MarginSnapshot`，再 append `MarginSnapshot`，最后 `update positions.margin_used using expected_version=position.version`。
 - 如果任一步失败，整个 transaction rollback。
 - 不允许只更新 `positions.margin_used` 而没有 snapshot。
 - 不允许只写 snapshot 但声称 live `margin_used` 已更新。
+- 必须使用 margin-only repository method 更新 `positions.margin_used`，不得复用会写 qty / avg price 的通用 position update。
 - 不更新 `realized_pnl`。
 - 不更新 `unrealized_pnl`。
 - 不更新 qty / avg price。
@@ -536,7 +542,7 @@ Stage D 可更新 `positions.margin_used`，但必须满足：
 
 #### Margin replay
 
-Margin replay 使用同一 calculator 重算。输入为 Position projection + MarginRule + AccountContext + typed price input。Existing snapshot canonical same 时 no-op / duplicate snapshot accepted；canonical different 时返回 `CONFLICT` / divergence，不静默覆盖历史 snapshot。Replay 不更新 Position qty/avg。
+Margin replay 使用同一 calculator 重算。输入为 Position projection + MarginRule + AccountContext + typed price input。同一 `account_id + instrument_id + position_version` 的 existing snapshot 已是该 position version 的 margin fact；canonical same 时 no-op / duplicate snapshot accepted；canonical different 时返回 `CONFLICT` / divergence，即使 `calculation_key` 不同也不得追加第二条 snapshot 或更新 `positions.margin_used`。Replay 不更新 Position qty/avg。
 
 #### PnL / Settlement / Risk boundary
 
@@ -927,7 +933,7 @@ Stage C 已新增 `position_events` 表作为 idempotency + replay audit ledger�
 
 ### margin_snapshots
 
-Stage D 需要新增 `margin_snapshots` 表作为 margin audit / replay ledger。本阶段不新增 `margin_rules` 表；`MarginRule` typed input 由 application layer 注入，`margin_snapshots` 记录 `rule_id` / `rule_version`。
+Stage D 已新增 `margin_snapshots` 表作为 margin audit / replay ledger。本阶段不新增 `margin_rules` 表；`MarginRule` typed input 由 application layer 注入，`margin_snapshots` 记录 `rule_id` / `rule_version`。
 
 字段：
 
@@ -937,6 +943,7 @@ Stage D 需要新增 `margin_snapshots` 表作为 margin audit / replay ledger�
 - `position_version`
 - `rule_id`
 - `rule_version`
+- `calculation_key`
 - `long_qty`
 - `short_qty`
 - `price`
@@ -954,10 +961,12 @@ Stage D 需要新增 `margin_snapshots` 表作为 margin audit / replay ledger�
 - `instrument_id` 索引
 - `(account_id, instrument_id)` 复合索引
 - `position_version` 索引
+- `(account_id, instrument_id, position_version)` 复合索引
+- `UNIQUE(account_id, instrument_id, calculation_key)`
 
 Migration 范围只新增 `margin_snapshots` table，不新增 pnl table，不新增 settlement table，不新增 `margin_events`，不改变 `orders` / `order_events` / `trades` 事实语义。
 
-`margin_snapshots` canonical payload 字段为 `account_id`、`instrument_id`、`position_version`、`rule_id`、`rule_version`、`long_qty`、`short_qty`、`price`、`contract_multiplier`、`initial_margin`、`maintenance_margin`、`margin_used`、`available_cash`、`equity`、`calculated_at` 或明确 `calculation_key`。`raw_payload` 不参与 canonical；same canonical no-op / duplicate accepted；different canonical 返回 `CONFLICT` / divergence，不静默覆盖历史 snapshot。
+`margin_snapshots` canonical payload 字段为 `account_id`、`instrument_id`、`position_version`、`rule_id`、`rule_version`、`long_qty`、`short_qty`、`price`、`contract_multiplier`、`initial_margin`、`maintenance_margin`、`margin_used`、`available_cash`、`equity`、`calculation_key`。`calculated_at` 不参与 canonical equality；`raw_payload` 不参与 canonical；same canonical no-op / duplicate accepted；different canonical 返回 `CONFLICT` / divergence，不静默覆盖历史 snapshot。
 
 ### account_snapshots
 

@@ -7,6 +7,8 @@ from futures_mvp.domain.enums import (
     Direction,
     EventApplicationStatus,
     EventSource,
+    MarginPriceBasis,
+    MarginResultStatus,
     Offset,
     OrderStatus,
     OrderType,
@@ -14,7 +16,12 @@ from futures_mvp.domain.enums import (
 )
 from futures_mvp.domain.errors import DecimalRequiredError
 from futures_mvp.domain.models import (
+    AccountContext,
     FillEvent,
+    MarginRequirement,
+    MarginResult,
+    MarginRule,
+    MarginSnapshot,
     OrderEvent,
     OrderEventApplicationResult,
     OrderRequest,
@@ -68,6 +75,27 @@ def test_position_manager_result_status_complete_contract() -> None:
         "APPLIED",
         "DUPLICATE_IGNORED",
         "REJECTED_INSUFFICIENT_POSITION",
+        "CONFLICT",
+        "ERROR",
+    ]
+
+
+def test_margin_price_basis_complete_contract() -> None:
+    assert [basis.value for basis in MarginPriceBasis] == [
+        "LAST_PRICE",
+        "SETTLEMENT_PRICE",
+        "AVG_PRICE",
+        "MANUAL",
+    ]
+
+
+def test_margin_result_status_complete_contract() -> None:
+    assert [status.value for status in MarginResultStatus] == [
+        "CALCULATED",
+        "REJECTED_MISSING_RULE",
+        "REJECTED_MISSING_POSITION",
+        "REJECTED_MISSING_PRICE",
+        "REJECTED_INSUFFICIENT_CASH",
         "CONFLICT",
         "ERROR",
     ]
@@ -132,6 +160,124 @@ def test_order_event_requires_idempotency_fields_and_raw_payload() -> None:
 
     assert event.external_event_id == "exchange-report-1"
     assert event.raw_payload == {"raw": "payload"}
+
+
+def test_margin_rule_decimal_rate_and_multiplier_contract() -> None:
+    rule = MarginRule(
+        instrument_id="rb2610",
+        exchange="SHFE",
+        contract_multiplier=Decimal("10"),
+        long_initial_margin_rate=Decimal("0.12"),
+        short_initial_margin_rate=Decimal("0.13"),
+        long_maintenance_margin_rate=Decimal("0.08"),
+        short_maintenance_margin_rate=Decimal("0.09"),
+        price_basis=MarginPriceBasis.MANUAL,
+        price=Decimal("3500"),
+    )
+
+    assert rule.contract_multiplier == Decimal("10")
+    assert rule.long_initial_margin_rate == Decimal("0.12")
+    assert "raw_payload" not in MarginRule.model_fields
+
+    with pytest.raises(ValueError):
+        MarginRule(
+            instrument_id="rb2610",
+            exchange="SHFE",
+            contract_multiplier=Decimal("0"),
+            long_initial_margin_rate=Decimal("0.12"),
+            short_initial_margin_rate=Decimal("0.13"),
+            long_maintenance_margin_rate=Decimal("0.08"),
+            short_maintenance_margin_rate=Decimal("0.09"),
+            price_basis=MarginPriceBasis.MANUAL,
+        )
+    with pytest.raises(ValueError):
+        MarginRule(
+            instrument_id="rb2610",
+            exchange="SHFE",
+            contract_multiplier=Decimal("10"),
+            long_initial_margin_rate=Decimal("-0.01"),
+            short_initial_margin_rate=Decimal("0.13"),
+            long_maintenance_margin_rate=Decimal("0.08"),
+            short_maintenance_margin_rate=Decimal("0.09"),
+            price_basis=MarginPriceBasis.MANUAL,
+        )
+    with pytest.raises(DecimalRequiredError):
+        MarginRule(
+            instrument_id="rb2610",
+            exchange="SHFE",
+            contract_multiplier=10.0,
+            long_initial_margin_rate=Decimal("0.12"),
+            short_initial_margin_rate=Decimal("0.13"),
+            long_maintenance_margin_rate=Decimal("0.08"),
+            short_maintenance_margin_rate=Decimal("0.09"),
+            price_basis=MarginPriceBasis.MANUAL,
+        )
+
+
+def test_margin_account_context_decimal_contract_allows_zero_available_cash() -> None:
+    account = AccountContext(
+        account_id="acct-1",
+        equity=Decimal("1000"),
+        available_cash=Decimal("0"),
+        frozen_cash=Decimal("0"),
+        snapshot_time=datetime.now(UTC),
+    )
+
+    assert account.available_cash == Decimal("0")
+    assert "raw_payload" not in AccountContext.model_fields
+
+    with pytest.raises(DecimalRequiredError):
+        AccountContext(
+            account_id="acct-1",
+            equity=1000.0,
+            available_cash=Decimal("0"),
+            frozen_cash=Decimal("0"),
+            snapshot_time=datetime.now(UTC),
+        )
+
+
+def test_margin_requirement_snapshot_and_result_contracts() -> None:
+    requirement = MarginRequirement(
+        account_id="acct-1",
+        instrument_id="rb2610",
+        long_initial_margin=Decimal("100"),
+        short_initial_margin=Decimal("50"),
+        total_initial_margin=Decimal("150"),
+        long_maintenance_margin=Decimal("80"),
+        short_maintenance_margin=Decimal("40"),
+        total_maintenance_margin=Decimal("120"),
+        margin_used=Decimal("150"),
+        required_cash=Decimal("150"),
+        is_sufficient=True,
+    )
+    snapshot = MarginSnapshot(
+        account_id="acct-1",
+        instrument_id="rb2610",
+        position_version=1,
+        rule_id="rule-1",
+        rule_version="v1",
+        calculation_key="acct-1:rb2610:1:v1",
+        long_qty=Decimal("2"),
+        short_qty=Decimal("1"),
+        price=Decimal("3500"),
+        contract_multiplier=Decimal("10"),
+        initial_margin=Decimal("150"),
+        maintenance_margin=Decimal("120"),
+        margin_used=Decimal("150"),
+        available_cash=Decimal("1000"),
+        equity=Decimal("2000"),
+        calculated_at=datetime.now(UTC),
+    )
+    result = MarginResult(
+        status=MarginResultStatus.CALCULATED,
+        requirement=requirement,
+        snapshot=snapshot,
+    )
+
+    assert result.requirement == requirement
+    assert result.snapshot == snapshot
+    assert "calculation_key" in MarginSnapshot.model_fields
+    assert "raw_payload" not in MarginSnapshot.model_fields
 
 
 def test_order_state_version_defaults_to_zero_for_optimistic_locking() -> None:

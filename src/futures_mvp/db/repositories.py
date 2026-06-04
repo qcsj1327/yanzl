@@ -1,4 +1,5 @@
 from collections.abc import Iterable
+from decimal import Decimal
 from typing import cast
 
 from sqlalchemy import select, update
@@ -6,6 +7,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from futures_mvp.db.models import MarginSnapshot as MarginSnapshotOrm
 from futures_mvp.db.models import Order
 from futures_mvp.db.models import OrderEvent as OrderEventOrm
 from futures_mvp.db.models import Position as PositionOrm
@@ -13,6 +15,7 @@ from futures_mvp.db.models import PositionEvent as PositionEventOrm
 from futures_mvp.db.models import Trade as TradeOrm
 from futures_mvp.domain.enums import Direction, EventSource, Offset, OrderStatus, OrderType
 from futures_mvp.domain.models import (
+    MarginSnapshot,
     OrderEvent,
     OrderRequest,
     OrderState,
@@ -24,6 +27,7 @@ from futures_mvp.domain.models import (
 from futures_mvp.interfaces.repositories import (
     EventAlreadyExistsError,
     IdempotencyConflictError,
+    MarginSnapshotConflictError,
     OptimisticLockError,
     OrderNotFoundError,
     PositionEventConflictError,
@@ -150,6 +154,28 @@ def position_event_to_domain(event: PositionEventOrm) -> PositionEvent:
         occurred_at=event.occurred_at,
         created_at=event.created_at,
         raw_payload=event.raw_payload or {},
+    )
+
+
+def margin_snapshot_to_domain(snapshot: MarginSnapshotOrm) -> MarginSnapshot:
+    return MarginSnapshot(
+        id=str(snapshot.id),
+        account_id=snapshot.account_id,
+        instrument_id=snapshot.instrument_id,
+        position_version=snapshot.position_version,
+        rule_id=snapshot.rule_id,
+        rule_version=snapshot.rule_version,
+        calculation_key=snapshot.calculation_key,
+        long_qty=snapshot.long_qty,
+        short_qty=snapshot.short_qty,
+        price=snapshot.price,
+        contract_multiplier=snapshot.contract_multiplier,
+        initial_margin=snapshot.initial_margin,
+        maintenance_margin=snapshot.maintenance_margin,
+        margin_used=snapshot.margin_used,
+        available_cash=snapshot.available_cash,
+        equity=snapshot.equity,
+        calculated_at=snapshot.calculated_at,
     )
 
 
@@ -295,6 +321,59 @@ def _same_canonical_position_event_payload(
     return _canonical_position_event_payload_from_orm(
         existing
     ) == _canonical_position_event_payload_from_domain(event)
+
+
+def _canonical_margin_snapshot_payload_from_domain(
+    snapshot: MarginSnapshot,
+) -> tuple[object, ...]:
+    return (
+        snapshot.account_id,
+        snapshot.instrument_id,
+        snapshot.position_version,
+        snapshot.rule_id,
+        snapshot.rule_version,
+        snapshot.long_qty,
+        snapshot.short_qty,
+        snapshot.price,
+        snapshot.contract_multiplier,
+        snapshot.initial_margin,
+        snapshot.maintenance_margin,
+        snapshot.margin_used,
+        snapshot.available_cash,
+        snapshot.equity,
+        snapshot.calculation_key,
+    )
+
+
+def _canonical_margin_snapshot_payload_from_orm(
+    snapshot: MarginSnapshotOrm,
+) -> tuple[object, ...]:
+    return (
+        snapshot.account_id,
+        snapshot.instrument_id,
+        snapshot.position_version,
+        snapshot.rule_id,
+        snapshot.rule_version,
+        snapshot.long_qty,
+        snapshot.short_qty,
+        snapshot.price,
+        snapshot.contract_multiplier,
+        snapshot.initial_margin,
+        snapshot.maintenance_margin,
+        snapshot.margin_used,
+        snapshot.available_cash,
+        snapshot.equity,
+        snapshot.calculation_key,
+    )
+
+
+def _same_canonical_margin_snapshot_payload(
+    existing: MarginSnapshotOrm,
+    snapshot: MarginSnapshot,
+) -> bool:
+    return _canonical_margin_snapshot_payload_from_orm(
+        existing
+    ) == _canonical_margin_snapshot_payload_from_domain(snapshot)
 
 
 class SQLAlchemyOrderRepository:
@@ -632,6 +711,46 @@ class SQLAlchemyPositionRepository:
             raise RepositoryError(f"position updated but not found: {position.id}")
         return position_to_domain(updated)
 
+    def update_margin_used(
+        self,
+        account_id: str,
+        instrument_id: str,
+        margin_used: Decimal,
+        *,
+        expected_version: int | None = None,
+    ) -> Position:
+        conditions = [
+            PositionOrm.account_id == account_id,
+            PositionOrm.instrument_id == instrument_id,
+        ]
+        if expected_version is not None:
+            conditions.append(PositionOrm.version == expected_version)
+
+        result = cast(
+            CursorResult[object],
+            self._session.execute(
+                update(PositionOrm)
+                .where(*conditions)
+                .values(
+                    margin_used=margin_used,
+                    version=PositionOrm.version + 1,
+                )
+                .execution_options(synchronize_session=False)
+            ),
+        )
+        if result.rowcount != 1:
+            if expected_version is None:
+                raise RepositoryError(f"position not found: {account_id}/{instrument_id}")
+            raise OptimisticLockError(
+                "position "
+                f"{account_id}/{instrument_id} version mismatch: expected {expected_version}"
+            )
+        self._session.flush()
+        updated = self._get_orm_by_account_instrument(account_id, instrument_id)
+        if updated is None:
+            raise RepositoryError(f"position updated but not found: {account_id}/{instrument_id}")
+        return position_to_domain(updated)
+
     def list_by_account(self, account_id: str) -> list[Position]:
         positions = self._session.scalars(
             select(PositionOrm)
@@ -657,6 +776,7 @@ class SQLAlchemyPositionRepository:
                 PositionOrm.account_id == account_id,
                 PositionOrm.instrument_id == instrument_id,
             )
+            .execution_options(populate_existing=True)
         )
 
 
@@ -762,3 +882,131 @@ class SQLAlchemyPositionEventRepository:
                 f"{event.account_id}/{event.exchange}/{event.exchange_trade_id}"
             )
         return position_event_to_domain(existing)
+
+
+class SQLAlchemyMarginSnapshotRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def append_margin_snapshot(self, snapshot: MarginSnapshot) -> MarginSnapshot:
+        existing = self._get_orm_by_calculation_key(
+            snapshot.account_id,
+            snapshot.instrument_id,
+            snapshot.calculation_key,
+        )
+        if existing is not None:
+            return self._existing_margin_snapshot_for_append(existing, snapshot)
+
+        try:
+            with self._session.begin_nested():
+                snapshot_orm = MarginSnapshotOrm(
+                    account_id=snapshot.account_id,
+                    instrument_id=snapshot.instrument_id,
+                    position_version=snapshot.position_version,
+                    rule_id=snapshot.rule_id,
+                    rule_version=snapshot.rule_version,
+                    calculation_key=snapshot.calculation_key,
+                    long_qty=snapshot.long_qty,
+                    short_qty=snapshot.short_qty,
+                    price=snapshot.price,
+                    contract_multiplier=snapshot.contract_multiplier,
+                    initial_margin=snapshot.initial_margin,
+                    maintenance_margin=snapshot.maintenance_margin,
+                    margin_used=snapshot.margin_used,
+                    available_cash=snapshot.available_cash,
+                    equity=snapshot.equity,
+                    calculated_at=snapshot.calculated_at,
+                )
+                self._session.add(snapshot_orm)
+                self._session.flush()
+            return margin_snapshot_to_domain(snapshot_orm)
+        except IntegrityError as exc:
+            existing_after_conflict = self._get_orm_by_calculation_key(
+                snapshot.account_id,
+                snapshot.instrument_id,
+                snapshot.calculation_key,
+            )
+            if existing_after_conflict is None:
+                raise RepositoryError(
+                    "margin snapshot unique conflict but snapshot not found: "
+                    f"{snapshot.account_id}/{snapshot.instrument_id}/"
+                    f"{snapshot.calculation_key}"
+                ) from exc
+            return self._existing_margin_snapshot_for_append(
+                existing_after_conflict,
+                snapshot,
+            )
+
+    def get_latest(self, account_id: str, instrument_id: str) -> MarginSnapshot | None:
+        snapshot = self._session.scalar(
+            select(MarginSnapshotOrm)
+            .where(
+                MarginSnapshotOrm.account_id == account_id,
+                MarginSnapshotOrm.instrument_id == instrument_id,
+            )
+            .order_by(
+                MarginSnapshotOrm.calculated_at.desc(),
+                MarginSnapshotOrm.created_at.desc(),
+                MarginSnapshotOrm.id.desc(),
+            )
+        )
+        return margin_snapshot_to_domain(snapshot) if snapshot else None
+
+    def list_by_account(self, account_id: str) -> list[MarginSnapshot]:
+        snapshots = self._session.scalars(
+            select(MarginSnapshotOrm)
+            .where(MarginSnapshotOrm.account_id == account_id)
+            .order_by(
+                MarginSnapshotOrm.calculated_at.asc(),
+                MarginSnapshotOrm.id.asc(),
+            )
+        ).all()
+        return [margin_snapshot_to_domain(snapshot) for snapshot in snapshots]
+
+    def get_by_position_version(
+        self,
+        account_id: str,
+        instrument_id: str,
+        position_version: int,
+    ) -> MarginSnapshot | None:
+        snapshot = self._session.scalar(
+            select(MarginSnapshotOrm)
+            .where(
+                MarginSnapshotOrm.account_id == account_id,
+                MarginSnapshotOrm.instrument_id == instrument_id,
+                MarginSnapshotOrm.position_version == position_version,
+            )
+            .order_by(
+                MarginSnapshotOrm.calculated_at.desc(),
+                MarginSnapshotOrm.created_at.desc(),
+                MarginSnapshotOrm.id.desc(),
+            )
+        )
+        return margin_snapshot_to_domain(snapshot) if snapshot else None
+
+    def _get_orm_by_calculation_key(
+        self,
+        account_id: str,
+        instrument_id: str,
+        calculation_key: str,
+    ) -> MarginSnapshotOrm | None:
+        return self._session.scalar(
+            select(MarginSnapshotOrm).where(
+                MarginSnapshotOrm.account_id == account_id,
+                MarginSnapshotOrm.instrument_id == instrument_id,
+                MarginSnapshotOrm.calculation_key == calculation_key,
+            )
+        )
+
+    def _existing_margin_snapshot_for_append(
+        self,
+        existing: MarginSnapshotOrm,
+        snapshot: MarginSnapshot,
+    ) -> MarginSnapshot:
+        if not _same_canonical_margin_snapshot_payload(existing, snapshot):
+            raise MarginSnapshotConflictError(
+                "calculation_key reused with different margin snapshot payload: "
+                f"{snapshot.account_id}/{snapshot.instrument_id}/"
+                f"{snapshot.calculation_key}"
+            )
+        return margin_snapshot_to_domain(existing)

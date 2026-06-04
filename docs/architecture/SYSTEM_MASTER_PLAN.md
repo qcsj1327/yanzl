@@ -287,19 +287,20 @@ Stage C 当前实现说明：
 - Acceptance criteria：`margin_used` 与规则可重放；Risk 只消费 application layer 注入的 typed margin context；MarginSnapshot canonical same replay no-op，canonical different 返回 conflict/divergence 且不静默覆盖。
 - Suggested tag：`stage-d-margin-engine`。
 
-Stage D 冻结说明：
+Stage D 当前实现说明：
 
 - Margin source-of-truth 只能是 `Position`、typed `MarginRule`、typed `AccountContext` 和 typed price input / price basis。
 - `Instrument.margin_rate` 不是完整规则，只能作为兼容数据来源之一；完整规则必须由 typed `MarginRule` 表达。
 - `MarginRule.price_basis` 冻结为 `LAST_PRICE | SETTLEMENT_PRICE | AVG_PRICE | MANUAL`。`LAST_PRICE` 使用 typed latest price input；`SETTLEMENT_PRICE` 使用 typed settlement price input；`AVG_PRICE` 使用 Position avg price；`MANUAL` 使用 `MarginRule.price`。缺少所需价格返回 `REJECTED_MISSING_PRICE`。
 - `AVG_PRICE` mixed position 下，long notional 使用 `long_avg_price`，short notional 使用 `short_avg_price`，分别计算后相加；对应方向 qty > 0 但 avg price 缺失或为 0 时返回 `REJECTED_MISSING_PRICE`。
 - 计算规则：`long_qty = long_today_qty + long_yesterday_qty`；`short_qty = short_today_qty + short_yesterday_qty`；initial margin 和 maintenance margin 分别按 qty * price * contract multiplier * rate 计算；`margin_used = total_initial`；`required_cash = total_initial`；`is_sufficient = account.available_cash >= required_cash`。
-- Insufficient cash 返回 `REJECTED_INSUFFICIENT_CASH` typed result，不抛业务异常。所有金额、价格、数量、rate、multiplier 必须 Decimal-only；rate `>= 0`，contract multiplier `> 0`，`available_cash` 可为 0。
+- Insufficient cash 返回 `REJECTED_INSUFFICIENT_CASH` typed result，不抛业务异常，不 append `MarginSnapshot`，不更新 `positions.margin_used`。所有金额、价格、数量、rate、multiplier 必须 Decimal-only；rate `>= 0`，contract multiplier `> 0`，`available_cash` 可为 0。
+- Margin calculation 必须校验 typed identity：`position.account_id == account.account_id`，`rule.instrument_id == position.instrument_id`。Mismatch 返回 typed `ERROR`，不 append `MarginSnapshot`，不更新 `positions.margin_used`。
 - Stage D 允许更新 `positions.margin_used`，但必须和 `MarginSnapshot` 在同一 UoW / transaction。固定顺序为：先计算 `MarginRequirement` / `MarginSnapshot`，再 append `MarginSnapshot`，最后用 `expected_version=position.version` 更新 `positions.margin_used`。任一步失败则整个 transaction rollback。
-- 不允许只更新 `positions.margin_used` 而没有 snapshot；不允许只写 snapshot 但声称 live `margin_used` 已更新；更新 `positions.margin_used` 时不得修改 qty、avg price、realized/unrealized PnL 或 settlement fields。
+- 不允许只更新 `positions.margin_used` 而没有 snapshot；不允许只写 snapshot 但声称 live `margin_used` 已更新；更新 `positions.margin_used` 时必须使用 margin-only repository method，不得复用会写 qty / avg price 的通用 position update；不得修改 qty、avg price、realized/unrealized PnL 或 settlement fields。
 - Stage D 需要 `MarginSnapshotRepository` 和 `margin_snapshots` table；本阶段不建 `margin_rules` table，`MarginRule` 由 application layer 注入，`MarginSnapshot` 记录 `rule_id | None` 和 `rule_version | None`。
-- `MarginSnapshot` canonical payload 字段包括 `account_id`、`instrument_id`、`position_version`、`rule_id`、`rule_version`、`long_qty`、`short_qty`、`price`、`contract_multiplier`、`initial_margin`、`maintenance_margin`、`margin_used`、`available_cash`、`equity`、`calculated_at` 或明确 `calculation_key`。`raw_payload` 不参与 canonical。
-- Replay 使用同一 calculator，以 Position projection + MarginRule + AccountContext + typed price input 重算。Existing snapshot canonical same 时 no-op / duplicate snapshot accepted；canonical different 时返回 `CONFLICT` / divergence，不静默覆盖历史 snapshot。Replay 不更新 Position qty/avg。
+- `MarginSnapshot` canonical payload 字段包括 `account_id`、`instrument_id`、`position_version`、`rule_id`、`rule_version`、`long_qty`、`short_qty`、`price`、`contract_multiplier`、`initial_margin`、`maintenance_margin`、`margin_used`、`available_cash`、`equity`、`calculation_key`。`calculated_at` 持久化但不参与 canonical equality；`raw_payload` 不参与 canonical。
+- Replay 使用同一 calculator，以 Position projection + MarginRule + AccountContext + typed price input 重算。同一 `account_id + instrument_id + position_version` 的 existing snapshot 已是该 position version 的 margin fact；canonical same 时 no-op / duplicate snapshot accepted；canonical different 时返回 `CONFLICT` / divergence，即使 `calculation_key` 不同也不得追加第二条 snapshot 或更新 `positions.margin_used`。Replay 不更新 Position qty/avg。
 
 ### Stage E: PnL Engine
 

@@ -4,6 +4,7 @@ from pathlib import Path
 
 from futures_mvp.domain.enums import Direction, EventSource, Offset, OrderStatus, OrderType
 from futures_mvp.domain.models import (
+    MarginSnapshot,
     OrderEvent,
     OrderRequest,
     OrderState,
@@ -13,6 +14,7 @@ from futures_mvp.domain.models import (
     Trade,
 )
 from futures_mvp.interfaces.repositories import (
+    MarginSnapshotRepository,
     OrderEventRepository,
     OrderRepository,
     PositionEventRepository,
@@ -98,6 +100,27 @@ def _position_event(trade: Trade) -> PositionEvent:
         after_snapshot=after,
         occurred_at=trade.trade_time,
         created_at=datetime.now(UTC),
+    )
+
+
+def _margin_snapshot() -> MarginSnapshot:
+    return MarginSnapshot(
+        account_id="account-1",
+        instrument_id="rb2601",
+        position_version=1,
+        rule_id="rule-1",
+        rule_version="v1",
+        calculation_key="account-1:rb2601:1:v1",
+        long_qty=Decimal("1"),
+        short_qty=Decimal("0"),
+        price=Decimal("3500"),
+        contract_multiplier=Decimal("10"),
+        initial_margin=Decimal("3500"),
+        maintenance_margin=Decimal("2000"),
+        margin_used=Decimal("3500"),
+        available_cash=Decimal("10000"),
+        equity=Decimal("20000"),
+        calculated_at=datetime.now(UTC),
     )
 
 
@@ -203,6 +226,22 @@ class FakePositionRepository:
         self.positions[(position.account_id, position.instrument_id)] = position
         return position
 
+    def update_margin_used(
+        self,
+        account_id: str,
+        instrument_id: str,
+        margin_used: Decimal,
+        *,
+        expected_version: int | None = None,
+    ) -> Position:
+        del expected_version
+        current = self.positions.get((account_id, instrument_id))
+        if current is None:
+            current = Position(id="1", account_id=account_id, instrument_id=instrument_id)
+        updated = current.model_copy(update={"margin_used": margin_used})
+        self.positions[(account_id, instrument_id)] = updated
+        return updated
+
     def list_by_account(self, account_id: str) -> list[Position]:
         return [
             position
@@ -238,6 +277,40 @@ class FakePositionEventRepository:
         return [event for event in self.events.values() if event.account_id == account_id]
 
 
+class FakeMarginSnapshotRepository:
+    def __init__(self) -> None:
+        self.snapshots: dict[tuple[str, str, int], MarginSnapshot] = {}
+
+    def append_margin_snapshot(self, snapshot: MarginSnapshot) -> MarginSnapshot:
+        self.snapshots[
+            (snapshot.account_id, snapshot.instrument_id, snapshot.position_version)
+        ] = snapshot
+        return snapshot
+
+    def get_latest(self, account_id: str, instrument_id: str) -> MarginSnapshot | None:
+        matches = [
+            snapshot
+            for snapshot in self.snapshots.values()
+            if snapshot.account_id == account_id and snapshot.instrument_id == instrument_id
+        ]
+        return matches[-1] if matches else None
+
+    def list_by_account(self, account_id: str) -> list[MarginSnapshot]:
+        return [
+            snapshot
+            for snapshot in self.snapshots.values()
+            if snapshot.account_id == account_id
+        ]
+
+    def get_by_position_version(
+        self,
+        account_id: str,
+        instrument_id: str,
+        position_version: int,
+    ) -> MarginSnapshot | None:
+        return self.snapshots.get((account_id, instrument_id, position_version))
+
+
 class FakeUnitOfWork:
     def __init__(self) -> None:
         self.orders = FakeOrderRepository()
@@ -245,6 +318,7 @@ class FakeUnitOfWork:
         self.trades = FakeTradeRepository()
         self.positions = FakePositionRepository()
         self.position_events = FakePositionEventRepository()
+        self.margin_snapshots = FakeMarginSnapshotRepository()
         self.commit_count = 0
         self.rollback_count = 0
 
@@ -273,18 +347,21 @@ def test_repository_protocols_can_be_implemented_by_fakes() -> None:
     trade_repo = FakeTradeRepository()
     position_repo = FakePositionRepository()
     position_event_repo = FakePositionEventRepository()
+    margin_snapshot_repo = FakeMarginSnapshotRepository()
 
     assert isinstance(order_repo, OrderRepository)
     assert isinstance(event_repo, OrderEventRepository)
     assert isinstance(trade_repo, TradeRepository)
     assert isinstance(position_repo, PositionRepository)
     assert isinstance(position_event_repo, PositionEventRepository)
+    assert isinstance(margin_snapshot_repo, MarginSnapshotRepository)
 
     order = order_repo.create_order(_order_request(), client_order_id="client-1")
     event = event_repo.append_event(_order_event(order.order_id))
     trade = trade_repo.create_or_get_trade(_trade(order.order_id))
     position = position_repo.create_or_get_position("account-1", "rb2601")
     position_event = position_event_repo.append_position_event(_position_event(trade))
+    margin_snapshot = margin_snapshot_repo.append_margin_snapshot(_margin_snapshot())
 
     assert order_repo.get_by_id(order.order_id) == order
     assert order_repo.get_by_client_order_id("client-1") == order
@@ -293,6 +370,8 @@ def test_repository_protocols_can_be_implemented_by_fakes() -> None:
     assert trade_repo.get_by_exchange_trade_id("account-1", "SHFE", "trade-1") == trade
     assert position_repo.get_by_account_instrument("account-1", "rb2601") == position
     assert position_event_repo.get_by_trade_key("account-1", "SHFE", "trade-1") == position_event
+    assert margin_snapshot_repo.get_latest("account-1", "rb2601") == margin_snapshot
+    assert margin_snapshot_repo.get_by_position_version("account-1", "rb2601", 1) == margin_snapshot
 
 
 def test_unit_of_work_protocol_supports_commit_and_rollback() -> None:

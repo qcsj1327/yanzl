@@ -12,11 +12,13 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from alembic import command
 from futures_mvp.db.config import settings
+from futures_mvp.db.models import MarginSnapshot as MarginSnapshotOrm
 from futures_mvp.db.models import Order, Position
 from futures_mvp.db.models import OrderEvent as OrderEventOrm
 from futures_mvp.db.models import PositionEvent as PositionEventOrm
 from futures_mvp.db.models import Trade as TradeOrm
 from futures_mvp.db.repositories import (
+    SQLAlchemyMarginSnapshotRepository,
     SQLAlchemyOrderEventRepository,
     SQLAlchemyOrderRepository,
     SQLAlchemyPositionEventRepository,
@@ -27,12 +29,17 @@ from futures_mvp.db.unit_of_work import SQLAlchemyUnitOfWork
 from futures_mvp.domain.enums import (
     Direction,
     EventSource,
+    MarginPriceBasis,
+    MarginResultStatus,
     Offset,
     OrderStatus,
     OrderType,
     PositionManagerResultStatus,
 )
 from futures_mvp.domain.models import (
+    AccountContext,
+    MarginRule,
+    MarginSnapshot,
     OrderEvent,
     OrderRequest,
     PositionEvent,
@@ -42,11 +49,13 @@ from futures_mvp.domain.models import (
 from futures_mvp.interfaces.repositories import (
     EventAlreadyExistsError,
     IdempotencyConflictError,
+    MarginSnapshotConflictError,
     OptimisticLockError,
     PositionEventConflictError,
     RepositoryError,
     TradeIdempotencyConflictError,
 )
+from futures_mvp.modules.margin import MarginEngine
 from futures_mvp.modules.position import PositionManager
 
 
@@ -65,6 +74,7 @@ def db_session_factory() -> Iterator[sessionmaker[Session]]:
 @pytest.fixture(autouse=True)
 def clean_orders(db_session_factory: sessionmaker[Session]) -> Iterator[None]:
     with db_session_factory.begin() as session:
+        session.execute(delete(MarginSnapshotOrm))
         session.execute(delete(PositionEventOrm))
         session.execute(delete(Position))
         session.execute(delete(TradeOrm))
@@ -72,6 +82,7 @@ def clean_orders(db_session_factory: sessionmaker[Session]) -> Iterator[None]:
         session.execute(delete(Order))
     yield
     with db_session_factory.begin() as session:
+        session.execute(delete(MarginSnapshotOrm))
         session.execute(delete(PositionEventOrm))
         session.execute(delete(Position))
         session.execute(delete(TradeOrm))
@@ -200,6 +211,59 @@ def _position_event(
         occurred_at=trade.trade_time,
         created_at=datetime.now(UTC),
         raw_payload=raw_payload or {"diagnostic": True},
+    )
+
+
+def _margin_snapshot(
+    *,
+    position_version: int = 1,
+    calculation_key: str = "account-1:rb2601:1:v1",
+    initial_margin: Decimal = Decimal("3500"),
+    margin_used: Decimal | None = None,
+) -> MarginSnapshot:
+    return MarginSnapshot(
+        account_id="account-1",
+        instrument_id="rb2601",
+        position_version=position_version,
+        rule_id="rule-1",
+        rule_version="v1",
+        calculation_key=calculation_key,
+        long_qty=Decimal("1"),
+        short_qty=Decimal("0"),
+        price=Decimal("3500"),
+        contract_multiplier=Decimal("10"),
+        initial_margin=initial_margin,
+        maintenance_margin=Decimal("2000"),
+        margin_used=margin_used or initial_margin,
+        available_cash=Decimal("10000"),
+        equity=Decimal("20000"),
+        calculated_at=datetime(2026, 1, 1, 9, 2, tzinfo=UTC),
+    )
+
+
+def _margin_rule() -> MarginRule:
+    return MarginRule(
+        rule_id="rule-1",
+        rule_version="v1",
+        instrument_id="rb2601",
+        exchange="SHFE",
+        contract_multiplier=Decimal("10"),
+        long_initial_margin_rate=Decimal("0.10"),
+        short_initial_margin_rate=Decimal("0.20"),
+        long_maintenance_margin_rate=Decimal("0.05"),
+        short_maintenance_margin_rate=Decimal("0.10"),
+        price_basis=MarginPriceBasis.MANUAL,
+        price=Decimal("3500"),
+    )
+
+
+def _account_context(available_cash: Decimal = Decimal("100000")) -> AccountContext:
+    return AccountContext(
+        account_id="account-1",
+        equity=Decimal("200000"),
+        available_cash=available_cash,
+        frozen_cash=Decimal("0"),
+        snapshot_time=datetime(2026, 1, 1, 9, tzinfo=UTC),
     )
 
 
@@ -1289,3 +1353,429 @@ def test_list_open_orders_returns_only_open_recovery_statuses(
         listed = repository.list_open_orders()
 
     assert {order.order_id for order in listed} == set(expected_open_order_ids)
+
+
+def test_margin_snapshot_repository_round_trip_and_latest(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        repository = SQLAlchemyMarginSnapshotRepository(session)
+        first = repository.append_margin_snapshot(_margin_snapshot())
+        second = repository.append_margin_snapshot(
+            _margin_snapshot(
+                position_version=2,
+                calculation_key="account-1:rb2601:2:v1",
+                initial_margin=Decimal("4200"),
+            )
+        )
+
+        latest = repository.get_latest("account-1", "rb2601")
+        by_version = repository.get_by_position_version("account-1", "rb2601", 1)
+        listed = repository.list_by_account("account-1")
+
+    assert first.id is not None
+    assert latest == second
+    assert by_version == first
+    assert listed == [first, second]
+
+
+def test_margin_snapshot_duplicate_same_canonical_returns_existing(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        repository = SQLAlchemyMarginSnapshotRepository(session)
+        first = repository.append_margin_snapshot(_margin_snapshot())
+        second = repository.append_margin_snapshot(_margin_snapshot())
+        count = session.scalar(select(func.count()).select_from(MarginSnapshotOrm))
+
+    assert second == first
+    assert count == 1
+
+
+def test_margin_snapshot_duplicate_different_canonical_raises_controlled_error(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        repository = SQLAlchemyMarginSnapshotRepository(session)
+        repository.append_margin_snapshot(_margin_snapshot())
+
+        with pytest.raises(MarginSnapshotConflictError):
+            repository.append_margin_snapshot(
+                _margin_snapshot(initial_margin=Decimal("9999"))
+            )
+
+
+def test_unit_of_work_exposes_margin_snapshots(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with SQLAlchemyUnitOfWork(session_factory=db_session_factory) as uow:
+        assert isinstance(uow.margin_snapshots, SQLAlchemyMarginSnapshotRepository)
+
+
+def test_margin_engine_persists_snapshot_and_updates_margin_used_only(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        position = Position(
+            account_id="account-1",
+            instrument_id="rb2601",
+            long_today_qty=Decimal("1"),
+            long_yesterday_qty=Decimal("1"),
+            short_today_qty=Decimal("0"),
+            short_yesterday_qty=Decimal("0"),
+            long_avg_price=Decimal("3500"),
+            short_avg_price=Decimal("0"),
+            realized_pnl=Decimal("12"),
+            unrealized_pnl=Decimal("34"),
+            margin_used=Decimal("0"),
+        )
+        session.add(position)
+        session.flush()
+        domain_position = SQLAlchemyPositionRepository(session).get_by_account_instrument(
+            "account-1",
+            "rb2601",
+        )
+    assert domain_position is not None
+
+    engine = MarginEngine(lambda: SQLAlchemyUnitOfWork(session_factory=db_session_factory))
+    result = engine.calculate_margin(
+        domain_position,
+        _margin_rule(),
+        _account_context(),
+        calculation_key="account-1:rb2601:0:v1",
+        calculated_at=datetime(2026, 1, 1, 9, 2, tzinfo=UTC),
+    )
+
+    with db_session_factory() as session:
+        updated = session.scalar(
+            select(Position).where(
+                Position.account_id == "account-1",
+                Position.instrument_id == "rb2601",
+            )
+        )
+        snapshot_count = session.scalar(select(func.count()).select_from(MarginSnapshotOrm))
+
+    assert result.status == MarginResultStatus.CALCULATED
+    assert result.snapshot is not None
+    assert updated is not None
+    assert updated.margin_used == Decimal("7000.00000000")
+    assert updated.long_today_qty == Decimal("1.00000000")
+    assert updated.long_yesterday_qty == Decimal("1.00000000")
+    assert updated.long_avg_price == Decimal("3500.00000000")
+    assert updated.realized_pnl == Decimal("12.00000000")
+    assert updated.unrealized_pnl == Decimal("34.00000000")
+    assert snapshot_count == 1
+
+
+def test_margin_engine_margin_only_update_cannot_overwrite_malformed_position_fields(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        position = Position(
+            account_id="account-1",
+            instrument_id="rb2601",
+            long_today_qty=Decimal("1"),
+            long_yesterday_qty=Decimal("2"),
+            short_today_qty=Decimal("0"),
+            short_yesterday_qty=Decimal("0"),
+            long_avg_price=Decimal("3500"),
+            short_avg_price=Decimal("0"),
+            realized_pnl=Decimal("12"),
+            unrealized_pnl=Decimal("34"),
+            margin_used=Decimal("0"),
+        )
+        session.add(position)
+        session.flush()
+        domain_position = SQLAlchemyPositionRepository(session).get_by_account_instrument(
+            "account-1",
+            "rb2601",
+        )
+    assert domain_position is not None
+
+    malformed_position = domain_position.model_copy(
+        update={
+            "long_today_qty": Decimal("999"),
+            "long_avg_price": Decimal("9999"),
+            "realized_pnl": Decimal("999"),
+            "unrealized_pnl": Decimal("999"),
+        }
+    )
+    engine = MarginEngine(lambda: SQLAlchemyUnitOfWork(session_factory=db_session_factory))
+    result = engine.calculate_margin(
+        malformed_position,
+        _margin_rule(),
+        _account_context(Decimal("10000000")),
+        calculation_key="account-1:rb2601:0:malformed",
+        calculated_at=datetime(2026, 1, 1, 9, 2, tzinfo=UTC),
+    )
+
+    with db_session_factory() as session:
+        updated = session.scalar(
+            select(Position).where(
+                Position.account_id == "account-1",
+                Position.instrument_id == "rb2601",
+            )
+        )
+
+    assert result.status == MarginResultStatus.CALCULATED
+    assert result.snapshot is not None
+    assert updated is not None
+    assert updated.version == 1
+    assert updated.margin_used == result.snapshot.margin_used
+    assert updated.long_today_qty == Decimal("1.00000000")
+    assert updated.long_yesterday_qty == Decimal("2.00000000")
+    assert updated.long_avg_price == Decimal("3500.00000000")
+    assert updated.realized_pnl == Decimal("12.00000000")
+    assert updated.unrealized_pnl == Decimal("34.00000000")
+
+
+def test_margin_engine_rejected_result_does_not_persist_or_update(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        position = Position(account_id="account-1", instrument_id="rb2601")
+        session.add(position)
+        session.flush()
+        domain_position = SQLAlchemyPositionRepository(session).get_by_account_instrument(
+            "account-1",
+            "rb2601",
+        )
+    assert domain_position is not None
+
+    engine = MarginEngine(lambda: SQLAlchemyUnitOfWork(session_factory=db_session_factory))
+    result = engine.calculate_margin(
+        domain_position,
+        _margin_rule().model_copy(update={"price": None}),
+        _account_context(),
+        calculation_key="account-1:rb2601:0:v1",
+        calculated_at=datetime(2026, 1, 1, 9, 2, tzinfo=UTC),
+    )
+
+    with db_session_factory() as session:
+        updated = session.scalar(select(Position))
+        snapshot_count = session.scalar(select(func.count()).select_from(MarginSnapshotOrm))
+
+    assert result.status == MarginResultStatus.REJECTED_MISSING_PRICE
+    assert updated is not None
+    assert updated.margin_used == Decimal("0E-8")
+    assert snapshot_count == 0
+
+
+def test_margin_engine_identity_mismatch_does_not_persist_or_update(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        position = Position(account_id="account-1", instrument_id="rb2601")
+        session.add(position)
+        session.flush()
+        domain_position = SQLAlchemyPositionRepository(session).get_by_account_instrument(
+            "account-1",
+            "rb2601",
+        )
+    assert domain_position is not None
+
+    engine = MarginEngine(lambda: SQLAlchemyUnitOfWork(session_factory=db_session_factory))
+    account_mismatch = engine.calculate_margin(
+        domain_position,
+        _margin_rule(),
+        _account_context().model_copy(update={"account_id": "account-2"}),
+        calculation_key="account-1:rb2601:0:account-mismatch",
+        calculated_at=datetime(2026, 1, 1, 9, 2, tzinfo=UTC),
+    )
+    instrument_mismatch = engine.calculate_margin(
+        domain_position,
+        _margin_rule().model_copy(update={"instrument_id": "ag2601"}),
+        _account_context(),
+        calculation_key="account-1:rb2601:0:instrument-mismatch",
+        calculated_at=datetime(2026, 1, 1, 9, 2, tzinfo=UTC),
+    )
+
+    with db_session_factory() as session:
+        updated = session.scalar(select(Position))
+        snapshot_count = session.scalar(select(func.count()).select_from(MarginSnapshotOrm))
+
+    assert account_mismatch.status == MarginResultStatus.ERROR
+    assert account_mismatch.reason == "margin_identity_mismatch: account_id"
+    assert instrument_mismatch.status == MarginResultStatus.ERROR
+    assert instrument_mismatch.reason == "margin_identity_mismatch: instrument_id"
+    assert updated is not None
+    assert updated.version == 0
+    assert updated.margin_used == Decimal("0E-8")
+    assert snapshot_count == 0
+
+
+def test_margin_engine_duplicate_replay_noop_and_live_divergence_conflict(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        position = Position(
+            account_id="account-1",
+            instrument_id="rb2601",
+            long_today_qty=Decimal("1"),
+        )
+        session.add(position)
+        session.flush()
+        domain_position = SQLAlchemyPositionRepository(session).get_by_account_instrument(
+            "account-1",
+            "rb2601",
+        )
+    assert domain_position is not None
+    engine = MarginEngine(lambda: SQLAlchemyUnitOfWork(session_factory=db_session_factory))
+    first = engine.calculate_margin(
+        domain_position,
+        _margin_rule(),
+        _account_context(),
+        calculation_key="account-1:rb2601:0:v1",
+        calculated_at=datetime(2026, 1, 1, 9, 2, tzinfo=UTC),
+    )
+    assert first.status == MarginResultStatus.CALCULATED
+
+    assert first.snapshot is not None
+    replay_position = domain_position.model_copy(update={"margin_used": first.snapshot.margin_used})
+    replay = engine.replay_margin(
+        replay_position,
+        _margin_rule(),
+        _account_context(),
+        calculation_key="account-1:rb2601:0:v1",
+        calculated_at=datetime(2026, 1, 1, 9, 2, tzinfo=UTC),
+    )
+
+    assert replay.status == MarginResultStatus.CALCULATED
+    with db_session_factory() as session:
+        snapshot_count_after_replay = session.scalar(
+            select(func.count()).select_from(MarginSnapshotOrm)
+        )
+    assert snapshot_count_after_replay == 1
+
+    diverged_position = domain_position.model_copy(update={"margin_used": Decimal("1")})
+    divergence = engine.replay_margin(
+        diverged_position,
+        _margin_rule(),
+        _account_context(),
+        calculation_key="account-1:rb2601:0:v1",
+        calculated_at=datetime(2026, 1, 1, 9, 2, tzinfo=UTC),
+    )
+
+    assert divergence.status == MarginResultStatus.CONFLICT
+    assert divergence.reason == "position_margin_used_diverged_from_snapshot"
+
+
+def test_margin_replay_same_position_version_different_calculation_key_conflicts(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        position = Position(
+            account_id="account-1",
+            instrument_id="rb2601",
+            long_today_qty=Decimal("1"),
+        )
+        session.add(position)
+        session.flush()
+        domain_position = SQLAlchemyPositionRepository(session).get_by_account_instrument(
+            "account-1",
+            "rb2601",
+        )
+    assert domain_position is not None
+
+    engine = MarginEngine(lambda: SQLAlchemyUnitOfWork(session_factory=db_session_factory))
+    first = engine.calculate_margin(
+        domain_position,
+        _margin_rule(),
+        _account_context(),
+        calculation_key="account-1:rb2601:0:v1",
+        calculated_at=datetime(2026, 1, 1, 9, 2, tzinfo=UTC),
+    )
+    assert first.status == MarginResultStatus.CALCULATED
+    assert first.snapshot is not None
+
+    replay_position = domain_position.model_copy(update={"margin_used": first.snapshot.margin_used})
+    replay = engine.replay_margin(
+        replay_position,
+        _margin_rule(),
+        _account_context(),
+        calculation_key="account-1:rb2601:0:v2",
+        calculated_at=datetime(2026, 1, 1, 9, 2, tzinfo=UTC),
+    )
+
+    with db_session_factory() as session:
+        updated = session.scalar(select(Position))
+        snapshot_count = session.scalar(select(func.count()).select_from(MarginSnapshotOrm))
+
+    assert replay.status == MarginResultStatus.CONFLICT
+    assert replay.reason == "margin_snapshot_replay_diverged"
+    assert updated is not None
+    assert updated.version == 1
+    assert updated.margin_used == first.snapshot.margin_used
+    assert snapshot_count == 1
+
+
+def test_margin_engine_snapshot_conflict_rolls_back_position_update(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        position = Position(account_id="account-1", instrument_id="rb2601")
+        session.add(position)
+        session.flush()
+        domain_position = SQLAlchemyPositionRepository(session).get_by_account_instrument(
+            "account-1",
+            "rb2601",
+        )
+        SQLAlchemyMarginSnapshotRepository(session).append_margin_snapshot(
+            _margin_snapshot(
+                position_version=0,
+                calculation_key="account-1:rb2601:0:v1",
+                initial_margin=Decimal("9999"),
+            )
+        )
+    assert domain_position is not None
+
+    engine = MarginEngine(lambda: SQLAlchemyUnitOfWork(session_factory=db_session_factory))
+    result = engine.calculate_margin(
+        domain_position,
+        _margin_rule(),
+        _account_context(),
+        calculation_key="account-1:rb2601:0:v1",
+        calculated_at=datetime(2026, 1, 1, 9, 2, tzinfo=UTC),
+    )
+
+    with db_session_factory() as session:
+        position_after = session.scalar(select(Position))
+        snapshot_count = session.scalar(select(func.count()).select_from(MarginSnapshotOrm))
+
+    assert result.status == MarginResultStatus.CONFLICT
+    assert position_after is not None
+    assert position_after.margin_used == Decimal("0E-8")
+    assert snapshot_count == 1
+
+
+def test_margin_engine_optimistic_lock_rolls_back_snapshot_append(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        position = Position(account_id="account-1", instrument_id="rb2601")
+        session.add(position)
+        session.flush()
+        domain_position = SQLAlchemyPositionRepository(session).get_by_account_instrument(
+            "account-1",
+            "rb2601",
+        )
+        position.version = 1
+    assert domain_position is not None
+
+    engine = MarginEngine(lambda: SQLAlchemyUnitOfWork(session_factory=db_session_factory))
+    result = engine.calculate_margin(
+        domain_position,
+        _margin_rule(),
+        _account_context(),
+        calculation_key="account-1:rb2601:0:v1",
+        calculated_at=datetime(2026, 1, 1, 9, 2, tzinfo=UTC),
+    )
+
+    with db_session_factory() as session:
+        snapshot_count = session.scalar(select(func.count()).select_from(MarginSnapshotOrm))
+        position_after = session.scalar(select(Position))
+
+    assert result.status == MarginResultStatus.ERROR
+    assert snapshot_count == 0
+    assert position_after is not None
+    assert position_after.margin_used == Decimal("0E-8")
