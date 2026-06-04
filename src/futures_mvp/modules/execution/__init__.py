@@ -17,16 +17,24 @@ from futures_mvp.modules.execution.models import (
     MappingResult,
     MappingResultStatus,
 )
+from futures_mvp.modules.execution.orchestrator import (
+    ApplicationExecutionOrchestrator,
+    ExecutionOrchestrationResult,
+    ExecutionOrchestrationStatus,
+)
 from futures_mvp.modules.execution.reports import (
     ExecutionReportHandler,
     InMemoryExecutionReportSink,
 )
 
 __all__ = [
+    "ApplicationExecutionOrchestrator",
     "ConfigurableMockFuturesExchange",
     "DeterministicReportIdGenerator",
     "DeliveryPhase",
     "ExecutionManagementSystem",
+    "ExecutionOrchestrationResult",
+    "ExecutionOrchestrationStatus",
     "ExecutionReportHandler",
     "ExchangeReport",
     "ExchangeReportType",

@@ -5,10 +5,12 @@
 - `Contract Done`
 - `Phase 4.1`
 - `Execution Runtime`
+- `Stage A`
 - `Phase 4.2+`
 - `Later Phase`
 
 `Contract Done` 表示 Phase 4.0 文档契约已冻结，不表示实现完成。`Phase 4.1` 表示 pure mapper 阶段已实现并用单元测试覆盖。`Execution Runtime` 表示当前 Command/Report Runtime Layer 已实现并用单元测试覆盖。
+`Stage A` 表示 ApplicationExecutionOrchestrator 已实现并用单元测试覆盖。
 
 ## Contract Done
 
@@ -110,7 +112,6 @@
 | report surface | 定义 callback / polling / stream 或等价 report surface。 | Phase 4.2+ |
 | EMS skeleton | DTO / mapper 完成后再实现 EMS shell。 | Phase 4.2+ |
 | MockFuturesExchange skeleton | report surface 完成后再实现 MockFuturesExchange shell。 | Phase 4.2+ |
-| application orchestrator skeleton | 编排 OMS pre-state、EMS command、report mapper、OMS apply。 | Phase 4.2+ |
 | UNKNOWN_REPORT integration | 等待 OMS public UNKNOWN entry 后接入。 | Phase 4.2+ |
 | ENTER_UNKNOWN_CANDIDATE application | future application layer 调 OMS UNKNOWN public entry。 | Phase 4.2+ |
 
@@ -131,6 +132,24 @@
 | no application routing | 当前 handler 不 split、不调 OMS、不应用 `OrderEvent`。 | Execution Runtime |
 | no current UNKNOWN application | 不新增 OMS UNKNOWN entry，不消费 UNKNOWN candidate。 | Execution Runtime |
 | runtime boundary | EMS / MockExchange / report layer 不 import OMS / Risk / DB / Settlement / real adapter / Kafka / Redis / Celery。 | Execution Runtime |
+
+## Stage A Application Execution Orchestrator
+
+| 场景 | 预期 | 状态 |
+|---|---|---|
+| orchestrator object | 定义 `ApplicationExecutionOrchestrator` 和 typed orchestration result。 | Stage A |
+| submit pre-event | submit 前先通过 OMS event 推进到 `SUBMITTING`。 | Stage A |
+| submit command gate | pre-event 非 `APPLIED` 时不调用 EMS submit。 | Stage A |
+| cancel pre-event | cancel 前先通过 OMS event 推进到 `CANCEL_PENDING`。 | Stage A |
+| cancel command gate | pre-event 非 `APPLIED` 时不调用 EMS cancel。 | Stage A |
+| report collection | 使用 `ExecutionReportSink.list_reports()`，只过滤处理当前 order / operation，不 drain all。 | Stage A |
+| mapping context | 按最新 OMS application result order status 构造 `MappingContext`。 | Stage A |
+| mapped routing | `MAPPED_ORDER_EVENT` 且存在 `OrderEvent` 时调用 `OMSService.apply_order_event(...)`。 | Stage A |
+| passthrough routing | `DUPLICATE_REPORT` / `IGNORED_REPORT` / `INSUFFICIENT_CONTEXT` / `ENTER_UNKNOWN_CANDIDATE` / `MAPPING_ERROR` / `DOMAIN_FIELD_UNSUPPORTED` 不调用 OMS。 | Stage A |
+| no reports | 无匹配 report 时返回 typed `NO_REPORTS`。 | Stage A |
+| OMS application rejection | OMS 应用 mapped event 非 `APPLIED` 时返回 typed orchestration result。 | Stage A |
+| UNKNOWN boundary | 不新增 OMS public UNKNOWN entry，不调用 OMS 私有 UNKNOWN 方法，不自动进入 `UNKNOWN`。 | Stage A |
+| orchestrator boundary | Orchestrator 不 import DB / Repository / UoW / ORM / Risk / Position / Margin / PnL / Settlement / broker adapter / runtime infra。 | Stage A |
 
 ## Later Phase
 

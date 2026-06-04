@@ -1,6 +1,6 @@
 # 系统 MVP
 
-当前项目已完成基础骨架、核心领域模型、模块接口、数据库表设计、Phase 2 OMS 最小 Application Service、Phase 3 pure Risk Engine，以及 Phase 4.1 Execution DTO / pure mapper。当前阶段不连接真实期货柜台、CTP、SimNow 或任何真实交易接口，只允许使用 `MockFuturesExchange` command port / pure mapper 边界。
+当前项目已完成基础骨架、核心领域模型、模块接口、数据库表设计、Phase 2 OMS 最小 Application Service、Phase 3 pure Risk Engine、Phase 4.1 Execution DTO / pure mapper、Execution Command/Report Runtime Layer，以及 Stage A ApplicationExecutionOrchestrator。当前阶段不连接真实期货柜台、CTP、SimNow 或任何真实交易接口，只允许使用 `MockFuturesExchange` command port / pure mapper / application orchestrator 边界。
 
 目标链路：
 
