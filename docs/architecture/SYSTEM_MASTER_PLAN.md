@@ -300,7 +300,7 @@ Stage D 当前实现说明：
 - 不允许只更新 `positions.margin_used` 而没有 snapshot；不允许只写 snapshot 但声称 live `margin_used` 已更新；更新 `positions.margin_used` 时必须使用 margin-only repository method，不得复用会写 qty / avg price 的通用 position update；不得修改 qty、avg price、realized/unrealized PnL 或 settlement fields。
 - Stage D 需要 `MarginSnapshotRepository` 和 `margin_snapshots` table；本阶段不建 `margin_rules` table，`MarginRule` 由 application layer 注入，`MarginSnapshot` 记录 `rule_id | None` 和 `rule_version | None`。
 - `MarginSnapshot` canonical payload 字段包括 `account_id`、`instrument_id`、`position_version`、`rule_id`、`rule_version`、`long_qty`、`short_qty`、`price`、`contract_multiplier`、`initial_margin`、`maintenance_margin`、`margin_used`、`available_cash`、`equity`、`calculation_key`。`calculated_at` 持久化但不参与 canonical equality；`raw_payload` 不参与 canonical。
-- Replay 使用同一 calculator，以 Position projection + MarginRule + AccountContext + typed price input 重算。同一 `account_id + instrument_id + position_version` 的 existing snapshot 已是该 position version 的 margin fact；canonical same 时 no-op / duplicate snapshot accepted；canonical different 时返回 `CONFLICT` / divergence，即使 `calculation_key` 不同也不得追加第二条 snapshot 或更新 `positions.margin_used`。Replay 不更新 Position qty/avg。
+- Replay 使用同一 calculator，以 Position projection + MarginRule + AccountContext + typed price input 重算。同一 `account_id + instrument_id + position_version` 的 existing snapshot 已是该 position version 的 margin fact；同一 `calculation_key` canonical same 时 no-op / duplicate snapshot accepted，canonical different 时返回 `CONFLICT` / divergence；`calculation_key` 不同但同一 position version 经济事实一致时 no-op，经济事实不一致时返回 `CONFLICT` / divergence，不得追加第二条 snapshot 或更新 `positions.margin_used`。Replay 不更新 Position qty/avg。
 
 ### Stage E: PnL Engine
 

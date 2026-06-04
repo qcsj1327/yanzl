@@ -473,7 +473,7 @@ Insufficient cash 返回 `REJECTED_INSUFFICIENT_CASH` typed result，不抛业�
 | `equity` | `Decimal` | required | 计算时账户权益。 |
 | `calculated_at` | `datetime` | required | 本地计算时间；持久化但不参与 canonical equality。 |
 
-`MarginSnapshot` canonical payload 字段包括 `account_id`、`instrument_id`、`position_version`、`rule_id`、`rule_version`、`long_qty`、`short_qty`、`price`、`contract_multiplier`、`initial_margin`、`maintenance_margin`、`margin_used`、`available_cash`、`equity`、`calculation_key`。`calculated_at` 不参与 canonical equality；`raw_payload` 不参与 canonical。Same canonical 时 no-op / duplicate snapshot accepted；different canonical 时返回 `CONFLICT` / divergence；不得静默覆盖历史 snapshot。
+`MarginSnapshot` canonical payload 字段包括 `account_id`、`instrument_id`、`position_version`、`rule_id`、`rule_version`、`long_qty`、`short_qty`、`price`、`contract_multiplier`、`initial_margin`、`maintenance_margin`、`margin_used`、`available_cash`、`equity`、`calculation_key`。`calculated_at` 不参与 canonical equality；`raw_payload` 不参与 canonical。Same canonical 时 no-op / duplicate snapshot accepted；different canonical 时返回 `CONFLICT` / divergence；不得静默覆盖历史 snapshot。同一 `account_id + instrument_id + position_version` 不得写入第二条不同 Margin fact；除 `calculation_key` 外经济事实一致时返回 existing，经济事实不一致时 conflict。
 
 #### MarginResult
 
@@ -542,7 +542,7 @@ Stage D 可更新 `positions.margin_used`，但必须满足：
 
 #### Margin replay
 
-Margin replay 使用同一 calculator 重算。输入为 Position projection + MarginRule + AccountContext + typed price input。同一 `account_id + instrument_id + position_version` 的 existing snapshot 已是该 position version 的 margin fact；canonical same 时 no-op / duplicate snapshot accepted；canonical different 时返回 `CONFLICT` / divergence，即使 `calculation_key` 不同也不得追加第二条 snapshot 或更新 `positions.margin_used`。Replay 不更新 Position qty/avg。
+Margin replay 使用同一 calculator 重算。输入为 Position projection + MarginRule + AccountContext + typed price input。同一 `account_id + instrument_id + position_version` 的 existing snapshot 已是该 position version 的 margin fact；同一 `calculation_key` canonical same 时 no-op / duplicate snapshot accepted，canonical different 时返回 `CONFLICT` / divergence；`calculation_key` 不同但同一 position version 经济事实一致时 no-op，经济事实不一致时 conflict，不得追加第二条 snapshot 或更新 `positions.margin_used`。Replay 不更新 Position qty/avg。
 
 #### PnL / Settlement / Risk boundary
 
@@ -1048,7 +1048,7 @@ Stage C `UnitOfWork` 需要暴露 `positions: PositionRepository` 和 `position_
 
 Stage D 冻结 `MarginSnapshotRepository`：
 
-- `append_margin_snapshot(snapshot: MarginSnapshot) -> MarginSnapshot`：追加 margin audit snapshot。
+- `append_margin_snapshot(snapshot: MarginSnapshot) -> MarginSnapshot`：追加 margin audit snapshot；同一 `account_id + instrument_id + position_version` 已存在时，除 `calculation_key` 外经济事实一致返回 existing，经济事实不一致抛 `MarginSnapshotConflictError`。
 - `get_latest(account_id: str, instrument_id: str) -> MarginSnapshot | None`：查询单合约最新 margin snapshot。
 - `list_by_account(account_id: str) -> list[MarginSnapshot]`：列出账户 margin snapshots。
 - `get_by_position_version(account_id: str, instrument_id: str, position_version: int) -> MarginSnapshot | None`：按 position version 查询 snapshot。
@@ -1472,7 +1472,7 @@ Stage D 已新增 `margin_snapshots` 表作为 margin audit / replay ledger。�
 
 Migration 范围只新增 `margin_snapshots` table，不新增 pnl table，不新增 settlement table，不新增 `margin_events`，不改变 `orders` / `order_events` / `trades` 事实语义。
 
-`margin_snapshots` canonical payload 字段为 `account_id`、`instrument_id`、`position_version`、`rule_id`、`rule_version`、`long_qty`、`short_qty`、`price`、`contract_multiplier`、`initial_margin`、`maintenance_margin`、`margin_used`、`available_cash`、`equity`、`calculation_key`。`calculated_at` 不参与 canonical equality；`raw_payload` 不参与 canonical；same canonical no-op / duplicate accepted；different canonical 返回 `CONFLICT` / divergence，不静默覆盖历史 snapshot。
+`margin_snapshots` canonical payload 字段为 `account_id`、`instrument_id`、`position_version`、`rule_id`、`rule_version`、`long_qty`、`short_qty`、`price`、`contract_multiplier`、`initial_margin`、`maintenance_margin`、`margin_used`、`available_cash`、`equity`、`calculation_key`。`calculated_at` 不参与 canonical equality；`raw_payload` 不参与 canonical；same canonical no-op / duplicate accepted；different canonical 返回 `CONFLICT` / divergence，不静默覆盖历史 snapshot。同一 `account_id + instrument_id + position_version` 不得写入第二条不同 Margin fact；除 `calculation_key` 外经济事实一致时返回 existing，经济事实不一致时 conflict。
 
 ### pnl_snapshots
 

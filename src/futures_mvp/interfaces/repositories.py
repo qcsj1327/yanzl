@@ -52,7 +52,7 @@ class PositionEventConflictError(RepositoryError):
 
 
 class MarginSnapshotConflictError(RepositoryError):
-    """Raised when a margin calculation key is reused with different facts."""
+    """Raised when a margin snapshot identity is reused with different facts."""
 
 
 class PnLSnapshotConflictError(RepositoryError):

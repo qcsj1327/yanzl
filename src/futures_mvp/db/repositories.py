@@ -462,6 +462,53 @@ def _same_canonical_margin_snapshot_payload(
     ) == _canonical_margin_snapshot_payload_from_domain(snapshot)
 
 
+def _margin_position_version_payload_from_domain(snapshot: MarginSnapshot) -> tuple[object, ...]:
+    return (
+        snapshot.account_id,
+        snapshot.instrument_id,
+        snapshot.position_version,
+        snapshot.rule_id,
+        snapshot.rule_version,
+        snapshot.long_qty,
+        snapshot.short_qty,
+        snapshot.price,
+        snapshot.contract_multiplier,
+        snapshot.initial_margin,
+        snapshot.maintenance_margin,
+        snapshot.margin_used,
+        snapshot.available_cash,
+        snapshot.equity,
+    )
+
+
+def _margin_position_version_payload_from_orm(snapshot: MarginSnapshotOrm) -> tuple[object, ...]:
+    return (
+        snapshot.account_id,
+        snapshot.instrument_id,
+        snapshot.position_version,
+        snapshot.rule_id,
+        snapshot.rule_version,
+        snapshot.long_qty,
+        snapshot.short_qty,
+        snapshot.price,
+        snapshot.contract_multiplier,
+        snapshot.initial_margin,
+        snapshot.maintenance_margin,
+        snapshot.margin_used,
+        snapshot.available_cash,
+        snapshot.equity,
+    )
+
+
+def _same_margin_position_version_payload(
+    existing: MarginSnapshotOrm,
+    snapshot: MarginSnapshot,
+) -> bool:
+    return _margin_position_version_payload_from_orm(
+        existing
+    ) == _margin_position_version_payload_from_domain(snapshot)
+
+
 def _canonical_pnl_snapshot_payload_from_domain(snapshot: PnLSnapshot) -> tuple[object, ...]:
     return (
         snapshot.account_id,
@@ -1204,6 +1251,16 @@ class SQLAlchemyMarginSnapshotRepository:
         )
         if existing is not None:
             return self._existing_margin_snapshot_for_append(existing, snapshot)
+        existing_by_position_version = self._get_orm_by_position_version(
+            snapshot.account_id,
+            snapshot.instrument_id,
+            snapshot.position_version,
+        )
+        if existing_by_position_version is not None:
+            return self._existing_margin_snapshot_for_position_version(
+                existing_by_position_version,
+                snapshot,
+            )
 
         try:
             with self._session.begin_nested():
@@ -1277,7 +1334,16 @@ class SQLAlchemyMarginSnapshotRepository:
         instrument_id: str,
         position_version: int,
     ) -> MarginSnapshot | None:
-        snapshot = self._session.scalar(
+        snapshot = self._get_orm_by_position_version(account_id, instrument_id, position_version)
+        return margin_snapshot_to_domain(snapshot) if snapshot else None
+
+    def _get_orm_by_position_version(
+        self,
+        account_id: str,
+        instrument_id: str,
+        position_version: int,
+    ) -> MarginSnapshotOrm | None:
+        return self._session.scalar(
             select(MarginSnapshotOrm)
             .where(
                 MarginSnapshotOrm.account_id == account_id,
@@ -1290,7 +1356,6 @@ class SQLAlchemyMarginSnapshotRepository:
                 MarginSnapshotOrm.id.desc(),
             )
         )
-        return margin_snapshot_to_domain(snapshot) if snapshot else None
 
     def _get_orm_by_calculation_key(
         self,
@@ -1316,6 +1381,19 @@ class SQLAlchemyMarginSnapshotRepository:
                 "calculation_key reused with different margin snapshot payload: "
                 f"{snapshot.account_id}/{snapshot.instrument_id}/"
                 f"{snapshot.calculation_key}"
+            )
+        return margin_snapshot_to_domain(existing)
+
+    def _existing_margin_snapshot_for_position_version(
+        self,
+        existing: MarginSnapshotOrm,
+        snapshot: MarginSnapshot,
+    ) -> MarginSnapshot:
+        if not _same_margin_position_version_payload(existing, snapshot):
+            raise MarginSnapshotConflictError(
+                "position_version reused with different margin snapshot payload: "
+                f"{snapshot.account_id}/{snapshot.instrument_id}/"
+                f"{snapshot.position_version}"
             )
         return margin_snapshot_to_domain(existing)
 

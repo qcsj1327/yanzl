@@ -144,14 +144,15 @@ class MarginEngine:
             snapshot.instrument_id,
             snapshot.position_version,
         )
-        if replay and existing_snapshot is not None:
-            if not _same_snapshot_canonical(existing_snapshot, snapshot):
-                return _conflict_result(
-                    position,
-                    existing_snapshot,
-                    "margin_snapshot_replay_diverged",
+        if existing_snapshot is not None:
+            if not _same_snapshot_position_version_facts(existing_snapshot, snapshot):
+                reason = (
+                    "margin_snapshot_replay_diverged"
+                    if replay
+                    else "margin_snapshot_position_version_diverged"
                 )
-            if position.margin_used != existing_snapshot.margin_used:
+                return _conflict_result(position, existing_snapshot, reason)
+            if replay and position.margin_used != existing_snapshot.margin_used:
                 return _conflict_result(
                     position,
                     existing_snapshot,
@@ -242,7 +243,7 @@ def _build_snapshot(
     )
 
 
-def _same_snapshot_canonical(left: MarginSnapshot, right: MarginSnapshot) -> bool:
+def _same_snapshot_position_version_facts(left: MarginSnapshot, right: MarginSnapshot) -> bool:
     return (
         left.account_id,
         left.instrument_id,
@@ -258,7 +259,6 @@ def _same_snapshot_canonical(left: MarginSnapshot, right: MarginSnapshot) -> boo
         left.margin_used,
         left.available_cash,
         left.equity,
-        left.calculation_key,
     ) == (
         right.account_id,
         right.instrument_id,
@@ -274,7 +274,6 @@ def _same_snapshot_canonical(left: MarginSnapshot, right: MarginSnapshot) -> boo
         right.margin_used,
         right.available_cash,
         right.equity,
-        right.calculation_key,
     )
 
 
