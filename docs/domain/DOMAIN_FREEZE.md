@@ -175,6 +175,8 @@
 
 策略引擎只能输出 `Signal`。`Signal` 不是订单。
 
+Stage I 之后，Strategy / Signal Lifecycle 的新实现不得把当前 legacy `Signal` 扩展成订单入口。后续 Strategy 输出边界以 Stage I 冻结的 `SignalCandidate` / `SignalDecision` / 可选 `TriggerResult` 为准；legacy `Signal` 仍只是当前已存在的最小信号模型，不代表已实现 Strategy lifecycle。
+
 ### OrderRequest
 
 | 字段 | 类型 | 默认值 | 语义 |
@@ -1494,6 +1496,262 @@ Stage H 不实现：
 - Portfolio features。
 - Cross-instrument features。
 - Execution / Accounting mutation。
+
+## Stage I Strategy / Signal Lifecycle Contract Freeze
+
+Stage I 只冻结 Strategy / Signal Lifecycle 契约，不实现代码、不改 schema、不改 `src/` 或 `tests/`。本节是 future implementation contract，不表示当前代码已经存在这些 model、repository 或 table。
+
+### Strategy source-of-truth
+
+Strategy 只能消费：
+
+- `FeatureSnapshot`。
+- `MarketDataSnapshot`，optional。
+- typed PositionContext / PortfolioContext，optional，且必须由 application layer 提供。
+- `StrategyConfig` / `StrategyVersion`。
+- trading calendar / session context。
+
+Strategy 禁止消费：
+
+- `raw_payload`。
+- DB directly。
+- Repository / UoW directly。
+- `OMSService`。
+- `RiskEngine` directly。
+- Execution / Broker。
+- `OrderStatus` / `OrderEvent`。
+- `ExchangeReport`。
+- Trade / Position / Margin / PnL / Settlement tables directly。
+
+`raw_payload` 永远只用于 diagnostic，不得补充或覆盖 source-of-truth。
+
+### Strategy output boundary
+
+Strategy 只能输出：
+
+- `SignalCandidate`。
+- `SignalDecision`。
+- `TriggerResult`，仅当 lifecycle gate included。
+
+Strategy 禁止：
+
+- create Order。
+- call OMS。
+- call Risk。
+- call Execution。
+- mutate Position / Accounting。
+- submit / cancel order。
+- read broker state。
+
+Signal 是 pre-risk intent，不是 Order、不是 `RiskResult`、不是 OMS state。
+
+### Strategy identity
+
+Strategy / Signal identity 必须携带：
+
+- `strategy_name`
+- `strategy_version`
+- `runtime_id`
+- `signal_id` deterministic policy
+- `symbol`
+- `instrument_id`
+- `trade_instrument_id`
+- `exchange`
+- `trading_day`
+- `timeframe`
+- `bar_ts`
+- `feature_version`
+- `feature_config_hash`
+
+`signal_id` 必须由 strategy identity、feature identity 和 decision params deterministic 派生。不得使用 runtime random value、system time 或 DB id 作为 canonical signal identity。
+
+### SignalCandidate contract
+
+字段：
+
+- `signal_id`
+- `strategy_name`
+- `strategy_version`
+- `runtime_id`
+- `symbol`
+- `instrument_id`
+- `trade_instrument_id`
+- `exchange`
+- `trading_day`
+- `timeframe`
+- `bar_ts`
+- `decision`
+- `side`
+- `position_side`
+- `confidence`
+- `strength`
+- `reason`
+- `expected_price`
+- `stop_loss`
+- `take_profit`
+- `holding_period_hint`
+- `tags`
+- `features_ref`
+- `raw_payload`
+
+规则：
+
+- `signal_id` deterministic from strategy identity + feature identity + decision params。
+- `confidence` 是 Decimal，范围为 0 到 1，包含边界。
+- `expected_price` 在 `decision` 不是 HOLD 时必须为 Decimal > 0。
+- HOLD 不得携带 BUY / SELL side；HOLD 的 side 必须是 NONE 或等价空方向。
+- `features_ref` 必须引用 `FeatureSnapshot` identity，不得复制 raw bars 作为事实来源。
+- `raw_payload` diagnostic only，不参与 canonical equality。
+
+### SignalDecision contract
+
+字段：
+
+- `decision`
+- `side`
+- `strength`
+- `confidence`
+- `reason`
+- `signal_id`
+- `strategy_name`
+- `strategy_version`
+- `runtime_id`
+- `symbol`
+- `instrument_id`
+- `trade_instrument_id`
+- `exchange`
+- `trading_day`
+- `timeframe`
+- `bar_ts`
+- `feature_version`
+- `feature_config_hash`
+- `position_side`
+- `expected_price`
+- `stop_loss`
+- `take_profit`
+- `tags`
+- `raw_payload`
+
+规则：
+
+- `SignalDecision` 保留 feature identity propagation。
+- `SignalDecision` 不创建 Order，不携带 OMS status，不携带 Risk result。
+- `confidence`、`expected_price`、HOLD side 和 `raw_payload` 规则与 `SignalCandidate` 一致。
+
+### Trigger lifecycle contract
+
+如果后续实现 lifecycle gate，状态冻结为：
+
+- `CANDIDATE`
+- `CONFIRMED`
+- `TRIGGERED`
+- `DUPLICATE`
+- `BLOCKED`
+- `EXPIRED`
+
+规则：
+
+- duplicate same canonical -> `DUPLICATE` / no-op。
+- duplicate different canonical -> `CONFLICT` / `ERROR`。
+- expired signal cannot trigger。
+- blocked signal cannot trigger。
+- trigger does not create Order。
+- trigger only emits `TriggerResult` / application-level intent。
+
+### StrategyConfig contract
+
+字段：
+
+- `strategy_name`
+- `strategy_version`
+- `feature_version`
+- `feature_config_hash`
+- `timeframe`
+- `params`
+- `allow_position_context`
+- `allow_market_snapshot`
+- `enabled`
+
+规则：
+
+- `strategy_version` deterministic and required。
+- `params` 必须 canonicalized。
+- 推荐生成 `strategy_config_hash`。
+- no runtime random version。
+- `raw_payload` not source-of-truth。
+
+### Repository / future migration contract
+
+后续实现需要冻结：
+
+- `SignalCandidateRepository`
+- `SignalEventRepository` or `SignalLifecycleRepository`
+- `signal_candidates` table
+- `signal_events` table
+
+唯一约束：
+
+- `signal_id` unique。
+- optional unique: `strategy_name + strategy_version + instrument_id + timeframe + bar_ts + feature_version + feature_config_hash`。
+
+Canonical excludes：
+
+- `raw_payload`
+- `calculated_at`
+- `received_at`
+
+Stage I 不新增 repository、UoW entry、table、Alembic migration 或 schema test；这些只能在后续实现 stage 中进入。
+
+### Replay / idempotency contract
+
+- Strategy replay consumes ordered `FeatureSnapshot`。
+- same strategy config + same feature snapshot -> same `signal_id`。
+- same canonical -> duplicate / no-op。
+- different canonical -> conflict / error。
+- replay does not call OMS / Risk / Execution。
+- replay does not mutate Accounting。
+- replay does not create orders。
+
+### Relation to Risk / OMS
+
+- Signal is pre-risk intent。
+- Risk later consumes `SignalDecision` / OrderIntent through application orchestration。
+- Strategy does not know `RiskResult`。
+- Strategy does not know OMS state machine。
+- OMS does not consume `FeatureSnapshot` directly。
+- OMS / Risk / Execution 已存在不改变 Strategy 边界；Strategy 不得直接调用它们。
+
+### Stage I future tests
+
+未来实现必须覆盖：
+
+- deterministic `signal_id`。
+- HOLD side NONE。
+- non-HOLD `expected_price` required。
+- confidence range。
+- feature identity propagation。
+- strategy config hash。
+- duplicate same canonical。
+- duplicate different canonical。
+- lifecycle duplicate / block / expire。
+- replay deterministic。
+- no OMS / Risk / Execution / Accounting imports。
+- `raw_payload` excluded。
+
+### Stage I explicit non-goals
+
+Stage I does not implement：
+
+- Order creation。
+- Risk check。
+- OMS integration。
+- Execution integration。
+- Broker adapter。
+- runtime scheduling。
+- paper / sim / live。
+- portfolio optimization。
+- ML model serving。
+- cross-instrument strategy unless separately scoped。
 
 ### feature_snapshots
 
