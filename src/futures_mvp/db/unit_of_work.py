@@ -15,6 +15,8 @@ from futures_mvp.db.repositories import (
     SQLAlchemyPositionEventRepository,
     SQLAlchemyPositionRepository,
     SQLAlchemySettlementSnapshotRepository,
+    SQLAlchemySignalCandidateRepository,
+    SQLAlchemySignalEventRepository,
     SQLAlchemyTradeRepository,
 )
 from futures_mvp.db.session import SessionLocal
@@ -43,6 +45,8 @@ class SQLAlchemyUnitOfWork:
         self.market_ticks: SQLAlchemyMarketTickRepository
         self.market_bars: SQLAlchemyMarketBarRepository
         self.feature_snapshots: SQLAlchemyFeatureSnapshotRepository
+        self.signal_candidates: SQLAlchemySignalCandidateRepository
+        self.signal_events: SQLAlchemySignalEventRepository
 
     def __enter__(self) -> "SQLAlchemyUnitOfWork":
         self._session = self._provided_session or self._session_factory()
@@ -58,6 +62,8 @@ class SQLAlchemyUnitOfWork:
         self.market_ticks = SQLAlchemyMarketTickRepository(self._session)
         self.market_bars = SQLAlchemyMarketBarRepository(self._session)
         self.feature_snapshots = SQLAlchemyFeatureSnapshotRepository(self._session)
+        self.signal_candidates = SQLAlchemySignalCandidateRepository(self._session)
+        self.signal_events = SQLAlchemySignalEventRepository(self._session)
         return self
 
     def __exit__(

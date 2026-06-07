@@ -17,6 +17,8 @@ from futures_mvp.domain.models import (
     Position,
     PositionEvent,
     SettlementSnapshot,
+    SignalCandidate,
+    SignalLifecycleEvent,
     Tick,
     Trade,
 )
@@ -72,6 +74,14 @@ class MarketDataConflictError(RepositoryError):
 
 class FeatureSnapshotConflictError(RepositoryError):
     """Raised when a feature snapshot identity is reused with different facts."""
+
+
+class SignalCandidateConflictError(RepositoryError):
+    """Raised when a signal candidate identity is reused with different facts."""
+
+
+class SignalLifecycleConflictError(RepositoryError):
+    """Raised when a signal lifecycle event cannot be appended consistently."""
 
 
 @runtime_checkable
@@ -345,6 +355,41 @@ class FeatureSnapshotRepository(Protocol):
 
 
 @runtime_checkable
+class SignalCandidateRepository(Protocol):
+    def append_signal_candidate(self, candidate: SignalCandidate) -> SignalCandidate: ...
+
+    def get_by_signal_id(self, signal_id: str) -> SignalCandidate | None: ...
+
+    def list_by_strategy(
+        self,
+        strategy_name: str,
+        strategy_version: str,
+        start_bar_ts: datetime,
+        end_bar_ts: datetime,
+    ) -> list[SignalCandidate]: ...
+
+    def list_by_instrument(
+        self,
+        exchange: str,
+        instrument_id: str,
+        timeframe: BarTimeframe,
+        start_bar_ts: datetime,
+        end_bar_ts: datetime,
+    ) -> list[SignalCandidate]: ...
+
+
+@runtime_checkable
+class SignalEventRepository(Protocol):
+    def append_signal_event(self, event: SignalLifecycleEvent) -> SignalLifecycleEvent: ...
+
+    def get_by_event_key(self, event_key: str) -> SignalLifecycleEvent | None: ...
+
+    def list_by_signal_id(self, signal_id: str) -> list[SignalLifecycleEvent]: ...
+
+    def get_latest_status(self, signal_id: str) -> SignalLifecycleEvent | None: ...
+
+
+@runtime_checkable
 class UnitOfWork(Protocol):
     orders: OrderRepository
     order_events: OrderEventRepository
@@ -358,6 +403,8 @@ class UnitOfWork(Protocol):
     market_ticks: MarketTickRepository
     market_bars: MarketBarRepository
     feature_snapshots: FeatureSnapshotRepository
+    signal_candidates: SignalCandidateRepository
+    signal_events: SignalEventRepository
 
     def commit(self) -> None: ...
 
@@ -401,6 +448,25 @@ class FeatureUnitOfWork(Protocol):
     def rollback(self) -> None: ...
 
     def __enter__(self) -> "FeatureUnitOfWork": ...
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> bool | None: ...
+
+
+@runtime_checkable
+class StrategySignalUnitOfWork(Protocol):
+    signal_candidates: SignalCandidateRepository
+    signal_events: SignalEventRepository
+
+    def commit(self) -> None: ...
+
+    def rollback(self) -> None: ...
+
+    def __enter__(self) -> "StrategySignalUnitOfWork": ...
 
     def __exit__(
         self,

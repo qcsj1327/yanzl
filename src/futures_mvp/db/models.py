@@ -478,6 +478,84 @@ class FeatureSnapshot(Base):
     )
 
 
+class SignalCandidate(Base):
+    __tablename__ = "signal_candidates"
+    __table_args__ = (
+        UniqueConstraint("signal_id", name="uq_signal_candidates_signal_id"),
+        UniqueConstraint(
+            "strategy_name",
+            "strategy_version",
+            "strategy_config_hash",
+            "instrument_id",
+            "timeframe",
+            "bar_ts",
+            "feature_version",
+            "feature_config_hash",
+            name="uq_signal_candidates_strategy_feature_identity",
+        ),
+        Index(
+            "ix_signal_candidates_strategy_version",
+            "strategy_name",
+            "strategy_version",
+        ),
+        Index(
+            "ix_signal_candidates_exchange_instrument_day",
+            "exchange",
+            "instrument_id",
+            "trading_day",
+        ),
+        Index("ix_signal_candidates_timeframe_bar_ts", "timeframe", "bar_ts"),
+        Index("ix_signal_candidates_signal_id", "signal_id"),
+    )
+
+    signal_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    strategy_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    strategy_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    strategy_config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    runtime_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(64), nullable=False)
+    instrument_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    trade_instrument_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    exchange: Mapped[str] = mapped_column(String(32), nullable=False)
+    trading_day: Mapped[date] = mapped_column(Date, nullable=False)
+    timeframe: Mapped[str] = mapped_column(String(16), nullable=False)
+    bar_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    feature_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    feature_config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    decision: Mapped[str] = mapped_column(String(32), nullable=False)
+    side: Mapped[str] = mapped_column(String(16), nullable=False)
+    position_side: Mapped[str] = mapped_column(String(16), nullable=False)
+    confidence: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    strength: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(512))
+    expected_price: Mapped[Decimal | None] = mapped_column(DECIMAL)
+    stop_loss: Mapped[Decimal | None] = mapped_column(DECIMAL)
+    take_profit: Mapped[Decimal | None] = mapped_column(DECIMAL)
+    holding_period_hint: Mapped[str | None] = mapped_column(String(128))
+    tags: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    features_ref: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    raw_payload: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SignalEvent(Base):
+    __tablename__ = "signal_events"
+    __table_args__ = (
+        UniqueConstraint("event_key", name="uq_signal_events_event_key"),
+        Index("ix_signal_events_signal_id", "signal_id"),
+        Index("ix_signal_events_signal_created", "signal_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    event_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    signal_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    lifecycle_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    event_reason: Mapped[str | None] = mapped_column(String(512))
+    event_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    raw_payload: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class RiskEvent(Base):
     __tablename__ = "risk_events"
 

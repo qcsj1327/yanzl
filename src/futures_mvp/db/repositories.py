@@ -19,6 +19,8 @@ from futures_mvp.db.models import PnLSnapshot as PnLSnapshotOrm
 from futures_mvp.db.models import Position as PositionOrm
 from futures_mvp.db.models import PositionEvent as PositionEventOrm
 from futures_mvp.db.models import SettlementSnapshot as SettlementSnapshotOrm
+from futures_mvp.db.models import SignalCandidate as SignalCandidateOrm
+from futures_mvp.db.models import SignalEvent as SignalEventOrm
 from futures_mvp.db.models import Trade as TradeOrm
 from futures_mvp.domain.enums import (
     BarTimeframe,
@@ -31,6 +33,10 @@ from futures_mvp.domain.enums import (
     OrderType,
     PnLPriceBasis,
     SettlementResultStatus,
+    SignalDecisionType,
+    SignalLifecycleStatus,
+    SignalPositionSide,
+    SignalSide,
 )
 from futures_mvp.domain.models import (
     AccountSnapshot,
@@ -45,6 +51,8 @@ from futures_mvp.domain.models import (
     PositionEvent,
     PositionSnapshot,
     SettlementSnapshot,
+    SignalCandidate,
+    SignalLifecycleEvent,
     Tick,
     Trade,
 )
@@ -60,10 +68,16 @@ from futures_mvp.interfaces.repositories import (
     PositionEventConflictError,
     RepositoryError,
     SettlementSnapshotConflictError,
+    SignalCandidateConflictError,
+    SignalLifecycleConflictError,
     TradeIdempotencyConflictError,
 )
 from futures_mvp.modules.feature.canonical import canonical_feature_snapshot_payload
 from futures_mvp.modules.market.canonical import canonical_bar_payload, canonical_tick_payload
+from futures_mvp.modules.strategy.canonical import (
+    canonical_signal_candidate_payload,
+    canonical_signal_event_payload,
+)
 
 OPEN_RECOVERY_STATUSES = frozenset(
     {
@@ -117,6 +131,52 @@ def order_event_to_domain(event: OrderEventOrm) -> OrderEvent:
         external_event_id=event.external_event_id,
         raw_payload=event.raw_payload,
         occurred_at=event.occurred_at,
+    )
+
+
+def signal_candidate_to_domain(candidate: SignalCandidateOrm) -> SignalCandidate:
+    return SignalCandidate(
+        signal_id=candidate.signal_id,
+        strategy_name=candidate.strategy_name,
+        strategy_version=candidate.strategy_version,
+        strategy_config_hash=candidate.strategy_config_hash,
+        runtime_id=candidate.runtime_id,
+        symbol=candidate.symbol,
+        instrument_id=candidate.instrument_id,
+        trade_instrument_id=candidate.trade_instrument_id,
+        exchange=candidate.exchange,
+        trading_day=candidate.trading_day,
+        timeframe=BarTimeframe(candidate.timeframe),
+        bar_ts=candidate.bar_ts,
+        feature_version=candidate.feature_version,
+        feature_config_hash=candidate.feature_config_hash,
+        decision=SignalDecisionType(candidate.decision),
+        side=SignalSide(candidate.side),
+        position_side=SignalPositionSide(candidate.position_side),
+        confidence=candidate.confidence,
+        strength=candidate.strength,
+        reason=candidate.reason,
+        expected_price=candidate.expected_price,
+        stop_loss=candidate.stop_loss,
+        take_profit=candidate.take_profit,
+        holding_period_hint=candidate.holding_period_hint,
+        tags=candidate.tags,
+        features_ref=candidate.features_ref,
+        raw_payload=candidate.raw_payload,
+        created_at=candidate.created_at,
+    )
+
+
+def signal_event_to_domain(event: SignalEventOrm) -> SignalLifecycleEvent:
+    return SignalLifecycleEvent(
+        id=str(event.id),
+        event_key=event.event_key,
+        signal_id=event.signal_id,
+        lifecycle_status=SignalLifecycleStatus(event.lifecycle_status),
+        event_reason=event.event_reason,
+        event_ts=event.event_ts,
+        raw_payload=event.raw_payload,
+        created_at=event.created_at,
     )
 
 
@@ -1225,6 +1285,212 @@ class SQLAlchemyFeatureSnapshotRepository:
                 f"{snapshot.feature_config_hash}"
             )
         return feature_snapshot_to_domain(existing)
+
+
+class SQLAlchemySignalCandidateRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def append_signal_candidate(self, candidate: SignalCandidate) -> SignalCandidate:
+        existing = self.get_by_signal_id(candidate.signal_id)
+        if existing is not None:
+            return self._existing_candidate_for_append(existing, candidate)
+
+        try:
+            with self._session.begin_nested():
+                candidate_orm = self._new_candidate(candidate)
+                self._session.add(candidate_orm)
+                self._session.flush()
+            return signal_candidate_to_domain(candidate_orm)
+        except IntegrityError as exc:
+            existing_after_conflict = self.get_by_signal_id(candidate.signal_id)
+            if existing_after_conflict is not None:
+                return self._existing_candidate_for_append(existing_after_conflict, candidate)
+            composite_conflict = self._get_by_composite_identity(candidate)
+            if composite_conflict is not None:
+                raise SignalCandidateConflictError(
+                    "signal candidate composite identity reused with different signal_id: "
+                    f"{candidate.strategy_name}/{candidate.strategy_version}/"
+                    f"{candidate.instrument_id}/{candidate.timeframe}/{candidate.bar_ts}"
+                ) from exc
+            raise RepositoryError(
+                "signal candidate unique conflict but candidate not found"
+            ) from exc
+
+    def get_by_signal_id(self, signal_id: str) -> SignalCandidate | None:
+        candidate = self._session.scalar(
+            select(SignalCandidateOrm).where(SignalCandidateOrm.signal_id == signal_id)
+        )
+        return signal_candidate_to_domain(candidate) if candidate else None
+
+    def list_by_strategy(
+        self,
+        strategy_name: str,
+        strategy_version: str,
+        start_bar_ts: datetime,
+        end_bar_ts: datetime,
+    ) -> list[SignalCandidate]:
+        candidates = self._session.scalars(
+            select(SignalCandidateOrm)
+            .where(
+                SignalCandidateOrm.strategy_name == strategy_name,
+                SignalCandidateOrm.strategy_version == strategy_version,
+                SignalCandidateOrm.bar_ts >= start_bar_ts,
+                SignalCandidateOrm.bar_ts <= end_bar_ts,
+            )
+            .order_by(SignalCandidateOrm.bar_ts.asc(), SignalCandidateOrm.signal_id.asc())
+        ).all()
+        return [signal_candidate_to_domain(candidate) for candidate in candidates]
+
+    def list_by_instrument(
+        self,
+        exchange: str,
+        instrument_id: str,
+        timeframe: BarTimeframe,
+        start_bar_ts: datetime,
+        end_bar_ts: datetime,
+    ) -> list[SignalCandidate]:
+        candidates = self._session.scalars(
+            select(SignalCandidateOrm)
+            .where(
+                SignalCandidateOrm.exchange == exchange,
+                SignalCandidateOrm.instrument_id == instrument_id,
+                SignalCandidateOrm.timeframe == timeframe.value,
+                SignalCandidateOrm.bar_ts >= start_bar_ts,
+                SignalCandidateOrm.bar_ts <= end_bar_ts,
+            )
+            .order_by(SignalCandidateOrm.bar_ts.asc(), SignalCandidateOrm.signal_id.asc())
+        ).all()
+        return [signal_candidate_to_domain(candidate) for candidate in candidates]
+
+    def _new_candidate(self, candidate: SignalCandidate) -> SignalCandidateOrm:
+        return SignalCandidateOrm(
+            signal_id=candidate.signal_id,
+            strategy_name=candidate.strategy_name,
+            strategy_version=candidate.strategy_version,
+            strategy_config_hash=candidate.strategy_config_hash,
+            runtime_id=candidate.runtime_id,
+            symbol=candidate.symbol,
+            instrument_id=candidate.instrument_id,
+            trade_instrument_id=candidate.trade_instrument_id,
+            exchange=candidate.exchange,
+            trading_day=candidate.trading_day,
+            timeframe=candidate.timeframe.value,
+            bar_ts=candidate.bar_ts,
+            feature_version=candidate.feature_version,
+            feature_config_hash=candidate.feature_config_hash,
+            decision=candidate.decision.value,
+            side=candidate.side.value,
+            position_side=candidate.position_side.value,
+            confidence=candidate.confidence,
+            strength=candidate.strength,
+            reason=candidate.reason,
+            expected_price=candidate.expected_price,
+            stop_loss=candidate.stop_loss,
+            take_profit=candidate.take_profit,
+            holding_period_hint=candidate.holding_period_hint,
+            tags=candidate.tags,
+            features_ref=candidate.features_ref,
+            raw_payload=candidate.raw_payload,
+        )
+
+    def _get_by_composite_identity(
+        self,
+        candidate: SignalCandidate,
+    ) -> SignalCandidate | None:
+        existing = self._session.scalar(
+            select(SignalCandidateOrm).where(
+                SignalCandidateOrm.strategy_name == candidate.strategy_name,
+                SignalCandidateOrm.strategy_version == candidate.strategy_version,
+                SignalCandidateOrm.strategy_config_hash == candidate.strategy_config_hash,
+                SignalCandidateOrm.instrument_id == candidate.instrument_id,
+                SignalCandidateOrm.timeframe == candidate.timeframe.value,
+                SignalCandidateOrm.bar_ts == candidate.bar_ts,
+                SignalCandidateOrm.feature_version == candidate.feature_version,
+                SignalCandidateOrm.feature_config_hash == candidate.feature_config_hash,
+            )
+        )
+        return signal_candidate_to_domain(existing) if existing else None
+
+    def _existing_candidate_for_append(
+        self,
+        existing: SignalCandidate,
+        candidate: SignalCandidate,
+    ) -> SignalCandidate:
+        if canonical_signal_candidate_payload(existing) != canonical_signal_candidate_payload(
+            candidate
+        ):
+            raise SignalCandidateConflictError(
+                f"signal candidate identity reused with different canonical payload: "
+                f"{candidate.signal_id}"
+            )
+        return existing
+
+
+class SQLAlchemySignalEventRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def append_signal_event(self, event: SignalLifecycleEvent) -> SignalLifecycleEvent:
+        existing = self.get_by_event_key(event.event_key)
+        if existing is not None:
+            return self._existing_event_for_append(existing, event)
+
+        try:
+            with self._session.begin_nested():
+                event_orm = SignalEventOrm(
+                    event_key=event.event_key,
+                    signal_id=event.signal_id,
+                    lifecycle_status=event.lifecycle_status.value,
+                    event_reason=event.event_reason,
+                    event_ts=event.event_ts,
+                    raw_payload=event.raw_payload,
+                )
+                self._session.add(event_orm)
+                self._session.flush()
+            return signal_event_to_domain(event_orm)
+        except IntegrityError as exc:
+            existing_after_conflict = self.get_by_event_key(event.event_key)
+            if existing_after_conflict is not None:
+                return self._existing_event_for_append(existing_after_conflict, event)
+            raise SignalLifecycleConflictError(
+                f"signal lifecycle event append failed: {event.signal_id}"
+            ) from exc
+
+    def get_by_event_key(self, event_key: str) -> SignalLifecycleEvent | None:
+        event = self._session.scalar(
+            select(SignalEventOrm).where(SignalEventOrm.event_key == event_key)
+        )
+        return signal_event_to_domain(event) if event else None
+
+    def list_by_signal_id(self, signal_id: str) -> list[SignalLifecycleEvent]:
+        events = self._session.scalars(
+            select(SignalEventOrm)
+            .where(SignalEventOrm.signal_id == signal_id)
+            .order_by(SignalEventOrm.event_ts.asc(), SignalEventOrm.id.asc())
+        ).all()
+        return [signal_event_to_domain(event) for event in events]
+
+    def get_latest_status(self, signal_id: str) -> SignalLifecycleEvent | None:
+        event = self._session.scalar(
+            select(SignalEventOrm)
+            .where(SignalEventOrm.signal_id == signal_id)
+            .order_by(SignalEventOrm.event_ts.desc(), SignalEventOrm.id.desc())
+            .limit(1)
+        )
+        return signal_event_to_domain(event) if event else None
+
+    def _existing_event_for_append(
+        self,
+        existing: SignalLifecycleEvent,
+        event: SignalLifecycleEvent,
+    ) -> SignalLifecycleEvent:
+        if canonical_signal_event_payload(existing) != canonical_signal_event_payload(event):
+            raise SignalLifecycleConflictError(
+                f"signal lifecycle event key reused with different canonical payload: "
+                f"{event.event_key}"
+            )
+        return existing
 
 
 class SQLAlchemyOrderRepository:

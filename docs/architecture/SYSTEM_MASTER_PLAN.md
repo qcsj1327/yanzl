@@ -49,13 +49,16 @@
   - 当前基线：`stage-h-feature-snapshot-core / a5c2fbf`。
   - 已实现 typed FeatureSnapshot、FeatureConfig、FeatureBuildResult、pure FeatureBuilder、canonical payload、FeatureSnapshotRepository、SQLAlchemy repository、UoW integration、`feature_snapshots` migration、FeatureService、deterministic feature replay 和 tests。
   - Stage H 未实现 Strategy、Signal、Tick -> Bar Aggregator、Broker adapter、Runtime infra、ML features、portfolio features 或 cross-instrument features。
+- Strategy / Signal Lifecycle Core 已完成。
+  - 当前基线：`stage-i-strategy-signal-contract-freeze / 0bcbfd8` 后实现。
+  - 已实现 `StrategyConfig` canonicalization / hash、`StrategyContext`、deterministic `signal_id`、`SignalCandidate`、`SignalDecision`、`TriggerResult`、signal lifecycle、canonical payload、Signal repository protocols、SQLAlchemy repositories、UoW integration、`signal_candidates` / `signal_events` migration、`StrategyService` / `SignalLifecycleService`、deterministic strategy replay 和 tests。
+  - Stage I 未实现 Order creation、Risk check、OMS integration、Execution integration、Broker adapter、runtime scheduling、paper / sim / live、portfolio optimization、ML model serving、cross-instrument strategy 或 Accounting mutation。
 
 当前尚未实现为业务能力的部分：
 
 - Application Execution Orchestrator。
 - OMS public UNKNOWN entry。
 - RiskContext、portfolio/account risk、intraday limits、kill switch risk。
-- Strategy / Signal Lifecycle。
 - Recovery / Replay Framework。
 - FastAPI / Celery / Kafka / Runtime control plane。
 - CTP / SimNow / live broker adapter。
@@ -416,27 +419,28 @@ Stage F contract freeze：
 - Acceptance criteria：FeatureSnapshot Core 可从 caller-supplied ordered Bars deterministic 生成、持久化、幂等 duplicate、typed conflict/error，并可 replay；不得污染 Strategy、Risk、OMS、Execution、Accounting、Broker、Runtime 或 Market facts。
 - Suggested tag：`stage-h-feature-snapshot-core`。
 
-### Stage I: Strategy / Signal Lifecycle Contract Freeze
+### Stage I: Strategy / Signal Lifecycle Core
 
-- Goal：冻结 Strategy / Signal Lifecycle 契约，明确 Strategy source-of-truth、输出边界、SignalCandidate / SignalDecision 字段、可选 Trigger lifecycle、未来 repository / migration、replay / idempotency 以及 Risk / OMS 关系；本阶段只改文档，不实现代码、schema、src 或 tests。
+- Goal：实现 Strategy / Signal Lifecycle Core，明确 Strategy source-of-truth、输出边界、SignalCandidate / SignalDecision 字段、Trigger lifecycle、repository / migration、replay / idempotency 以及 Risk / OMS 关系。
 - Inputs：`FeatureSnapshot`；可选 `MarketDataSnapshot`；可选且必须由 application layer 注入的 typed PositionContext / PortfolioContext；`StrategyConfig` / `StrategyVersion`；trading calendar / session context。
 - Outputs：`SignalCandidate`、`SignalDecision`；如包含 lifecycle gate，则输出 `TriggerResult` / application-level intent。
-- Allowed changes：`docs/architecture/SYSTEM_MASTER_PLAN.md`、`docs/domain/DOMAIN_FREEZE.md`。
-- Forbidden changes：不改 `src/`、`tests/`、`alembic/`、schema、Market / Feature implementation、Accounting、OMS / Risk / Execution、Broker / Runtime；不实现 Strategy / Signal。
+- Implemented changes：domain enum/model、`StrategyConfig` deterministic hash、`build_signal_id(...)`、pure Strategy Protocol、signal lifecycle rule、canonical payload、`SignalCandidateRepository` / `SignalEventRepository` Protocol、SQLAlchemy repositories、UoW integration、`0010_stage_i_strategy_signal_lifecycle` migration、`StrategyService` / `SignalLifecycleService`、strategy replay、unit/integration/boundary tests、docs update。
+- Forbidden changes：不创建 Order / `OrderRequest`；不做 Risk check；不接 OMS / Execution / Broker / Runtime；不做 runtime scheduling、paper / sim / live、portfolio optimization、ML model serving、cross-instrument strategy 或 Accounting mutation；`raw_payload` 不作为 decision source。
 - Source-of-truth：Strategy 不得消费 `raw_payload`、DB、Repository / UoW、`OMSService`、`RiskEngine`、Execution / Broker、`OrderStatus`、`OrderEvent`、`ExchangeReport`，也不得直接读取 Trade / Position / Margin / PnL / Settlement tables。
 - Output boundary：Strategy 不创建 Order，不调用 OMS / Risk / Execution，不 mutate Position / Accounting，不 submit / cancel order，不读取 broker state。
-- Identity：Strategy / Signal 必须携带 `strategy_name`、`strategy_version`、`runtime_id`、deterministic `signal_id` policy、`symbol`、`instrument_id`、`trade_instrument_id`、`exchange`、`trading_day`、`timeframe`、`bar_ts`、`feature_version`、`feature_config_hash`。
-- SignalCandidate：字段冻结为 `signal_id`、`strategy_name`、`strategy_version`、`runtime_id`、`symbol`、`instrument_id`、`trade_instrument_id`、`exchange`、`trading_day`、`timeframe`、`bar_ts`、`decision`、`side`、`position_side`、`confidence`、`strength`、`reason`、`expected_price`、`stop_loss`、`take_profit`、`holding_period_hint`、`tags`、`features_ref`、`raw_payload` diagnostic only。`signal_id` 必须由 strategy identity、feature identity 和 decision params deterministic 派生；`confidence` 是 0 到 1 的 Decimal；非 HOLD 时 `expected_price` 必须为 Decimal > 0；HOLD 不得携带 BUY / SELL side；`raw_payload` 不参与 source-of-truth。
-- SignalDecision：字段冻结为 `decision`、`side`、`strength`、`confidence`、`reason`、`signal_id`、`strategy_name`、`strategy_version`、`runtime_id`、`symbol`、`instrument_id`、`trade_instrument_id`、`exchange`、`trading_day`、`timeframe`、`bar_ts`、`feature_version`、`feature_config_hash`、`position_side`、`expected_price`、`stop_loss`、`take_profit`、`tags`、`raw_payload` diagnostic only。
-- Trigger lifecycle：如包含 lifecycle gate，状态冻结为 `CANDIDATE`、`CONFIRMED`、`TRIGGERED`、`DUPLICATE`、`BLOCKED`、`EXPIRED`。同 canonical duplicate 返回 `DUPLICATE` / no-op；不同 canonical duplicate 返回 `CONFLICT` / `ERROR`；expired / blocked signal 不得 trigger；trigger 不创建 Order，只产生 `TriggerResult` / application-level intent。
-- StrategyConfig：字段冻结为 `strategy_name`、`strategy_version`、`feature_version`、`feature_config_hash`、`timeframe`、`params`、`allow_position_context`、`allow_market_snapshot`、`enabled`。`strategy_version` deterministic 且 required；`params` 必须 canonicalized；推荐生成 `strategy_config_hash`；不得使用 runtime random version；`raw_payload` 不是 source-of-truth。
-- Repository / future migration：后续需要 `SignalCandidateRepository`、`SignalEventRepository` 或 `SignalLifecycleRepository`、`signal_candidates` table、`signal_events` table。`signal_id` 唯一；可选增加 `strategy_name + strategy_version + instrument_id + timeframe + bar_ts + feature_version + feature_config_hash` 唯一约束。Canonical 排除 `raw_payload`、`calculated_at`、`received_at`。
+- Identity：Strategy / Signal 必须携带 `strategy_name`、`strategy_version`、`strategy_config_hash`、`runtime_id`、deterministic `signal_id` policy、`symbol`、`instrument_id`、`trade_instrument_id`、`exchange`、`trading_day`、`timeframe`、`bar_ts`、`feature_version`、`feature_config_hash`。`runtime_id` 是 runtime lineage / audit 字段，不参与 `signal_id` hash。
+- SignalCandidate：字段冻结为 `signal_id`、`strategy_name`、`strategy_version`、`strategy_config_hash`、`runtime_id`、`symbol`、`instrument_id`、`trade_instrument_id`、`exchange`、`trading_day`、`timeframe`、`bar_ts`、`feature_version`、`feature_config_hash`、`decision`、`side`、`position_side`、`confidence`、`strength`、`reason`、`expected_price`、`stop_loss`、`take_profit`、`holding_period_hint`、`tags`、`features_ref`、`raw_payload` diagnostic only。`signal_id` 必须由 strategy identity、feature identity 和 decision params deterministic 派生，且排除 `runtime_id`；`confidence` 是 0 到 1 的 Decimal；非 HOLD 时 `expected_price` 必须为 Decimal > 0；HOLD 不得携带 BUY / SELL side；`raw_payload` 不参与 source-of-truth。
+- SignalDecision：字段冻结为 `decision`、`side`、`strength`、`confidence`、`reason`、`signal_id`、`strategy_name`、`strategy_version`、`strategy_config_hash`、`runtime_id`、`symbol`、`instrument_id`、`trade_instrument_id`、`exchange`、`trading_day`、`timeframe`、`bar_ts`、`feature_version`、`feature_config_hash`、`position_side`、`expected_price`、`stop_loss`、`take_profit`、`tags`、`raw_payload` diagnostic only。
+- Trigger lifecycle：如包含 lifecycle gate，状态冻结为 `CANDIDATE`、`CONFIRMED`、`TRIGGERED`、`DUPLICATE`、`BLOCKED`、`EXPIRED`。同 canonical duplicate 返回 `DUPLICATE` / no-op；不同 canonical duplicate 返回 `CONFLICT` / `ERROR`；expired / blocked signal 不得 trigger；已 `TRIGGERED` signal 再 trigger 返回 `DUPLICATE` / no-op 且不再产生 actionable intent；trigger 不创建 Order，只产生 `TriggerResult` / application-level intent。
+- StrategyConfig：字段冻结为 `strategy_name`、`strategy_version`、`feature_version`、`feature_config_hash`、`timeframe`、`params`、`allow_position_context`、`allow_market_snapshot`、`enabled`。`strategy_version` deterministic 且 required；`params` 必须 canonicalized，mapping key 只允许 `str`，value 只允许 stable JSON-like values：`None`、`bool`、`int`、`str`、`Decimal`、`date`、`datetime`、enum、list/tuple、dict；不得接受 float、set、object 或 arbitrary class instance；推荐生成 `strategy_config_hash`；不得使用 runtime random version；`raw_payload` 不是 source-of-truth。
+- StrategyResult：`GENERATED` 必须携带 `SignalDecision`；`REJECTED_*` / `ERROR` 不得携带 `SignalDecision`；非法组合由 `StrategyService` 返回 typed `ERROR` 且不持久化 candidate/event。
+- Repository / DB contract：已实现 `SignalCandidateRepository`、`SignalEventRepository`、`signal_candidates` table、`signal_events` table。`signal_id` 唯一；实现复合唯一键 `strategy_name + strategy_version + strategy_config_hash + instrument_id + timeframe + bar_ts + feature_version + feature_config_hash`。`signal_events.event_key` 是由 `signal_id + lifecycle_status + event_ts + event_reason` deterministic 生成的 sha256 幂等键，并具备唯一约束。Canonical 排除 `raw_payload`、`calculated_at`、`received_at`、`created_at` 和 DB id。
 - Replay / idempotency：Strategy replay 消费 ordered `FeatureSnapshot`；same strategy config + same feature snapshot 必须得到 same `signal_id`；same canonical duplicate no-op；different canonical conflict / error；replay 不调用 OMS / Risk / Execution，不 mutate Accounting，不创建 orders。
 - Risk / OMS relation：Signal 是 pre-risk intent；Risk 后续只能经 application orchestration 消费 `SignalDecision` / OrderIntent；Strategy 不知道 `RiskResult`，不理解 OMS state machine；OMS 不直接消费 `FeatureSnapshot`。
-- Required future tests：deterministic `signal_id`、HOLD side NONE、非 HOLD required `expected_price`、confidence range、feature identity propagation、strategy config hash、duplicate same canonical、duplicate different canonical、lifecycle duplicate / block / expire、replay deterministic、no OMS / Risk / Execution / Accounting imports、`raw_payload` excluded。
+- Tests：deterministic `signal_id`、HOLD side NONE、非 HOLD required `expected_price`、confidence range、feature identity propagation、strategy config hash、duplicate same canonical、duplicate different canonical、lifecycle confirm / block / expire / trigger、replay deterministic、repository round trip、schema contract、no OMS / Risk / Execution / Accounting imports、no OrderRequest creation、`raw_payload` excluded。
 - Explicit non-goals：Stage I 不实现 Order creation、Risk check、OMS integration、Execution integration、Broker adapter、runtime scheduling、paper / sim / live、portfolio optimization、ML model serving、cross-instrument strategy unless separately scoped。
-- Acceptance criteria：Strategy / Signal Lifecycle 契约清晰冻结为文档事实；后续实现不得越过 Strategy source-of-truth、output boundary、replay/idempotency 和 Risk / OMS 隔离规则。
-- Suggested tag：`stage-i-strategy-signal-lifecycle-contract-freeze`。
+- Acceptance criteria：Strategy / Signal Lifecycle Core 可 deterministic 生成、持久化、幂等 duplicate、typed conflict/error、执行 lifecycle gate 和 replay；不得越过 Strategy source-of-truth、output boundary、replay/idempotency 和 Risk / OMS 隔离规则。
+- Suggested tag：`stage-i-strategy-signal-lifecycle-core`。
 
 ### Stage J: OMS Public UNKNOWN Entry
 
@@ -534,7 +538,7 @@ Stage N -> Stage O
 
 - OMS Public UNKNOWN Entry 是异常回报治理能力，不是 Fill / Trade Domain Migration 的硬前置。
 - Market Data / Feature Snapshot 是 Strategy / Signal Lifecycle 的前置，并应作为并行主线提前规划；Stage H 只冻结 FeatureSnapshot，不进入 Strategy / Signal。
-- Stage I 冻结 Strategy / Signal Lifecycle 契约，但不实现 Order creation、Risk check、OMS integration 或 Execution integration。
+- Stage I 实现 Strategy / Signal Lifecycle Core，但不实现 Order creation、Risk check、OMS integration 或 Execution integration。
 - Risk Context / Portfolio Risk Upgrade 依赖 Position、Market Data、Strategy / Signal，不应提前硬接真实账户上下文。
 - Recovery / Replay 依赖订单、成交、持仓、结算、行情和 UNKNOWN 语义。
 - Broker / Adapter 必须在 Recovery / Replay 和 Runtime 边界稳定后进入。
@@ -550,7 +554,7 @@ Stage N -> Stage O
 - 没有 Stage C，不把持仓写成真实 source-of-truth。
 - 没有 Stage G，不冻结 Strategy 所需 typed market input。
 - 没有 Stage H，不冻结 Strategy 所需 FeatureSnapshot。
-- 没有 Stage I，不实现 Strategy / Signal Lifecycle。
+- 没有 Stage I，不把 Strategy / Signal Lifecycle 写成已完成。
 - 没有后续 Risk Context / Portfolio Risk Upgrade，不把真实 account / portfolio / position / intraday / kill switch 风控写成已完成。
 - 没有 Stage J，不应用 UNKNOWN_REPORT。
 - 没有 Stage K，不接 broker query reconciliation。
@@ -679,7 +683,7 @@ FastAPI、Celery、Kafka、Redis、async runtime、cloud、KMS 是后续 Runtime
 - Domain 不 import runtime/config/broker/cloud。
 - OMS 不依赖 EMS、Kafka、Redis、FastAPI 或 broker。
 - Risk 当前 pure core 不依赖 OMS、DB、Redis、HTTP、PositionManager、MarginEngine；后续 Risk Context / Portfolio Risk Upgrade 只能通过 application layer 注入 typed RiskContext。
-- Strategy 不依赖 OMS、Risk、Execution、Broker、Repository / UoW、DB、Redis、Kafka 或 HTTP；Stage I 只冻结文档契约。
+- Strategy 不依赖 OMS、Risk、Execution、Broker、DB、Redis、Kafka 或 HTTP；Stage I 的 StrategyContext 和 pure Strategy interface 不携带 Repository / UoW，只有 application service 使用 signal repositories 持久化候选和 lifecycle event。
 - Execution mapper 不接 broker，不写 DB，不调 OMS。
 - Repository/UoW 不判断 Kafka ordering，不读取 KMS，不调用 broker。
 
@@ -730,5 +734,5 @@ Stage A 完成后：
 
 - 主会计链可进入 Stage B: Fill / Trade Domain Migration。
 - Stage J: OMS Public UNKNOWN Entry 可并行准备，但它是异常回报治理能力，不阻塞 Fill / Trade。
-- Stage I contract freeze 后，下一步建议实现最小 Strategy / Signal domain contract：先落 `StrategyConfig` canonicalization、`SignalCandidate` / `SignalDecision` validation、deterministic `signal_id`、lifecycle idempotency 和 replay；仍不接 Risk / OMS / Execution。
+- Stage I 完成后，下一步建议进入后续 Risk Context / Portfolio Risk Upgrade 或 application orchestration 边界设计；仍不应直接跳到 Broker adapter 或 runtime infrastructure。
 - 不应直接跳到 broker adapter 或 runtime infrastructure。

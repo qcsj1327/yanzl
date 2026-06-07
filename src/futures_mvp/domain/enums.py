@@ -159,6 +159,53 @@ class FeatureResultStatus(StrEnum):
     ERROR = "ERROR"
 
 
+class SignalDecisionType(StrEnum):
+    HOLD = "HOLD"
+    BUY = "BUY"
+    SELL = "SELL"
+
+
+class SignalSide(StrEnum):
+    NONE = "NONE"
+    BUY = "BUY"
+    SELL = "SELL"
+
+
+class SignalPositionSide(StrEnum):
+    NONE = "NONE"
+    LONG = "LONG"
+    SHORT = "SHORT"
+
+
+class SignalLifecycleStatus(StrEnum):
+    CANDIDATE = "CANDIDATE"
+    CONFIRMED = "CONFIRMED"
+    TRIGGERED = "TRIGGERED"
+    DUPLICATE = "DUPLICATE"
+    BLOCKED = "BLOCKED"
+    EXPIRED = "EXPIRED"
+
+
+class StrategyResultStatus(StrEnum):
+    GENERATED = "GENERATED"
+    REJECTED_DISABLED = "REJECTED_DISABLED"
+    REJECTED_INVALID_CONTEXT = "REJECTED_INVALID_CONTEXT"
+    REJECTED_INVALID_SIGNAL_ID = "REJECTED_INVALID_SIGNAL_ID"
+    DUPLICATE = "DUPLICATE"
+    CONFLICT = "CONFLICT"
+    ERROR = "ERROR"
+
+
+class SignalResultStatus(StrEnum):
+    ACCEPTED = "ACCEPTED"
+    DUPLICATE = "DUPLICATE"
+    CONFLICT = "CONFLICT"
+    BLOCKED = "BLOCKED"
+    EXPIRED = "EXPIRED"
+    TRIGGERED = "TRIGGERED"
+    ERROR = "ERROR"
+
+
 class BarTimeframe(StrEnum):
     M1 = "M1"
     M5 = "M5"

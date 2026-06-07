@@ -27,6 +27,8 @@ from futures_mvp.domain.models import (
     PositionEvent,
     PositionSnapshot,
     SettlementSnapshot,
+    SignalCandidate,
+    SignalLifecycleEvent,
     Tick,
     Trade,
 )
@@ -813,6 +815,8 @@ class FakeUnitOfWork:
         self.market_ticks = FakeMarketTickRepository()
         self.market_bars = FakeMarketBarRepository()
         self.feature_snapshots = FakeFeatureSnapshotRepository()
+        self.signal_candidates = FakeSignalCandidateRepository()
+        self.signal_events = FakeSignalEventRepository()
         self.commit_count = 0
         self.rollback_count = 0
 
@@ -883,6 +887,53 @@ class FakeFeatureUnitOfWork:
         tb: object,
     ) -> bool | None:
         del exc_type, exc, tb
+        return None
+
+
+class FakeSignalCandidateRepository:
+    def append_signal_candidate(self, candidate: SignalCandidate) -> SignalCandidate:
+        return candidate
+
+    def get_by_signal_id(self, signal_id: str) -> SignalCandidate | None:
+        del signal_id
+        return None
+
+    def list_by_strategy(
+        self,
+        strategy_name: str,
+        strategy_version: str,
+        start_bar_ts: datetime,
+        end_bar_ts: datetime,
+    ) -> list[SignalCandidate]:
+        del strategy_name, strategy_version, start_bar_ts, end_bar_ts
+        return []
+
+    def list_by_instrument(
+        self,
+        exchange: str,
+        instrument_id: str,
+        timeframe: BarTimeframe,
+        start_bar_ts: datetime,
+        end_bar_ts: datetime,
+    ) -> list[SignalCandidate]:
+        del exchange, instrument_id, timeframe, start_bar_ts, end_bar_ts
+        return []
+
+
+class FakeSignalEventRepository:
+    def append_signal_event(self, event: SignalLifecycleEvent) -> SignalLifecycleEvent:
+        return event
+
+    def get_by_event_key(self, event_key: str) -> SignalLifecycleEvent | None:
+        del event_key
+        return None
+
+    def list_by_signal_id(self, signal_id: str) -> list[SignalLifecycleEvent]:
+        del signal_id
+        return []
+
+    def get_latest_status(self, signal_id: str) -> SignalLifecycleEvent | None:
+        del signal_id
         return None
 
 

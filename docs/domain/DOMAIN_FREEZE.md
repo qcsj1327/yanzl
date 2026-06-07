@@ -175,7 +175,7 @@
 
 策略引擎只能输出 `Signal`。`Signal` 不是订单。
 
-Stage I 之后，Strategy / Signal Lifecycle 的新实现不得把当前 legacy `Signal` 扩展成订单入口。后续 Strategy 输出边界以 Stage I 冻结的 `SignalCandidate` / `SignalDecision` / 可选 `TriggerResult` 为准；legacy `Signal` 仍只是当前已存在的最小信号模型，不代表已实现 Strategy lifecycle。
+Stage I 已新增 Strategy / Signal Lifecycle 专用 `SignalCandidate` / `SignalDecision` / `TriggerResult`。不得把当前 legacy `Signal` 扩展成 Stage I 订单入口；legacy `Signal` 仍只是早期最小信号模型，不代表 Strategy lifecycle。
 
 ### OrderRequest
 
@@ -1497,9 +1497,11 @@ Stage H 不实现：
 - Cross-instrument features。
 - Execution / Accounting mutation。
 
-## Stage I Strategy / Signal Lifecycle Contract Freeze
+## Stage I Strategy / Signal Lifecycle Core
 
-Stage I 只冻结 Strategy / Signal Lifecycle 契约，不实现代码、不改 schema、不改 `src/` 或 `tests/`。本节是 future implementation contract，不表示当前代码已经存在这些 model、repository 或 table。
+Stage I 已实现 Strategy / Signal Lifecycle Core：`StrategyConfig` canonicalization / hash、`StrategyContext`、deterministic `signal_id`、`SignalCandidate`、`SignalDecision`、`SignalLifecycleEvent`、`TriggerResult`、`StrategyResult`、signal lifecycle、canonical payload、Signal repository Protocol、SQLAlchemy repository、UoW integration、`signal_candidates` / `signal_events` migration、`StrategyService` / `SignalLifecycleService`、deterministic replay 和 tests。
+
+Stage I 不实现 Order creation、`OrderRequest` creation、Risk check、OMS integration、Execution integration、Broker adapter、runtime scheduling、paper / sim / live、portfolio optimization、ML model serving、cross-instrument strategy 或 Accounting mutation。
 
 ### Strategy source-of-truth
 
@@ -1551,6 +1553,7 @@ Strategy / Signal identity 必须携带：
 
 - `strategy_name`
 - `strategy_version`
+- `strategy_config_hash`
 - `runtime_id`
 - `signal_id` deterministic policy
 - `symbol`
@@ -1563,7 +1566,7 @@ Strategy / Signal identity 必须携带：
 - `feature_version`
 - `feature_config_hash`
 
-`signal_id` 必须由 strategy identity、feature identity 和 decision params deterministic 派生。不得使用 runtime random value、system time 或 DB id 作为 canonical signal identity。
+`signal_id` 必须由 strategy identity、feature identity 和 decision params deterministic 派生。不得使用 runtime random value、system time、DB id 或 `runtime_id` 作为 canonical signal identity。`runtime_id` 是 runtime lineage / audit 字段，保留在 `SignalDecision` / `SignalCandidate` 中，但不参与 `signal_id` hash。
 
 ### SignalCandidate contract
 
@@ -1572,6 +1575,7 @@ Strategy / Signal identity 必须携带：
 - `signal_id`
 - `strategy_name`
 - `strategy_version`
+- `strategy_config_hash`
 - `runtime_id`
 - `symbol`
 - `instrument_id`
@@ -1596,7 +1600,7 @@ Strategy / Signal identity 必须携带：
 
 规则：
 
-- `signal_id` deterministic from strategy identity + feature identity + decision params。
+- `signal_id` deterministic from strategy identity + feature identity + decision params，且排除 `runtime_id`。
 - `confidence` 是 Decimal，范围为 0 到 1，包含边界。
 - `expected_price` 在 `decision` 不是 HOLD 时必须为 Decimal > 0。
 - HOLD 不得携带 BUY / SELL side；HOLD 的 side 必须是 NONE 或等价空方向。
@@ -1615,6 +1619,7 @@ Strategy / Signal identity 必须携带：
 - `signal_id`
 - `strategy_name`
 - `strategy_version`
+- `strategy_config_hash`
 - `runtime_id`
 - `symbol`
 - `instrument_id`
@@ -1638,9 +1643,18 @@ Strategy / Signal identity 必须携带：
 - `SignalDecision` 不创建 Order，不携带 OMS status，不携带 Risk result。
 - `confidence`、`expected_price`、HOLD side 和 `raw_payload` 规则与 `SignalCandidate` 一致。
 
+### StrategyResult contract
+
+`StrategyResult` 状态语义：
+
+- `GENERATED` 必须携带 `decision`。
+- `REJECTED_*` 必须不携带 `decision`。
+- `ERROR` 必须不携带 `decision`。
+- 非法状态组合由 `StrategyService` 返回 typed `ERROR`，不得 append candidate，不得 append lifecycle event。
+
 ### Trigger lifecycle contract
 
-如果后续实现 lifecycle gate，状态冻结为：
+已实现 lifecycle gate，状态冻结为：
 
 - `CANDIDATE`
 - `CONFIRMED`
@@ -1655,6 +1669,7 @@ Strategy / Signal identity 必须携带：
 - duplicate different canonical -> `CONFLICT` / `ERROR`。
 - expired signal cannot trigger。
 - blocked signal cannot trigger。
+- already triggered signal returns `DUPLICATE` / no-op and does not append another `TRIGGERED` event。
 - trigger does not create Order。
 - trigger only emits `TriggerResult` / application-level intent。
 
@@ -1664,6 +1679,7 @@ Strategy / Signal identity 必须携带：
 
 - `strategy_name`
 - `strategy_version`
+- `strategy_config_hash`
 - `feature_version`
 - `feature_config_hash`
 - `timeframe`
@@ -1675,32 +1691,37 @@ Strategy / Signal identity 必须携带：
 规则：
 
 - `strategy_version` deterministic and required。
-- `params` 必须 canonicalized。
-- 推荐生成 `strategy_config_hash`。
+- `params` 必须 canonicalized。Mapping key 只允许 `str`；value 只允许 stable JSON-like values：`None`、`bool`、`int`、`str`、`Decimal`、`date`、`datetime`、enum、list/tuple、dict。禁止 float、set、`object()`、非 string key 和 arbitrary class instance；不得通过 `str()` 静默转换 unknown object。
+- `strategy_config_hash` 必须 deterministic，且 hash input 排除 `strategy_config_hash` 自身。
 - no runtime random version。
 - `raw_payload` not source-of-truth。
 
-### Repository / future migration contract
+### Repository / DB contract
 
-后续实现需要冻结：
+Stage I 已实现：
 
 - `SignalCandidateRepository`
-- `SignalEventRepository` or `SignalLifecycleRepository`
+- `SignalEventRepository`
 - `signal_candidates` table
 - `signal_events` table
 
 唯一约束：
 
 - `signal_id` unique。
-- optional unique: `strategy_name + strategy_version + instrument_id + timeframe + bar_ts + feature_version + feature_config_hash`。
+- `strategy_name + strategy_version + strategy_config_hash + instrument_id + timeframe + bar_ts + feature_version + feature_config_hash` unique。
+- `signal_events.event_key` unique。
+
+`SignalLifecycleEvent.event_key` 由 `signal_id + lifecycle_status + event_ts + event_reason` stable JSON + sha256 deterministic 生成。`raw_payload`、`created_at` 和 DB id 不参与 event key，也不参与 lifecycle event canonical equality。
 
 Canonical excludes：
 
 - `raw_payload`
 - `calculated_at`
 - `received_at`
+- `created_at`
+- DB id
 
-Stage I 不新增 repository、UoW entry、table、Alembic migration 或 schema test；这些只能在后续实现 stage 中进入。
+Stage I 已新增 `UnitOfWork.signal_candidates`、`UnitOfWork.signal_events` 和窄 `StrategySignalUnitOfWork` Protocol。Repository duplicate same canonical 返回 existing / no-op；duplicate different canonical 返回 typed `SignalCandidateConflictError` 或 `SignalLifecycleConflictError`，不得泄漏裸 `IntegrityError`。
 
 ### Replay / idempotency contract
 
@@ -1721,9 +1742,9 @@ Stage I 不新增 repository、UoW entry、table、Alembic migration 或 schema 
 - OMS does not consume `FeatureSnapshot` directly。
 - OMS / Risk / Execution 已存在不改变 Strategy 边界；Strategy 不得直接调用它们。
 
-### Stage I future tests
+### Stage I implementation tests
 
-未来实现必须覆盖：
+Stage I tests 覆盖：
 
 - deterministic `signal_id`。
 - HOLD side NONE。
@@ -1752,6 +1773,73 @@ Stage I does not implement：
 - portfolio optimization。
 - ML model serving。
 - cross-instrument strategy unless separately scoped。
+
+### signal_candidates
+
+Stage I 已新增 `signal_candidates` 表作为 persisted SignalCandidate facts ledger。
+
+字段：
+
+- `signal_id`
+- `strategy_name`
+- `strategy_version`
+- `strategy_config_hash`
+- `runtime_id`
+- `symbol`
+- `instrument_id`
+- `trade_instrument_id`
+- `exchange`
+- `trading_day`
+- `timeframe`
+- `bar_ts`
+- `feature_version`
+- `feature_config_hash`
+- `decision`
+- `side`
+- `position_side`
+- `confidence`
+- `strength`
+- `reason`
+- `expected_price`
+- `stop_loss`
+- `take_profit`
+- `holding_period_hint`
+- `tags`
+- `features_ref`
+- `raw_payload`
+- `created_at`
+
+约束和索引：
+
+- `UNIQUE(signal_id)`，名称为 `uq_signal_candidates_signal_id`
+- `UNIQUE(strategy_name, strategy_version, strategy_config_hash, instrument_id, timeframe, bar_ts, feature_version, feature_config_hash)`，名称为 `uq_signal_candidates_strategy_feature_identity`
+- `(strategy_name, strategy_version)` 复合索引
+- `(exchange, instrument_id, trading_day)` 复合索引
+- `(timeframe, bar_ts)` 复合索引
+- `signal_id` 索引
+
+Canonical payload 包含 strategy identity、feature identity、decision / side / position_side、confidence / strength / reason、expected_price / stop_loss / take_profit、holding_period_hint、tags 和 features_ref。`raw_payload`、`created_at`、`received_at`、`calculated_at` 和 DB id 不参与 canonical equality。
+
+### signal_events
+
+Stage I 已新增 `signal_events` 表作为 Signal lifecycle event ledger。
+
+字段：
+
+- `id`
+- `signal_id`
+- `lifecycle_status`
+- `event_reason`
+- `event_ts`
+- `raw_payload`
+- `created_at`
+
+索引：
+
+- `signal_id` 索引
+- `(signal_id, created_at)` 复合索引
+
+`signal_events` 只记录 lifecycle status，不创建 Order、不写 Risk/OMS/Execution facts。`raw_payload` diagnostic only。
 
 ### feature_snapshots
 

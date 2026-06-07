@@ -1,8 +1,9 @@
 import hashlib
 import json
 from collections.abc import Mapping
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
+from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -27,6 +28,12 @@ from futures_mvp.domain.enums import (
     PositionManagerResultStatus,
     RiskDecision,
     SettlementResultStatus,
+    SignalDecisionType,
+    SignalLifecycleStatus,
+    SignalPositionSide,
+    SignalResultStatus,
+    SignalSide,
+    StrategyResultStatus,
 )
 
 
@@ -598,6 +605,359 @@ class FeatureSnapshot(DomainModel):
 class FeatureBuildResult(DomainModel):
     status: FeatureResultStatus
     snapshot: FeatureSnapshot | None = None
+    reason: str | None = None
+
+
+def _canonical_json_value(value: Any) -> Any:
+    if value is None or isinstance(value, bool | int | str):
+        return value
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, datetime):
+        if value.tzinfo is not None and value.utcoffset() is not None:
+            value = value.astimezone(UTC).replace(tzinfo=None)
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, tuple | list):
+        return [_canonical_json_value(item) for item in value]
+    if isinstance(value, Mapping):
+        for key in value:
+            if not isinstance(key, str):
+                raise ValueError("canonical mapping keys must be strings")
+        return {
+            key: _canonical_json_value(value[key])
+            for key in sorted(value.keys())
+        }
+    raise ValueError(f"unsupported canonical JSON value type: {type(value).__name__}")
+
+
+def stable_json_sha256(payload: Mapping[str, Any]) -> str:
+    encoded = json.dumps(
+        _canonical_json_value(payload),
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+class StrategyConfig(DomainModel):
+    strategy_name: str
+    strategy_version: str
+    strategy_config_hash: str
+    feature_version: str
+    feature_config_hash: str
+    timeframe: BarTimeframe
+    params: dict[str, Any] = Field(default_factory=dict)
+    allow_position_context: bool = False
+    allow_market_snapshot: bool = False
+    enabled: bool = True
+
+    @field_validator(
+        "strategy_name",
+        "strategy_version",
+        "strategy_config_hash",
+        "feature_version",
+        "feature_config_hash",
+    )
+    @classmethod
+    def _required_identity(cls, value: str, info: Any) -> str:
+        return require_non_empty_string(value, field_name=info.field_name)
+
+    @field_validator("params", mode="before")
+    @classmethod
+    def _params_dict(cls, value: Any) -> dict[str, Any]:
+        if value is None:
+            return {}
+        if not isinstance(value, Mapping):
+            raise ValueError("params must be a mapping")
+        return dict(_canonical_json_value(value))
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        strategy_name: str,
+        strategy_version: str,
+        feature_version: str,
+        feature_config_hash: str,
+        timeframe: BarTimeframe,
+        params: Mapping[str, Any] | None = None,
+        allow_position_context: bool = False,
+        allow_market_snapshot: bool = False,
+        enabled: bool = True,
+    ) -> "StrategyConfig":
+        payload = cls.hash_payload(
+            strategy_name=strategy_name,
+            strategy_version=strategy_version,
+            feature_version=feature_version,
+            feature_config_hash=feature_config_hash,
+            timeframe=timeframe,
+            params=params or {},
+            allow_position_context=allow_position_context,
+            allow_market_snapshot=allow_market_snapshot,
+            enabled=enabled,
+        )
+        return cls(
+            strategy_name=strategy_name,
+            strategy_version=strategy_version,
+            strategy_config_hash=stable_json_sha256(payload),
+            feature_version=feature_version,
+            feature_config_hash=feature_config_hash,
+            timeframe=timeframe,
+            params=dict(_canonical_json_value(params or {})),
+            allow_position_context=allow_position_context,
+            allow_market_snapshot=allow_market_snapshot,
+            enabled=enabled,
+        )
+
+    @staticmethod
+    def hash_payload(
+        *,
+        strategy_name: str,
+        strategy_version: str,
+        feature_version: str,
+        feature_config_hash: str,
+        timeframe: BarTimeframe,
+        params: Mapping[str, Any],
+        allow_position_context: bool,
+        allow_market_snapshot: bool,
+        enabled: bool,
+    ) -> dict[str, Any]:
+        return {
+            "allow_market_snapshot": allow_market_snapshot,
+            "allow_position_context": allow_position_context,
+            "enabled": enabled,
+            "feature_config_hash": feature_config_hash,
+            "feature_version": feature_version,
+            "params": _canonical_json_value(params),
+            "strategy_name": strategy_name,
+            "strategy_version": strategy_version,
+            "timeframe": timeframe.value,
+        }
+
+    def config_hash(self) -> str:
+        return stable_json_sha256(
+            self.hash_payload(
+                strategy_name=self.strategy_name,
+                strategy_version=self.strategy_version,
+                feature_version=self.feature_version,
+                feature_config_hash=self.feature_config_hash,
+                timeframe=self.timeframe,
+                params=self.params,
+                allow_position_context=self.allow_position_context,
+                allow_market_snapshot=self.allow_market_snapshot,
+                enabled=self.enabled,
+            )
+        )
+
+    @model_validator(mode="after")
+    def _valid_strategy_config_hash(self) -> "StrategyConfig":
+        if self.strategy_config_hash != self.config_hash():
+            raise ValueError("strategy_config_hash must match deterministic config hash")
+        return self
+
+
+class PositionContext(DomainModel):
+    positions: tuple[Mapping[str, Any], ...] = ()
+
+
+class PortfolioContext(DomainModel):
+    portfolio_id: str | None = None
+    exposures: Mapping[str, Decimal] = Field(default_factory=dict)
+
+    @field_validator("exposures", mode="before")
+    @classmethod
+    def _decimal_exposures(cls, value: Any) -> Mapping[str, Decimal]:
+        if value is None:
+            return {}
+        if not isinstance(value, Mapping):
+            raise ValueError("exposures must be a mapping")
+        return {str(key): require_decimal(item) for key, item in value.items()}
+
+
+class CalendarSessionContext(DomainModel):
+    exchange: str
+    trading_day: date
+    session_name: str | None = None
+    is_trading_session: bool | None = None
+
+    @field_validator("exchange")
+    @classmethod
+    def _required_exchange(cls, value: str) -> str:
+        return require_non_empty_string(value, field_name="exchange")
+
+
+class StrategyContext(DomainModel):
+    feature_snapshot: FeatureSnapshot
+    market_snapshot: MarketDataSnapshot | None = None
+    position_context: PositionContext | None = None
+    portfolio_context: PortfolioContext | None = None
+    calendar_session_context: CalendarSessionContext | None = None
+    strategy_config: StrategyConfig
+
+    @model_validator(mode="after")
+    def _valid_context(self) -> "StrategyContext":
+        snapshot = self.feature_snapshot
+        config = self.strategy_config
+        if snapshot.feature_version != config.feature_version:
+            raise ValueError("StrategyContext feature_version must match StrategyConfig")
+        if snapshot.feature_config_hash != config.feature_config_hash:
+            raise ValueError("StrategyContext feature_config_hash must match StrategyConfig")
+        if snapshot.timeframe is not config.timeframe:
+            raise ValueError("StrategyContext timeframe must match StrategyConfig")
+        if self.market_snapshot is not None and not config.allow_market_snapshot:
+            raise ValueError("market_snapshot is not allowed by StrategyConfig")
+        if self.position_context is not None and not config.allow_position_context:
+            raise ValueError("position_context is not allowed by StrategyConfig")
+        return self
+
+
+class SignalDecision(DomainModel):
+    decision: SignalDecisionType
+    side: SignalSide
+    strength: Decimal
+    confidence: Decimal
+    reason: str | None = None
+    signal_id: str
+    strategy_name: str
+    strategy_version: str
+    strategy_config_hash: str
+    runtime_id: str
+    symbol: str
+    instrument_id: str
+    trade_instrument_id: str
+    exchange: str
+    trading_day: date
+    timeframe: BarTimeframe
+    bar_ts: datetime
+    feature_version: str
+    feature_config_hash: str
+    position_side: SignalPositionSide = SignalPositionSide.NONE
+    expected_price: Decimal | None = None
+    stop_loss: Decimal | None = None
+    take_profit: Decimal | None = None
+    tags: dict[str, Any] = Field(default_factory=dict)
+    raw_payload: dict[str, Any] | None = None
+
+    @field_validator(
+        "strength",
+        "confidence",
+        "expected_price",
+        "stop_loss",
+        "take_profit",
+        mode="before",
+    )
+    @classmethod
+    def _decimal_or_none(cls, value: Any) -> Decimal | None:
+        if value is None:
+            return None
+        return require_decimal(value)
+
+    @field_validator(
+        "signal_id",
+        "strategy_name",
+        "strategy_version",
+        "strategy_config_hash",
+        "runtime_id",
+        "symbol",
+        "instrument_id",
+        "trade_instrument_id",
+        "exchange",
+        "feature_version",
+        "feature_config_hash",
+    )
+    @classmethod
+    def _required_identity(cls, value: str, info: Any) -> str:
+        return require_non_empty_string(value, field_name=info.field_name)
+
+    @model_validator(mode="after")
+    def _valid_signal_decision(self) -> "SignalDecision":
+        if self.confidence < 0 or self.confidence > 1:
+            raise ValueError("confidence must be between 0 and 1")
+        if self.decision is SignalDecisionType.HOLD and self.side is not SignalSide.NONE:
+            raise ValueError("HOLD decision requires side NONE")
+        if self.decision is not SignalDecisionType.HOLD:
+            if self.side is SignalSide.NONE:
+                raise ValueError("non-HOLD decision requires BUY or SELL side")
+            if self.expected_price is None or self.expected_price <= 0:
+                raise ValueError("non-HOLD decision requires expected_price greater than 0")
+        if self.expected_price is not None:
+            require_positive_decimal(self.expected_price, field_name="expected_price")
+        if self.stop_loss is not None:
+            require_positive_decimal(self.stop_loss, field_name="stop_loss")
+        if self.take_profit is not None:
+            require_positive_decimal(self.take_profit, field_name="take_profit")
+        return self
+
+
+class SignalCandidate(SignalDecision):
+    holding_period_hint: str | None = None
+    features_ref: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def _valid_features_ref(self) -> "SignalCandidate":
+        required = {
+            "symbol": self.symbol,
+            "instrument_id": self.instrument_id,
+            "trade_instrument_id": self.trade_instrument_id,
+            "exchange": self.exchange,
+            "trading_day": self.trading_day.isoformat(),
+            "timeframe": self.timeframe.value,
+            "bar_ts": self.bar_ts.isoformat(),
+            "feature_version": self.feature_version,
+            "feature_config_hash": self.feature_config_hash,
+        }
+        for key, expected in required.items():
+            actual = self.features_ref.get(key)
+            if key == "bar_ts" and isinstance(actual, str):
+                actual_ts = datetime.fromisoformat(actual)
+                expected_ts = self.bar_ts
+                if actual_ts.tzinfo is not None and expected_ts.tzinfo is None:
+                    actual_ts = actual_ts.replace(tzinfo=None)
+                if actual_ts != expected_ts:
+                    raise ValueError(f"features_ref must propagate {key}")
+                continue
+            if actual != expected:
+                raise ValueError(f"features_ref must propagate {key}")
+        return self
+
+
+class SignalLifecycleEvent(DomainModel):
+    id: str | None = None
+    event_key: str
+    signal_id: str
+    lifecycle_status: SignalLifecycleStatus
+    event_reason: str | None = None
+    event_ts: datetime
+    raw_payload: dict[str, Any] | None = None
+    created_at: datetime | None = None
+
+    @field_validator("event_key", "signal_id")
+    @classmethod
+    def _required_identity(cls, value: str, info: Any) -> str:
+        return require_non_empty_string(value, field_name=info.field_name)
+
+
+class TriggerResult(DomainModel):
+    status: SignalResultStatus
+    signal_id: str
+    reason: str | None = None
+    intent: dict[str, Any] | None = None
+
+    @field_validator("signal_id")
+    @classmethod
+    def _required_signal_id(cls, value: str) -> str:
+        return require_non_empty_string(value, field_name="signal_id")
+
+
+class StrategyResult(DomainModel):
+    status: StrategyResultStatus
+    decision: SignalDecision | None = None
+    candidate: SignalCandidate | None = None
     reason: str | None = None
 
 

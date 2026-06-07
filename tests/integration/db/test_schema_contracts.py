@@ -30,6 +30,8 @@ from futures_mvp.db.models import (
     Position,
     PositionEvent,
     SettlementSnapshot,
+    SignalCandidate,
+    SignalEvent,
     Trade,
 )
 from futures_mvp.domain.enums import SettlementResultStatus
@@ -69,6 +71,8 @@ def test_required_tables_are_declared() -> None:
         "market_ticks",
         "market_bars",
         "feature_snapshots",
+        "signal_candidates",
+        "signal_events",
         "risk_events",
     }.issubset(Base.metadata.tables)
 
@@ -380,6 +384,85 @@ def test_feature_snapshots_match_stage_h_feature_snapshot_contract() -> None:
         "ix_feature_snapshots_feature_config_hash",
         "ix_feature_snapshots_exchange_instrument_day",
     }.issubset({index.name for index in FeatureSnapshot.__table__.indexes})
+
+
+def test_signal_candidates_match_stage_i_signal_contract() -> None:
+    assert _unique_constraint_columns(SignalCandidate, "uq_signal_candidates_signal_id") == (
+        "signal_id",
+    )
+    assert _unique_constraint_columns(
+        SignalCandidate,
+        "uq_signal_candidates_strategy_feature_identity",
+    ) == (
+        "strategy_name",
+        "strategy_version",
+        "strategy_config_hash",
+        "instrument_id",
+        "timeframe",
+        "bar_ts",
+        "feature_version",
+        "feature_config_hash",
+    )
+    for column_name in [
+        "signal_id",
+        "strategy_name",
+        "strategy_version",
+        "strategy_config_hash",
+        "runtime_id",
+        "symbol",
+        "instrument_id",
+        "trade_instrument_id",
+        "exchange",
+        "trading_day",
+        "timeframe",
+        "bar_ts",
+        "feature_version",
+        "feature_config_hash",
+        "decision",
+        "side",
+        "position_side",
+        "confidence",
+        "strength",
+        "reason",
+        "expected_price",
+        "stop_loss",
+        "take_profit",
+        "holding_period_hint",
+        "tags",
+        "features_ref",
+        "raw_payload",
+        "created_at",
+    ]:
+        assert column_name in SignalCandidate.__table__.columns
+    assert isinstance(SignalCandidate.__table__.columns["confidence"].type, Numeric)
+    assert isinstance(SignalCandidate.__table__.columns["tags"].type, JSON)
+    assert isinstance(SignalCandidate.__table__.columns["features_ref"].type, JSON)
+    assert {
+        "ix_signal_candidates_strategy_version",
+        "ix_signal_candidates_exchange_instrument_day",
+        "ix_signal_candidates_timeframe_bar_ts",
+        "ix_signal_candidates_signal_id",
+    }.issubset({index.name for index in SignalCandidate.__table__.indexes})
+
+
+def test_signal_events_match_stage_i_lifecycle_contract() -> None:
+    assert _unique_constraint_columns(SignalEvent, "uq_signal_events_event_key") == ("event_key",)
+    for column_name in [
+        "id",
+        "event_key",
+        "signal_id",
+        "lifecycle_status",
+        "event_reason",
+        "event_ts",
+        "raw_payload",
+        "created_at",
+    ]:
+        assert column_name in SignalEvent.__table__.columns
+    assert isinstance(SignalEvent.__table__.columns["raw_payload"].type, JSON)
+    assert {
+        "ix_signal_events_signal_id",
+        "ix_signal_events_signal_created",
+    }.issubset({index.name for index in SignalEvent.__table__.indexes})
 
 
 def test_stage_f_migration_backfills_legacy_calculation_key() -> None:
