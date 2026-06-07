@@ -1,12 +1,13 @@
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from types import TracebackType
 from typing import Protocol, runtime_checkable
 
-from futures_mvp.domain.enums import EventSource, OrderStatus
+from futures_mvp.domain.enums import BarTimeframe, EventSource, OrderStatus
 from futures_mvp.domain.errors import FuturesMvpError
 from futures_mvp.domain.models import (
     AccountSnapshot,
+    Bar,
     MarginSnapshot,
     OrderEvent,
     OrderRequest,
@@ -15,6 +16,7 @@ from futures_mvp.domain.models import (
     Position,
     PositionEvent,
     SettlementSnapshot,
+    Tick,
     Trade,
 )
 
@@ -61,6 +63,10 @@ class PnLSnapshotConflictError(RepositoryError):
 
 class SettlementSnapshotConflictError(RepositoryError):
     """Raised when a settlement account/day is reused with different facts."""
+
+
+class MarketDataConflictError(RepositoryError):
+    """Raised when a market data identity is reused with different facts."""
 
 
 @runtime_checkable
@@ -243,6 +249,65 @@ class SettlementSnapshotRepository(Protocol):
 
 
 @runtime_checkable
+class MarketTickRepository(Protocol):
+    def append_tick(self, tick: Tick) -> Tick: ...
+
+    def get_by_identity(
+        self,
+        exchange: str,
+        instrument_id: str,
+        ts: datetime,
+        source: str,
+    ) -> Tick | None: ...
+
+    def list_by_instrument(
+        self,
+        exchange: str,
+        instrument_id: str,
+        start_ts: datetime,
+        end_ts: datetime,
+    ) -> list[Tick]: ...
+
+    def list_by_trading_day(
+        self,
+        exchange: str,
+        instrument_id: str,
+        trading_day: date,
+    ) -> list[Tick]: ...
+
+
+@runtime_checkable
+class MarketBarRepository(Protocol):
+    def append_bar(self, bar: Bar) -> Bar: ...
+
+    def get_by_identity(
+        self,
+        exchange: str,
+        instrument_id: str,
+        timeframe: BarTimeframe,
+        bar_ts: datetime,
+        source: str,
+    ) -> Bar | None: ...
+
+    def list_by_instrument(
+        self,
+        exchange: str,
+        instrument_id: str,
+        timeframe: BarTimeframe,
+        start_bar_ts: datetime,
+        end_bar_ts: datetime,
+    ) -> list[Bar]: ...
+
+    def list_by_trading_day(
+        self,
+        exchange: str,
+        instrument_id: str,
+        timeframe: BarTimeframe,
+        trading_day: date,
+    ) -> list[Bar]: ...
+
+
+@runtime_checkable
 class UnitOfWork(Protocol):
     orders: OrderRepository
     order_events: OrderEventRepository
@@ -253,12 +318,33 @@ class UnitOfWork(Protocol):
     pnl_snapshots: PnLSnapshotRepository
     account_snapshots: AccountSnapshotRepository
     settlement_snapshots: SettlementSnapshotRepository
+    market_ticks: MarketTickRepository
+    market_bars: MarketBarRepository
 
     def commit(self) -> None: ...
 
     def rollback(self) -> None: ...
 
     def __enter__(self) -> "UnitOfWork": ...
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> bool | None: ...
+
+
+@runtime_checkable
+class MarketDataUnitOfWork(Protocol):
+    market_ticks: MarketTickRepository
+    market_bars: MarketBarRepository
+
+    def commit(self) -> None: ...
+
+    def rollback(self) -> None: ...
+
+    def __enter__(self) -> "MarketDataUnitOfWork": ...
 
     def __exit__(
         self,

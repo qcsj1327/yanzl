@@ -14,6 +14,8 @@ from alembic import command
 from futures_mvp.db.config import settings
 from futures_mvp.db.models import AccountSnapshot as AccountSnapshotOrm
 from futures_mvp.db.models import MarginSnapshot as MarginSnapshotOrm
+from futures_mvp.db.models import MarketBar as MarketBarOrm
+from futures_mvp.db.models import MarketTick as MarketTickOrm
 from futures_mvp.db.models import Order, Position
 from futures_mvp.db.models import OrderEvent as OrderEventOrm
 from futures_mvp.db.models import PnLSnapshot as PnLSnapshotOrm
@@ -23,6 +25,8 @@ from futures_mvp.db.models import Trade as TradeOrm
 from futures_mvp.db.repositories import (
     SQLAlchemyAccountSnapshotRepository,
     SQLAlchemyMarginSnapshotRepository,
+    SQLAlchemyMarketBarRepository,
+    SQLAlchemyMarketTickRepository,
     SQLAlchemyOrderEventRepository,
     SQLAlchemyOrderRepository,
     SQLAlchemyPnLSnapshotRepository,
@@ -33,10 +37,12 @@ from futures_mvp.db.repositories import (
 )
 from futures_mvp.db.unit_of_work import SQLAlchemyUnitOfWork
 from futures_mvp.domain.enums import (
+    BarTimeframe,
     Direction,
     EventSource,
     MarginPriceBasis,
     MarginResultStatus,
+    MarketDataResultStatus,
     Offset,
     OrderStatus,
     OrderType,
@@ -47,6 +53,7 @@ from futures_mvp.domain.enums import (
 )
 from futures_mvp.domain.models import (
     AccountContext,
+    Bar,
     CloseTradeContext,
     MarginRule,
     MarginSnapshot,
@@ -58,12 +65,14 @@ from futures_mvp.domain.models import (
     SettlementContext,
     SettlementPrice,
     SettlementSnapshot,
+    Tick,
     Trade,
 )
 from futures_mvp.interfaces.repositories import (
     EventAlreadyExistsError,
     IdempotencyConflictError,
     MarginSnapshotConflictError,
+    MarketDataConflictError,
     OptimisticLockError,
     PnLSnapshotConflictError,
     PositionEventConflictError,
@@ -92,6 +101,8 @@ def db_session_factory() -> Iterator[sessionmaker[Session]]:
 @pytest.fixture(autouse=True)
 def clean_orders(db_session_factory: sessionmaker[Session]) -> Iterator[None]:
     with db_session_factory.begin() as session:
+        session.execute(delete(MarketBarOrm))
+        session.execute(delete(MarketTickOrm))
         session.execute(delete(SettlementSnapshotOrm))
         session.execute(delete(AccountSnapshotOrm))
         session.execute(delete(PnLSnapshotOrm))
@@ -103,6 +114,8 @@ def clean_orders(db_session_factory: sessionmaker[Session]) -> Iterator[None]:
         session.execute(delete(Order))
     yield
     with db_session_factory.begin() as session:
+        session.execute(delete(MarketBarOrm))
+        session.execute(delete(MarketTickOrm))
         session.execute(delete(SettlementSnapshotOrm))
         session.execute(delete(AccountSnapshotOrm))
         session.execute(delete(PnLSnapshotOrm))
@@ -136,6 +149,59 @@ def _order_request(
         order_type=OrderType.LIMIT,
         limit_price=limit_price,
         quantity=quantity,
+    )
+
+
+def _market_tick(
+    ts: datetime | None = None,
+    *,
+    price: Decimal = Decimal("500"),
+    raw_payload: dict[str, object] | None = None,
+) -> Tick:
+    return Tick(
+        symbol="au",
+        instrument_id="au2606",
+        trade_instrument_id="au2606",
+        exchange="SHFE",
+        trading_day=date(2026, 6, 7),
+        ts=ts or datetime(2026, 6, 7, 9, tzinfo=UTC),
+        price=price,
+        volume=Decimal("1"),
+        turnover=Decimal("500"),
+        open_interest=Decimal("10"),
+        bid_price_1=Decimal("499"),
+        ask_price_1=Decimal("501"),
+        bid_volume_1=Decimal("2"),
+        ask_volume_1=Decimal("3"),
+        source="adapter",
+        raw_payload=raw_payload,
+    )
+
+
+def _market_bar(
+    bar_ts: datetime | None = None,
+    *,
+    close: Decimal = Decimal("501"),
+    raw_payload: dict[str, object] | None = None,
+) -> Bar:
+    return Bar(
+        symbol="au",
+        instrument_id="au2606",
+        trade_instrument_id="au2606",
+        exchange="SHFE",
+        trading_day=date(2026, 6, 7),
+        timeframe=BarTimeframe.M1,
+        bar_ts=bar_ts or datetime(2026, 6, 7, 9, tzinfo=UTC),
+        open=Decimal("500"),
+        high=Decimal("505"),
+        low=Decimal("499"),
+        close=close,
+        volume=Decimal("10"),
+        turnover=Decimal("5000"),
+        open_interest=Decimal("20"),
+        source="adapter",
+        quality_status=MarketDataResultStatus.ACCEPTED,
+        raw_payload=raw_payload,
     )
 
 
@@ -2937,3 +3003,77 @@ def test_settlement_replay_detects_live_position_divergence(
     assert position_after is not None
     assert position_after.long_yesterday_qty == Decimal("999.00000000")
     assert position_after.version == 1
+
+
+def test_market_tick_repository_round_trip_lists_and_idempotency(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        repo = SQLAlchemyMarketTickRepository(session)
+        tick = _market_tick(raw_payload={"diagnostic": "first"})
+        persisted = repo.append_tick(tick)
+        duplicate = repo.append_tick(tick.model_copy(update={"raw_payload": {"changed": True}}))
+        listed_by_instrument = repo.list_by_instrument(
+            "SHFE",
+            "au2606",
+            datetime(2026, 6, 7, 8, tzinfo=UTC),
+            datetime(2026, 6, 7, 10, tzinfo=UTC),
+        )
+        listed_by_day = repo.list_by_trading_day("SHFE", "au2606", date(2026, 6, 7))
+
+    assert persisted == tick
+    assert duplicate == tick
+    assert listed_by_instrument == [tick]
+    assert listed_by_day == [tick]
+
+
+def test_market_tick_repository_conflict_excludes_raw_payload(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        repo = SQLAlchemyMarketTickRepository(session)
+        tick = _market_tick(raw_payload={"diagnostic": "first"})
+        repo.append_tick(tick)
+
+        with pytest.raises(MarketDataConflictError):
+            repo.append_tick(tick.model_copy(update={"price": Decimal("501")}))
+
+
+def test_market_bar_repository_round_trip_lists_and_idempotency(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        repo = SQLAlchemyMarketBarRepository(session)
+        bar = _market_bar(raw_payload={"diagnostic": "first"})
+        persisted = repo.append_bar(bar)
+        duplicate = repo.append_bar(bar.model_copy(update={"raw_payload": {"changed": True}}))
+        listed_by_instrument = repo.list_by_instrument(
+            "SHFE",
+            "au2606",
+            BarTimeframe.M1,
+            datetime(2026, 6, 7, 8, tzinfo=UTC),
+            datetime(2026, 6, 7, 10, tzinfo=UTC),
+        )
+        listed_by_day = repo.list_by_trading_day(
+            "SHFE",
+            "au2606",
+            BarTimeframe.M1,
+            date(2026, 6, 7),
+        )
+
+    assert persisted == bar
+    assert duplicate == bar
+    assert listed_by_instrument == [bar]
+    assert listed_by_day == [bar]
+
+
+def test_market_bar_repository_conflict_excludes_raw_payload(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        repo = SQLAlchemyMarketBarRepository(session)
+        bar = _market_bar(raw_payload={"diagnostic": "first"})
+        repo.append_bar(bar)
+
+        with pytest.raises(MarketDataConflictError):
+            repo.append_bar(bar.model_copy(update={"close": Decimal("502")}))

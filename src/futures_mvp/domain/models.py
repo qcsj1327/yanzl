@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
@@ -6,11 +7,14 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from futures_mvp.domain.decimal import require_decimal
 from futures_mvp.domain.enums import (
+    BarTimeframe,
     Direction,
     EventApplicationStatus,
     EventSource,
     MarginPriceBasis,
     MarginResultStatus,
+    MarketDataEventType,
+    MarketDataResultStatus,
     Offset,
     OrderStatus,
     OrderType,
@@ -35,6 +39,12 @@ def require_positive_decimal(value: Decimal, *, field_name: str) -> Decimal:
 def require_non_negative_decimal(value: Decimal, *, field_name: str) -> Decimal:
     if value < 0:
         raise ValueError(f"{field_name} must be greater than or equal to 0")
+    return value
+
+
+def require_non_empty_string(value: str, *, field_name: str) -> str:
+    if not value:
+        raise ValueError(f"{field_name} is required")
     return value
 
 
@@ -106,6 +116,295 @@ class OrderEventApplicationResult(DomainModel):
     status: EventApplicationStatus
     order: OrderState
     reason: str | None = None
+
+
+class Tick(DomainModel):
+    symbol: str
+    instrument_id: str
+    trade_instrument_id: str
+    exchange: str
+    trading_day: date
+    ts: datetime
+    price: Decimal
+    volume: Decimal
+    turnover: Decimal
+    open_interest: Decimal
+    bid_price_1: Decimal | None = None
+    ask_price_1: Decimal | None = None
+    bid_volume_1: Decimal | None = None
+    ask_volume_1: Decimal | None = None
+    source: str
+    raw_payload: dict[str, Any] | None = None
+
+    @field_validator(
+        "price",
+        "volume",
+        "turnover",
+        "open_interest",
+        "bid_price_1",
+        "ask_price_1",
+        "bid_volume_1",
+        "ask_volume_1",
+        mode="before",
+    )
+    @classmethod
+    def _decimal_only(cls, value: Any) -> Decimal | None:
+        if value is None:
+            return None
+        return require_decimal(value)
+
+    @field_validator("symbol", "instrument_id", "trade_instrument_id", "exchange", "source")
+    @classmethod
+    def _required_identity(cls, value: str, info: Any) -> str:
+        return require_non_empty_string(value, field_name=info.field_name)
+
+    @field_validator("price", "bid_price_1", "ask_price_1")
+    @classmethod
+    def _positive_price(cls, value: Decimal | None, info: Any) -> Decimal | None:
+        if value is None:
+            return None
+        return require_positive_decimal(value, field_name=info.field_name)
+
+    @field_validator("volume", "turnover", "open_interest", "bid_volume_1", "ask_volume_1")
+    @classmethod
+    def _non_negative_quantity(cls, value: Decimal | None, info: Any) -> Decimal | None:
+        if value is None:
+            return None
+        return require_non_negative_decimal(value, field_name=info.field_name)
+
+    @model_validator(mode="after")
+    def _bid_price_not_above_ask(self) -> "Tick":
+        if (
+            self.bid_price_1 is not None
+            and self.ask_price_1 is not None
+            and self.bid_price_1 > self.ask_price_1
+        ):
+            raise ValueError("bid_price_1 must be less than or equal to ask_price_1")
+        return self
+
+
+class Bar(DomainModel):
+    symbol: str
+    instrument_id: str
+    trade_instrument_id: str
+    exchange: str
+    trading_day: date
+    timeframe: BarTimeframe
+    bar_ts: datetime
+    open: Decimal
+    high: Decimal
+    low: Decimal
+    close: Decimal
+    volume: Decimal
+    turnover: Decimal
+    open_interest: Decimal
+    source: str
+    quality_status: MarketDataResultStatus
+    raw_payload: dict[str, Any] | None = None
+
+    @field_validator(
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "turnover",
+        "open_interest",
+        mode="before",
+    )
+    @classmethod
+    def _decimal_only(cls, value: Any) -> Decimal:
+        return require_decimal(value)
+
+    @field_validator("symbol", "instrument_id", "trade_instrument_id", "exchange", "source")
+    @classmethod
+    def _required_identity(cls, value: str, info: Any) -> str:
+        return require_non_empty_string(value, field_name=info.field_name)
+
+    @field_validator("open", "high", "low", "close")
+    @classmethod
+    def _positive_price(cls, value: Decimal, info: Any) -> Decimal:
+        return require_positive_decimal(value, field_name=info.field_name)
+
+    @field_validator("volume", "turnover", "open_interest")
+    @classmethod
+    def _non_negative_quantity(cls, value: Decimal, info: Any) -> Decimal:
+        return require_non_negative_decimal(value, field_name=info.field_name)
+
+    @model_validator(mode="after")
+    def _valid_ohlc(self) -> "Bar":
+        if self.high < max(self.open, self.close, self.low):
+            raise ValueError("high must be greater than or equal to open, close, and low")
+        if self.low > min(self.open, self.close, self.high):
+            raise ValueError("low must be less than or equal to open, close, and high")
+        return self
+
+
+class DataQualityResult(DomainModel):
+    status: MarketDataResultStatus
+    event_type: MarketDataEventType | None = None
+    instrument_id: str | None = None
+    exchange: str | None = None
+    trading_day: date | None = None
+    ts: datetime | None = None
+    reason: str | None = None
+
+
+class MarketDataEvent(DomainModel):
+    event_id: str
+    event_type: MarketDataEventType
+    instrument_id: str
+    exchange: str
+    trading_day: date
+    ts: datetime
+    source: str
+    result: DataQualityResult
+    tick: Tick | None = None
+    bar: Bar | None = None
+
+    @field_validator("event_id", "instrument_id", "exchange", "source")
+    @classmethod
+    def _required_identity(cls, value: str, info: Any) -> str:
+        return require_non_empty_string(value, field_name=info.field_name)
+
+    @model_validator(mode="after")
+    def _valid_event_envelope(self) -> "MarketDataEvent":
+        self._validate_result_compatibility()
+        self._validate_payload_shape()
+        self._validate_result_identity()
+        return self
+
+    def _validate_result_compatibility(self) -> None:
+        expected_statuses = {
+            MarketDataEventType.TICK_ACCEPTED: {MarketDataResultStatus.ACCEPTED},
+            MarketDataEventType.BAR_ACCEPTED: {MarketDataResultStatus.ACCEPTED},
+            MarketDataEventType.TICK_REJECTED: _MARKET_DATA_REJECTED_STATUSES,
+            MarketDataEventType.BAR_REJECTED: _MARKET_DATA_REJECTED_STATUSES,
+            MarketDataEventType.DUPLICATE: {MarketDataResultStatus.DUPLICATE},
+            MarketDataEventType.GAP_DETECTED: {MarketDataResultStatus.GAP_DETECTED},
+            MarketDataEventType.ERROR: {MarketDataResultStatus.ERROR},
+        }
+        if self.result.status not in expected_statuses[self.event_type]:
+            raise ValueError("event_type and result.status are incompatible")
+        if self.result.event_type is not None and self.result.event_type is not self.event_type:
+            raise ValueError("event_type and result.event_type must match")
+
+    def _validate_payload_shape(self) -> None:
+        if self.tick is not None and self.bar is not None:
+            raise ValueError("MarketDataEvent cannot contain both tick and bar")
+        if self.event_type in {
+            MarketDataEventType.TICK_ACCEPTED,
+            MarketDataEventType.TICK_REJECTED,
+        }:
+            if self.tick is None or self.bar is not None:
+                raise ValueError("tick event requires tick payload only")
+            self._validate_tick_identity(self.tick)
+        elif self.event_type in {
+            MarketDataEventType.BAR_ACCEPTED,
+            MarketDataEventType.BAR_REJECTED,
+        }:
+            if self.bar is None or self.tick is not None:
+                raise ValueError("bar event requires bar payload only")
+            self._validate_bar_identity(self.bar)
+        elif self.tick is not None:
+            self._validate_tick_identity(self.tick)
+        elif self.bar is not None:
+            self._validate_bar_identity(self.bar)
+
+    def _validate_tick_identity(self, tick: Tick) -> None:
+        if (
+            self.instrument_id != tick.instrument_id
+            or self.exchange != tick.exchange
+            or self.trading_day != tick.trading_day
+            or self.ts != tick.ts
+            or self.source != tick.source
+        ):
+            raise ValueError("MarketDataEvent identity must match tick payload")
+
+    def _validate_bar_identity(self, bar: Bar) -> None:
+        if (
+            self.instrument_id != bar.instrument_id
+            or self.exchange != bar.exchange
+            or self.trading_day != bar.trading_day
+            or self.ts != bar.bar_ts
+            or self.source != bar.source
+        ):
+            raise ValueError("MarketDataEvent identity must match bar payload")
+
+    def _validate_result_identity(self) -> None:
+        if (
+            self.result.instrument_id is not None
+            and self.result.instrument_id != self.instrument_id
+        ):
+            raise ValueError("MarketDataEvent result instrument_id must match envelope")
+        if self.result.exchange is not None and self.result.exchange != self.exchange:
+            raise ValueError("MarketDataEvent result exchange must match envelope")
+        if self.result.trading_day is not None and self.result.trading_day != self.trading_day:
+            raise ValueError("MarketDataEvent result trading_day must match envelope")
+        if self.result.ts is not None and self.result.ts != self.ts:
+            raise ValueError("MarketDataEvent result ts must match envelope")
+
+
+class MarketDataSnapshot(DomainModel):
+    symbol: str
+    instrument_id: str
+    trade_instrument_id: str
+    exchange: str
+    trading_day: date
+    as_of_ts: datetime
+    latest_tick: Tick | None = None
+    latest_bars: Mapping[BarTimeframe, Bar]
+    quality_status: MarketDataResultStatus
+
+    @field_validator("symbol", "instrument_id", "trade_instrument_id", "exchange")
+    @classmethod
+    def _required_identity(cls, value: str, info: Any) -> str:
+        return require_non_empty_string(value, field_name=info.field_name)
+
+    @model_validator(mode="after")
+    def _valid_market_view(self) -> "MarketDataSnapshot":
+        if self.latest_tick is not None:
+            self._validate_tick_view(self.latest_tick)
+        for timeframe, bar in self.latest_bars.items():
+            if timeframe is not bar.timeframe:
+                raise ValueError("latest_bars key must match bar.timeframe")
+            self._validate_bar_view(bar)
+        return self
+
+    def _validate_tick_view(self, tick: Tick) -> None:
+        if (
+            self.symbol != tick.symbol
+            or self.instrument_id != tick.instrument_id
+            or self.trade_instrument_id != tick.trade_instrument_id
+            or self.exchange != tick.exchange
+            or self.trading_day != tick.trading_day
+        ):
+            raise ValueError("MarketDataSnapshot identity must match latest_tick")
+        if tick.ts > self.as_of_ts:
+            raise ValueError("latest_tick.ts must be less than or equal to as_of_ts")
+
+    def _validate_bar_view(self, bar: Bar) -> None:
+        if (
+            self.symbol != bar.symbol
+            or self.instrument_id != bar.instrument_id
+            or self.trade_instrument_id != bar.trade_instrument_id
+            or self.exchange != bar.exchange
+            or self.trading_day != bar.trading_day
+        ):
+            raise ValueError("MarketDataSnapshot identity must match latest_bars")
+        if bar.bar_ts > self.as_of_ts:
+            raise ValueError("bar.bar_ts must be less than or equal to as_of_ts")
+
+
+_MARKET_DATA_REJECTED_STATUSES = frozenset(
+    {
+        MarketDataResultStatus.REJECTED_MISSING_IDENTITY,
+        MarketDataResultStatus.REJECTED_BAD_TIMESTAMP,
+        MarketDataResultStatus.REJECTED_OUT_OF_SESSION,
+        MarketDataResultStatus.REJECTED_BAD_PRICE,
+        MarketDataResultStatus.REJECTED_NON_MONOTONIC,
+    }
+)
 
 
 class FillEvent(DomainModel):

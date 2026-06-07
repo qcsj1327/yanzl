@@ -4,11 +4,14 @@ from decimal import Decimal
 import pytest
 
 from futures_mvp.domain.enums import (
+    BarTimeframe,
     Direction,
     EventApplicationStatus,
     EventSource,
     MarginPriceBasis,
     MarginResultStatus,
+    MarketDataEventType,
+    MarketDataResultStatus,
     Offset,
     OrderStatus,
     OrderType,
@@ -20,12 +23,16 @@ from futures_mvp.domain.enums import (
 from futures_mvp.domain.errors import DecimalRequiredError
 from futures_mvp.domain.models import (
     AccountContext,
+    Bar,
     CloseTradeContext,
+    DataQualityResult,
     FillEvent,
     MarginRequirement,
     MarginResult,
     MarginRule,
     MarginSnapshot,
+    MarketDataEvent,
+    MarketDataSnapshot,
     OrderEvent,
     OrderEventApplicationResult,
     OrderRequest,
@@ -41,6 +48,7 @@ from futures_mvp.domain.models import (
     SettlementPrice,
     SettlementSnapshot,
     Signal,
+    Tick,
     Trade,
     UnrealizedPnL,
 )
@@ -146,6 +154,392 @@ def test_settlement_result_status_complete_contract() -> None:
         "CONFLICT",
         "ERROR",
     ]
+
+
+def test_market_data_enums_complete_contract() -> None:
+    assert [status.value for status in MarketDataResultStatus] == [
+        "ACCEPTED",
+        "REJECTED_MISSING_IDENTITY",
+        "REJECTED_BAD_TIMESTAMP",
+        "REJECTED_OUT_OF_SESSION",
+        "REJECTED_BAD_PRICE",
+        "REJECTED_NON_MONOTONIC",
+        "DUPLICATE",
+        "GAP_DETECTED",
+        "ERROR",
+    ]
+    assert [event_type.value for event_type in MarketDataEventType] == [
+        "TICK_ACCEPTED",
+        "BAR_ACCEPTED",
+        "TICK_REJECTED",
+        "BAR_REJECTED",
+        "DUPLICATE",
+        "GAP_DETECTED",
+        "ERROR",
+    ]
+    assert [timeframe.value for timeframe in BarTimeframe] == [
+        "M1",
+        "M5",
+        "M15",
+        "M30",
+        "H1",
+        "D1",
+    ]
+
+
+def test_tick_decimal_validation_and_raw_payload_diagnostic_only() -> None:
+    tick = Tick(
+        symbol="au",
+        instrument_id="au2606",
+        trade_instrument_id="au2606",
+        exchange="SHFE",
+        trading_day=date(2026, 6, 7),
+        ts=datetime(2026, 6, 7, 9, tzinfo=UTC),
+        price=Decimal("500"),
+        volume=Decimal("1"),
+        turnover=Decimal("500"),
+        open_interest=Decimal("10"),
+        bid_price_1=Decimal("499"),
+        ask_price_1=Decimal("501"),
+        bid_volume_1=Decimal("2"),
+        ask_volume_1=Decimal("3"),
+        source="adapter",
+        raw_payload={"diagnostic": True},
+    )
+
+    assert tick.price == Decimal("500")
+    assert tick.raw_payload == {"diagnostic": True}
+
+    with pytest.raises(DecimalRequiredError):
+        Tick(
+            symbol="au",
+            instrument_id="au2606",
+            trade_instrument_id="au2606",
+            exchange="SHFE",
+            trading_day=date(2026, 6, 7),
+            ts=datetime(2026, 6, 7, 9, tzinfo=UTC),
+            price=500.0,
+            volume=Decimal("1"),
+            turnover=Decimal("500"),
+            open_interest=Decimal("10"),
+            source="adapter",
+        )
+    with pytest.raises(ValueError):
+        Tick(
+            symbol="au",
+            instrument_id="au2606",
+            trade_instrument_id="au2606",
+            exchange="SHFE",
+            trading_day=date(2026, 6, 7),
+            ts=datetime(2026, 6, 7, 9, tzinfo=UTC),
+            price=Decimal("0"),
+            volume=Decimal("1"),
+            turnover=Decimal("500"),
+            open_interest=Decimal("10"),
+            source="adapter",
+        )
+    with pytest.raises(ValueError):
+        Tick(
+            symbol="au",
+            instrument_id="au2606",
+            trade_instrument_id="au2606",
+            exchange="SHFE",
+            trading_day=date(2026, 6, 7),
+            ts=datetime(2026, 6, 7, 9, tzinfo=UTC),
+            price=Decimal("500"),
+            volume=Decimal("1"),
+            turnover=Decimal("500"),
+            open_interest=Decimal("10"),
+            bid_price_1=Decimal("502"),
+            ask_price_1=Decimal("501"),
+            source="adapter",
+        )
+
+
+def test_bar_ohlc_validation_and_snapshot_contract() -> None:
+    bar = Bar(
+        symbol="au",
+        instrument_id="au2606",
+        trade_instrument_id="au2606",
+        exchange="SHFE",
+        trading_day=date(2026, 6, 7),
+        timeframe=BarTimeframe.M1,
+        bar_ts=datetime(2026, 6, 7, 9, tzinfo=UTC),
+        open=Decimal("500"),
+        high=Decimal("505"),
+        low=Decimal("499"),
+        close=Decimal("501"),
+        volume=Decimal("10"),
+        turnover=Decimal("5000"),
+        open_interest=Decimal("20"),
+        source="adapter",
+        quality_status=MarketDataResultStatus.ACCEPTED,
+    )
+
+    snapshot = MarketDataSnapshot(
+        symbol=bar.symbol,
+        instrument_id=bar.instrument_id,
+        trade_instrument_id=bar.trade_instrument_id,
+        exchange=bar.exchange,
+        trading_day=bar.trading_day,
+        as_of_ts=bar.bar_ts,
+        latest_tick=None,
+        latest_bars={BarTimeframe.M1: bar},
+        quality_status=MarketDataResultStatus.ACCEPTED,
+    )
+
+    assert snapshot.latest_bars[BarTimeframe.M1] == bar
+    assert bar.bar_ts == datetime(2026, 6, 7, 9, tzinfo=UTC)
+
+    with pytest.raises(ValueError):
+        Bar(
+            symbol="au",
+            instrument_id="au2606",
+            trade_instrument_id="au2606",
+            exchange="SHFE",
+            trading_day=date(2026, 6, 7),
+            timeframe=BarTimeframe.M1,
+            bar_ts=datetime(2026, 6, 7, 9, tzinfo=UTC),
+            open=Decimal("500"),
+            high=Decimal("499"),
+            low=Decimal("498"),
+            close=Decimal("501"),
+            volume=Decimal("10"),
+            turnover=Decimal("5000"),
+            open_interest=Decimal("20"),
+            source="adapter",
+            quality_status=MarketDataResultStatus.ACCEPTED,
+        )
+
+
+def _market_tick_for_contract(
+    *,
+    instrument_id: str = "au2606",
+    ts: datetime = datetime(2026, 6, 7, 9, tzinfo=UTC),
+) -> Tick:
+    return Tick(
+        symbol="au",
+        instrument_id=instrument_id,
+        trade_instrument_id=instrument_id,
+        exchange="SHFE",
+        trading_day=date(2026, 6, 7),
+        ts=ts,
+        price=Decimal("500"),
+        volume=Decimal("1"),
+        turnover=Decimal("500"),
+        open_interest=Decimal("10"),
+        source="adapter",
+    )
+
+
+def _market_bar_for_contract(
+    *,
+    instrument_id: str = "au2606",
+    trading_day: date = date(2026, 6, 7),
+    timeframe: BarTimeframe = BarTimeframe.M1,
+    bar_ts: datetime = datetime(2026, 6, 7, 9, tzinfo=UTC),
+) -> Bar:
+    return Bar(
+        symbol="au",
+        instrument_id=instrument_id,
+        trade_instrument_id=instrument_id,
+        exchange="SHFE",
+        trading_day=trading_day,
+        timeframe=timeframe,
+        bar_ts=bar_ts,
+        open=Decimal("500"),
+        high=Decimal("505"),
+        low=Decimal("499"),
+        close=Decimal("501"),
+        volume=Decimal("10"),
+        turnover=Decimal("5000"),
+        open_interest=Decimal("20"),
+        source="adapter",
+        quality_status=MarketDataResultStatus.ACCEPTED,
+    )
+
+
+def _market_quality_result(
+    *,
+    status: MarketDataResultStatus = MarketDataResultStatus.ACCEPTED,
+    event_type: MarketDataEventType = MarketDataEventType.TICK_ACCEPTED,
+    instrument_id: str = "au2606",
+    ts: datetime = datetime(2026, 6, 7, 9, tzinfo=UTC),
+) -> DataQualityResult:
+    return DataQualityResult(
+        status=status,
+        event_type=event_type,
+        instrument_id=instrument_id,
+        exchange="SHFE",
+        trading_day=date(2026, 6, 7),
+        ts=ts,
+    )
+
+
+def test_market_data_event_rejects_incompatible_result_and_payload_shape() -> None:
+    tick = _market_tick_for_contract()
+    bar = _market_bar_for_contract()
+
+    with pytest.raises(ValueError):
+        MarketDataEvent(
+            event_id="event-1",
+            event_type=MarketDataEventType.TICK_ACCEPTED,
+            instrument_id=tick.instrument_id,
+            exchange=tick.exchange,
+            trading_day=tick.trading_day,
+            ts=tick.ts,
+            source=tick.source,
+            result=_market_quality_result(
+                status=MarketDataResultStatus.ERROR,
+                event_type=MarketDataEventType.ERROR,
+            ),
+            tick=tick,
+        )
+    with pytest.raises(ValueError):
+        MarketDataEvent(
+            event_id="event-2",
+            event_type=MarketDataEventType.TICK_ACCEPTED,
+            instrument_id=tick.instrument_id,
+            exchange=tick.exchange,
+            trading_day=tick.trading_day,
+            ts=tick.ts,
+            source=tick.source,
+            result=_market_quality_result(),
+            bar=bar,
+        )
+    with pytest.raises(ValueError):
+        MarketDataEvent(
+            event_id="event-3",
+            event_type=MarketDataEventType.TICK_ACCEPTED,
+            instrument_id=tick.instrument_id,
+            exchange=tick.exchange,
+            trading_day=tick.trading_day,
+            ts=tick.ts,
+            source=tick.source,
+            result=_market_quality_result(),
+            tick=tick,
+            bar=bar,
+        )
+    with pytest.raises(ValueError):
+        MarketDataEvent(
+            event_id="event-4",
+            event_type=MarketDataEventType.TICK_ACCEPTED,
+            instrument_id=tick.instrument_id,
+            exchange=tick.exchange,
+            trading_day=tick.trading_day,
+            ts=tick.ts,
+            source=tick.source,
+            result=_market_quality_result(),
+        )
+
+
+def test_market_data_event_rejects_payload_identity_mismatch() -> None:
+    tick = _market_tick_for_contract()
+    other_tick = _market_tick_for_contract(instrument_id="ag2606")
+    bar = _market_bar_for_contract()
+    other_bar = _market_bar_for_contract(instrument_id="ag2606")
+
+    with pytest.raises(ValueError):
+        MarketDataEvent(
+            event_id="event-1",
+            event_type=MarketDataEventType.TICK_ACCEPTED,
+            instrument_id=tick.instrument_id,
+            exchange=tick.exchange,
+            trading_day=tick.trading_day,
+            ts=tick.ts,
+            source=tick.source,
+            result=_market_quality_result(),
+            tick=other_tick,
+        )
+    with pytest.raises(ValueError):
+        MarketDataEvent(
+            event_id="event-2",
+            event_type=MarketDataEventType.BAR_ACCEPTED,
+            instrument_id=bar.instrument_id,
+            exchange=bar.exchange,
+            trading_day=bar.trading_day,
+            ts=bar.bar_ts,
+            source=bar.source,
+            result=_market_quality_result(event_type=MarketDataEventType.BAR_ACCEPTED),
+            bar=other_bar,
+        )
+
+
+def test_market_data_snapshot_rejects_mixed_identity_time_and_timeframe() -> None:
+    tick = _market_tick_for_contract()
+    bar = _market_bar_for_contract()
+
+    with pytest.raises(ValueError):
+        MarketDataSnapshot(
+            symbol="au",
+            instrument_id="au2606",
+            trade_instrument_id="au2606",
+            exchange="SHFE",
+            trading_day=date(2026, 6, 7),
+            as_of_ts=datetime(2026, 6, 7, 10, tzinfo=UTC),
+            latest_tick=_market_tick_for_contract(instrument_id="ag2606"),
+            latest_bars={BarTimeframe.M1: bar},
+            quality_status=MarketDataResultStatus.ACCEPTED,
+        )
+    with pytest.raises(ValueError):
+        MarketDataSnapshot(
+            symbol="au",
+            instrument_id="au2606",
+            trade_instrument_id="au2606",
+            exchange="SHFE",
+            trading_day=date(2026, 6, 7),
+            as_of_ts=datetime(2026, 6, 7, 8, tzinfo=UTC),
+            latest_tick=tick,
+            latest_bars={BarTimeframe.M1: bar},
+            quality_status=MarketDataResultStatus.ACCEPTED,
+        )
+    with pytest.raises(ValueError):
+        MarketDataSnapshot(
+            symbol="au",
+            instrument_id="au2606",
+            trade_instrument_id="au2606",
+            exchange="SHFE",
+            trading_day=date(2026, 6, 7),
+            as_of_ts=datetime(2026, 6, 7, 10, tzinfo=UTC),
+            latest_tick=tick,
+            latest_bars={BarTimeframe.M5: bar},
+            quality_status=MarketDataResultStatus.ACCEPTED,
+        )
+    with pytest.raises(ValueError):
+        MarketDataSnapshot(
+            symbol="au",
+            instrument_id="au2606",
+            trade_instrument_id="au2606",
+            exchange="SHFE",
+            trading_day=date(2026, 6, 7),
+            as_of_ts=datetime(2026, 6, 7, 10, tzinfo=UTC),
+            latest_tick=tick,
+            latest_bars={BarTimeframe.M1: _market_bar_for_contract(trading_day=date(2026, 6, 8))},
+            quality_status=MarketDataResultStatus.ACCEPTED,
+        )
+
+
+def test_market_data_snapshot_accepts_same_instrument_mixed_timeframes() -> None:
+    tick = _market_tick_for_contract(ts=datetime(2026, 6, 7, 9, 2, tzinfo=UTC))
+    m1 = _market_bar_for_contract(timeframe=BarTimeframe.M1)
+    m5 = _market_bar_for_contract(
+        timeframe=BarTimeframe.M5,
+        bar_ts=datetime(2026, 6, 7, 9, 5, tzinfo=UTC),
+    )
+
+    snapshot = MarketDataSnapshot(
+        symbol="au",
+        instrument_id="au2606",
+        trade_instrument_id="au2606",
+        exchange="SHFE",
+        trading_day=date(2026, 6, 7),
+        as_of_ts=datetime(2026, 6, 7, 10, tzinfo=UTC),
+        latest_tick=tick,
+        latest_bars={BarTimeframe.M1: m1, BarTimeframe.M5: m5},
+        quality_status=MarketDataResultStatus.ACCEPTED,
+    )
+
+    assert snapshot.latest_bars[BarTimeframe.M5] == m5
 
 
 def test_settlement_domain_validators_and_no_raw_payload_facts() -> None:

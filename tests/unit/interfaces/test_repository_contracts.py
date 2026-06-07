@@ -3,8 +3,10 @@ from decimal import Decimal
 from pathlib import Path
 
 from futures_mvp.domain.enums import (
+    BarTimeframe,
     Direction,
     EventSource,
+    MarketDataResultStatus,
     Offset,
     OrderStatus,
     OrderType,
@@ -13,6 +15,7 @@ from futures_mvp.domain.enums import (
 )
 from futures_mvp.domain.models import (
     AccountSnapshot,
+    Bar,
     MarginSnapshot,
     OrderEvent,
     OrderRequest,
@@ -22,11 +25,15 @@ from futures_mvp.domain.models import (
     PositionEvent,
     PositionSnapshot,
     SettlementSnapshot,
+    Tick,
     Trade,
 )
 from futures_mvp.interfaces.repositories import (
     AccountSnapshotRepository,
     MarginSnapshotRepository,
+    MarketBarRepository,
+    MarketDataUnitOfWork,
+    MarketTickRepository,
     OrderEventRepository,
     OrderRepository,
     PnLSnapshotRepository,
@@ -210,6 +217,43 @@ def _settlement_snapshot() -> SettlementSnapshot:
         margin_used=Decimal("3500"),
         status=SettlementResultStatus.SETTLED,
         created_at=datetime.now(UTC),
+    )
+
+
+def _tick() -> Tick:
+    return Tick(
+        symbol="au",
+        instrument_id="au2606",
+        trade_instrument_id="au2606",
+        exchange="SHFE",
+        trading_day=date(2026, 6, 7),
+        ts=datetime(2026, 6, 7, 9, tzinfo=UTC),
+        price=Decimal("500"),
+        volume=Decimal("1"),
+        turnover=Decimal("500"),
+        open_interest=Decimal("10"),
+        source="adapter",
+    )
+
+
+def _bar() -> Bar:
+    return Bar(
+        symbol="au",
+        instrument_id="au2606",
+        trade_instrument_id="au2606",
+        exchange="SHFE",
+        trading_day=date(2026, 6, 7),
+        timeframe=BarTimeframe.M1,
+        bar_ts=datetime(2026, 6, 7, 9, tzinfo=UTC),
+        open=Decimal("500"),
+        high=Decimal("501"),
+        low=Decimal("499"),
+        close=Decimal("500"),
+        volume=Decimal("1"),
+        turnover=Decimal("500"),
+        open_interest=Decimal("10"),
+        source="adapter",
+        quality_status=MarketDataResultStatus.ACCEPTED,
     )
 
 
@@ -553,6 +597,105 @@ class FakeSettlementSnapshotRepository:
         ]
 
 
+class FakeMarketTickRepository:
+    def __init__(self) -> None:
+        self.ticks: dict[tuple[str, str, datetime, str], Tick] = {}
+
+    def append_tick(self, tick: Tick) -> Tick:
+        self.ticks[(tick.exchange, tick.instrument_id, tick.ts, tick.source)] = tick
+        return tick
+
+    def get_by_identity(
+        self,
+        exchange: str,
+        instrument_id: str,
+        ts: datetime,
+        source: str,
+    ) -> Tick | None:
+        return self.ticks.get((exchange, instrument_id, ts, source))
+
+    def list_by_instrument(
+        self,
+        exchange: str,
+        instrument_id: str,
+        start_ts: datetime,
+        end_ts: datetime,
+    ) -> list[Tick]:
+        return [
+            tick
+            for tick in self.ticks.values()
+            if tick.exchange == exchange
+            and tick.instrument_id == instrument_id
+            and start_ts <= tick.ts <= end_ts
+        ]
+
+    def list_by_trading_day(
+        self,
+        exchange: str,
+        instrument_id: str,
+        trading_day: date,
+    ) -> list[Tick]:
+        return [
+            tick
+            for tick in self.ticks.values()
+            if tick.exchange == exchange
+            and tick.instrument_id == instrument_id
+            and tick.trading_day == trading_day
+        ]
+
+
+class FakeMarketBarRepository:
+    def __init__(self) -> None:
+        self.bars: dict[tuple[str, str, BarTimeframe, datetime, str], Bar] = {}
+
+    def append_bar(self, bar: Bar) -> Bar:
+        self.bars[(bar.exchange, bar.instrument_id, bar.timeframe, bar.bar_ts, bar.source)] = bar
+        return bar
+
+    def get_by_identity(
+        self,
+        exchange: str,
+        instrument_id: str,
+        timeframe: BarTimeframe,
+        bar_ts: datetime,
+        source: str,
+    ) -> Bar | None:
+        return self.bars.get((exchange, instrument_id, timeframe, bar_ts, source))
+
+    def list_by_instrument(
+        self,
+        exchange: str,
+        instrument_id: str,
+        timeframe: BarTimeframe,
+        start_bar_ts: datetime,
+        end_bar_ts: datetime,
+    ) -> list[Bar]:
+        return [
+            bar
+            for bar in self.bars.values()
+            if bar.exchange == exchange
+            and bar.instrument_id == instrument_id
+            and bar.timeframe == timeframe
+            and start_bar_ts <= bar.bar_ts <= end_bar_ts
+        ]
+
+    def list_by_trading_day(
+        self,
+        exchange: str,
+        instrument_id: str,
+        timeframe: BarTimeframe,
+        trading_day: date,
+    ) -> list[Bar]:
+        return [
+            bar
+            for bar in self.bars.values()
+            if bar.exchange == exchange
+            and bar.instrument_id == instrument_id
+            and bar.timeframe == timeframe
+            and bar.trading_day == trading_day
+        ]
+
+
 class FakeUnitOfWork:
     def __init__(self) -> None:
         self.orders = FakeOrderRepository()
@@ -564,6 +707,8 @@ class FakeUnitOfWork:
         self.pnl_snapshots = FakePnLSnapshotRepository()
         self.account_snapshots = FakeAccountSnapshotRepository()
         self.settlement_snapshots = FakeSettlementSnapshotRepository()
+        self.market_ticks = FakeMarketTickRepository()
+        self.market_bars = FakeMarketBarRepository()
         self.commit_count = 0
         self.rollback_count = 0
 
@@ -586,6 +731,32 @@ class FakeUnitOfWork:
         return None
 
 
+class FakeMarketDataUnitOfWork:
+    def __init__(self) -> None:
+        self.market_ticks = FakeMarketTickRepository()
+        self.market_bars = FakeMarketBarRepository()
+        self.commit_count = 0
+        self.rollback_count = 0
+
+    def commit(self) -> None:
+        self.commit_count += 1
+
+    def rollback(self) -> None:
+        self.rollback_count += 1
+
+    def __enter__(self) -> "FakeMarketDataUnitOfWork":
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: object,
+    ) -> bool | None:
+        del exc_type, exc, tb
+        return None
+
+
 def test_repository_protocols_can_be_implemented_by_fakes() -> None:
     order_repo = FakeOrderRepository()
     event_repo = FakeOrderEventRepository()
@@ -596,6 +767,8 @@ def test_repository_protocols_can_be_implemented_by_fakes() -> None:
     pnl_snapshot_repo = FakePnLSnapshotRepository()
     account_snapshot_repo = FakeAccountSnapshotRepository()
     settlement_snapshot_repo = FakeSettlementSnapshotRepository()
+    market_tick_repo = FakeMarketTickRepository()
+    market_bar_repo = FakeMarketBarRepository()
 
     assert isinstance(order_repo, OrderRepository)
     assert isinstance(event_repo, OrderEventRepository)
@@ -606,6 +779,8 @@ def test_repository_protocols_can_be_implemented_by_fakes() -> None:
     assert isinstance(pnl_snapshot_repo, PnLSnapshotRepository)
     assert isinstance(account_snapshot_repo, AccountSnapshotRepository)
     assert isinstance(settlement_snapshot_repo, SettlementSnapshotRepository)
+    assert isinstance(market_tick_repo, MarketTickRepository)
+    assert isinstance(market_bar_repo, MarketBarRepository)
 
     order = order_repo.create_order(_order_request(), client_order_id="client-1")
     event = event_repo.append_event(_order_event(order.order_id))
@@ -618,6 +793,8 @@ def test_repository_protocols_can_be_implemented_by_fakes() -> None:
     settlement_snapshot = settlement_snapshot_repo.append_settlement_snapshot(
         _settlement_snapshot()
     )
+    tick = market_tick_repo.append_tick(_tick())
+    bar = market_bar_repo.append_bar(_bar())
 
     assert order_repo.get_by_id(order.order_id) == order
     assert order_repo.get_by_client_order_id("client-1") == order
@@ -647,6 +824,17 @@ def test_repository_protocols_can_be_implemented_by_fakes() -> None:
         )
         == settlement_snapshot
     )
+    assert market_tick_repo.get_by_identity("SHFE", "au2606", tick.ts, "adapter") == tick
+    assert (
+        market_bar_repo.get_by_identity(
+            "SHFE",
+            "au2606",
+            BarTimeframe.M1,
+            bar.bar_ts,
+            "adapter",
+        )
+        == bar
+    )
 
 
 def test_unit_of_work_protocol_supports_commit_and_rollback() -> None:
@@ -661,6 +849,25 @@ def test_unit_of_work_protocol_supports_commit_and_rollback() -> None:
 
     assert uow.commit_count == 1
     assert uow.rollback_count == 1
+
+
+def test_market_data_unit_of_work_protocol_is_narrow() -> None:
+    uow = FakeMarketDataUnitOfWork()
+
+    assert isinstance(uow, MarketDataUnitOfWork)
+    assert not hasattr(uow, "orders")
+    assert not hasattr(uow, "trades")
+    assert not hasattr(uow, "positions")
+    assert not hasattr(uow, "margin_snapshots")
+    assert not hasattr(uow, "pnl_snapshots")
+    assert not hasattr(uow, "settlement_snapshots")
+
+    with uow as current:
+        current.market_ticks.append_tick(_tick())
+        current.market_bars.append_bar(_bar())
+        current.commit()
+
+    assert uow.commit_count == 1
 
 
 def test_interfaces_repository_module_does_not_import_sqlalchemy_or_oms_state_machine() -> None:

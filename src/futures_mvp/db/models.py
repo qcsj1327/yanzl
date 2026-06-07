@@ -344,6 +344,83 @@ class SettlementSnapshot(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class MarketTick(Base):
+    __tablename__ = "market_ticks"
+    __table_args__ = (
+        UniqueConstraint(
+            "exchange",
+            "instrument_id",
+            "ts",
+            "source",
+            name="uq_market_ticks_identity",
+        ),
+        Index(
+            "ix_market_ticks_exchange_instrument_day",
+            "exchange",
+            "instrument_id",
+            "trading_day",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(64), nullable=False)
+    instrument_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    trade_instrument_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    exchange: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    trading_day: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    price: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    volume: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    turnover: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    open_interest: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    bid_price_1: Mapped[Decimal | None] = mapped_column(DECIMAL)
+    ask_price_1: Mapped[Decimal | None] = mapped_column(DECIMAL)
+    bid_volume_1: Mapped[Decimal | None] = mapped_column(DECIMAL)
+    ask_volume_1: Mapped[Decimal | None] = mapped_column(DECIMAL)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    raw_payload: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class MarketBar(Base):
+    __tablename__ = "market_bars"
+    __table_args__ = (
+        UniqueConstraint(
+            "exchange",
+            "instrument_id",
+            "timeframe",
+            "bar_ts",
+            "source",
+            name="uq_market_bars_identity",
+        ),
+        Index("ix_market_bars_exchange_instrument_day", "exchange", "instrument_id", "trading_day"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(64), nullable=False)
+    instrument_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    trade_instrument_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    exchange: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    trading_day: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    timeframe: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    bar_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    open: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    high: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    low: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    close: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    volume: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    turnover: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    open_interest: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    quality_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    raw_payload: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class RiskEvent(Base):
     __tablename__ = "risk_events"
 

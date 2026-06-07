@@ -21,6 +21,8 @@ from sqlalchemy import (
 
 from futures_mvp.db.models import (
     Base,
+    MarketBar,
+    MarketTick,
     Order,
     OrderEvent,
     PnLSnapshot,
@@ -63,6 +65,8 @@ def test_required_tables_are_declared() -> None:
         "pnl_snapshots",
         "account_snapshots",
         "settlement_snapshots",
+        "market_ticks",
+        "market_bars",
         "risk_events",
     }.issubset(Base.metadata.tables)
 
@@ -238,6 +242,85 @@ def test_settlement_snapshots_match_stage_f_account_day_contract() -> None:
         "ix_settlement_snapshots_account_day",
         "ix_settlement_snapshots_calculation_key",
     }.issubset({index.name for index in SettlementSnapshot.__table__.indexes})
+
+
+def test_market_ticks_match_stage_g_market_data_contract() -> None:
+    assert _unique_constraint_columns(MarketTick, "uq_market_ticks_identity") == (
+        "exchange",
+        "instrument_id",
+        "ts",
+        "source",
+    )
+    for column_name in [
+        "id",
+        "symbol",
+        "instrument_id",
+        "trade_instrument_id",
+        "exchange",
+        "trading_day",
+        "ts",
+        "price",
+        "volume",
+        "turnover",
+        "open_interest",
+        "bid_price_1",
+        "ask_price_1",
+        "bid_volume_1",
+        "ask_volume_1",
+        "source",
+        "raw_payload",
+        "received_at",
+    ]:
+        assert column_name in MarketTick.__table__.columns
+    assert isinstance(MarketTick.__table__.columns["price"].type, Numeric)
+    assert {
+        "ix_market_ticks_exchange",
+        "ix_market_ticks_instrument_id",
+        "ix_market_ticks_trading_day",
+        "ix_market_ticks_ts",
+        "ix_market_ticks_exchange_instrument_day",
+    }.issubset({index.name for index in MarketTick.__table__.indexes})
+
+
+def test_market_bars_match_stage_g_market_data_contract() -> None:
+    assert _unique_constraint_columns(MarketBar, "uq_market_bars_identity") == (
+        "exchange",
+        "instrument_id",
+        "timeframe",
+        "bar_ts",
+        "source",
+    )
+    for column_name in [
+        "id",
+        "symbol",
+        "instrument_id",
+        "trade_instrument_id",
+        "exchange",
+        "trading_day",
+        "timeframe",
+        "bar_ts",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "turnover",
+        "open_interest",
+        "source",
+        "quality_status",
+        "raw_payload",
+        "received_at",
+    ]:
+        assert column_name in MarketBar.__table__.columns
+    assert isinstance(MarketBar.__table__.columns["open"].type, Numeric)
+    assert {
+        "ix_market_bars_exchange",
+        "ix_market_bars_instrument_id",
+        "ix_market_bars_trading_day",
+        "ix_market_bars_bar_ts",
+        "ix_market_bars_timeframe",
+        "ix_market_bars_exchange_instrument_day",
+    }.issubset({index.name for index in MarketBar.__table__.indexes})
 
 
 def test_stage_f_migration_backfills_legacy_calculation_key() -> None:

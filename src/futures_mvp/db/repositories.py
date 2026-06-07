@@ -10,6 +10,8 @@ from sqlalchemy.orm import Session
 
 from futures_mvp.db.models import AccountSnapshot as AccountSnapshotOrm
 from futures_mvp.db.models import MarginSnapshot as MarginSnapshotOrm
+from futures_mvp.db.models import MarketBar as MarketBarOrm
+from futures_mvp.db.models import MarketTick as MarketTickOrm
 from futures_mvp.db.models import Order
 from futures_mvp.db.models import OrderEvent as OrderEventOrm
 from futures_mvp.db.models import PnLSnapshot as PnLSnapshotOrm
@@ -18,8 +20,10 @@ from futures_mvp.db.models import PositionEvent as PositionEventOrm
 from futures_mvp.db.models import SettlementSnapshot as SettlementSnapshotOrm
 from futures_mvp.db.models import Trade as TradeOrm
 from futures_mvp.domain.enums import (
+    BarTimeframe,
     Direction,
     EventSource,
+    MarketDataResultStatus,
     Offset,
     OrderStatus,
     OrderType,
@@ -28,6 +32,7 @@ from futures_mvp.domain.enums import (
 )
 from futures_mvp.domain.models import (
     AccountSnapshot,
+    Bar,
     MarginSnapshot,
     OrderEvent,
     OrderRequest,
@@ -37,12 +42,14 @@ from futures_mvp.domain.models import (
     PositionEvent,
     PositionSnapshot,
     SettlementSnapshot,
+    Tick,
     Trade,
 )
 from futures_mvp.interfaces.repositories import (
     EventAlreadyExistsError,
     IdempotencyConflictError,
     MarginSnapshotConflictError,
+    MarketDataConflictError,
     OptimisticLockError,
     OrderNotFoundError,
     PnLSnapshotConflictError,
@@ -51,6 +58,7 @@ from futures_mvp.interfaces.repositories import (
     SettlementSnapshotConflictError,
     TradeIdempotencyConflictError,
 )
+from futures_mvp.modules.market.canonical import canonical_bar_payload, canonical_tick_payload
 
 OPEN_RECOVERY_STATUSES = frozenset(
     {
@@ -256,6 +264,49 @@ def settlement_snapshot_to_domain(snapshot: SettlementSnapshotOrm) -> Settlement
         status=SettlementResultStatus(snapshot.status),
         reason=snapshot.reason,
         created_at=created_at,
+    )
+
+
+def market_tick_to_domain(tick: MarketTickOrm) -> Tick:
+    return Tick(
+        symbol=tick.symbol,
+        instrument_id=tick.instrument_id,
+        trade_instrument_id=tick.trade_instrument_id,
+        exchange=tick.exchange,
+        trading_day=tick.trading_day,
+        ts=tick.ts,
+        price=tick.price,
+        volume=tick.volume,
+        turnover=tick.turnover,
+        open_interest=tick.open_interest,
+        bid_price_1=tick.bid_price_1,
+        ask_price_1=tick.ask_price_1,
+        bid_volume_1=tick.bid_volume_1,
+        ask_volume_1=tick.ask_volume_1,
+        source=tick.source,
+        raw_payload=tick.raw_payload,
+    )
+
+
+def market_bar_to_domain(bar: MarketBarOrm) -> Bar:
+    return Bar(
+        symbol=bar.symbol,
+        instrument_id=bar.instrument_id,
+        trade_instrument_id=bar.trade_instrument_id,
+        exchange=bar.exchange,
+        trading_day=bar.trading_day,
+        timeframe=BarTimeframe(bar.timeframe),
+        bar_ts=bar.bar_ts,
+        open=bar.open,
+        high=bar.high,
+        low=bar.low,
+        close=bar.close,
+        volume=bar.volume,
+        turnover=bar.turnover,
+        open_interest=bar.open_interest,
+        source=bar.source,
+        quality_status=MarketDataResultStatus(bar.quality_status),
+        raw_payload=bar.raw_payload,
     )
 
 
@@ -646,6 +697,315 @@ def _same_canonical_settlement_snapshot_payload(
     return _canonical_settlement_snapshot_payload_from_orm(
         existing
     ) == _canonical_settlement_snapshot_payload_from_domain(snapshot)
+
+
+def _canonical_tick_payload_from_orm(tick: MarketTickOrm) -> tuple[object, ...]:
+    return (
+        tick.exchange,
+        tick.instrument_id,
+        tick.trade_instrument_id,
+        tick.symbol,
+        tick.trading_day,
+        tick.ts,
+        tick.price,
+        tick.volume,
+        tick.turnover,
+        tick.open_interest,
+        tick.bid_price_1,
+        tick.ask_price_1,
+        tick.bid_volume_1,
+        tick.ask_volume_1,
+        tick.source,
+    )
+
+
+def _same_canonical_tick_payload(existing: MarketTickOrm, tick: Tick) -> bool:
+    return _canonical_tick_payload_from_orm(existing) == canonical_tick_payload(tick)
+
+
+def _canonical_bar_payload_from_orm(bar: MarketBarOrm) -> tuple[object, ...]:
+    return (
+        bar.exchange,
+        bar.instrument_id,
+        bar.trade_instrument_id,
+        bar.symbol,
+        bar.trading_day,
+        bar.timeframe,
+        bar.bar_ts,
+        bar.open,
+        bar.high,
+        bar.low,
+        bar.close,
+        bar.volume,
+        bar.turnover,
+        bar.open_interest,
+        bar.source,
+        bar.quality_status,
+    )
+
+
+def _same_canonical_bar_payload(existing: MarketBarOrm, bar: Bar) -> bool:
+    return _canonical_bar_payload_from_orm(existing) == canonical_bar_payload(bar)
+
+
+class SQLAlchemyMarketTickRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def append_tick(self, tick: Tick) -> Tick:
+        existing = self._get_orm_by_identity(
+            tick.exchange,
+            tick.instrument_id,
+            tick.ts,
+            tick.source,
+        )
+        if existing is not None:
+            return self._existing_tick_for_append(existing, tick)
+
+        try:
+            with self._session.begin_nested():
+                tick_orm = self._new_tick(tick)
+                self._session.add(tick_orm)
+                self._session.flush()
+            return market_tick_to_domain(tick_orm)
+        except IntegrityError as exc:
+            existing_after_conflict = self._get_orm_by_identity(
+                tick.exchange,
+                tick.instrument_id,
+                tick.ts,
+                tick.source,
+            )
+            if existing_after_conflict is None:
+                raise RepositoryError(
+                    "market tick unique conflict but tick not found: "
+                    f"{tick.exchange}/{tick.instrument_id}/{tick.ts}/{tick.source}"
+                ) from exc
+            return self._existing_tick_for_append(existing_after_conflict, tick)
+
+    def get_by_identity(
+        self,
+        exchange: str,
+        instrument_id: str,
+        ts: datetime,
+        source: str,
+    ) -> Tick | None:
+        tick = self._get_orm_by_identity(exchange, instrument_id, ts, source)
+        return market_tick_to_domain(tick) if tick else None
+
+    def list_by_instrument(
+        self,
+        exchange: str,
+        instrument_id: str,
+        start_ts: datetime,
+        end_ts: datetime,
+    ) -> list[Tick]:
+        ticks = self._session.scalars(
+            select(MarketTickOrm)
+            .where(
+                MarketTickOrm.exchange == exchange,
+                MarketTickOrm.instrument_id == instrument_id,
+                MarketTickOrm.ts >= start_ts,
+                MarketTickOrm.ts <= end_ts,
+            )
+            .order_by(MarketTickOrm.ts.asc(), MarketTickOrm.id.asc())
+        ).all()
+        return [market_tick_to_domain(tick) for tick in ticks]
+
+    def list_by_trading_day(
+        self,
+        exchange: str,
+        instrument_id: str,
+        trading_day: date,
+    ) -> list[Tick]:
+        ticks = self._session.scalars(
+            select(MarketTickOrm)
+            .where(
+                MarketTickOrm.exchange == exchange,
+                MarketTickOrm.instrument_id == instrument_id,
+                MarketTickOrm.trading_day == trading_day,
+            )
+            .order_by(MarketTickOrm.ts.asc(), MarketTickOrm.id.asc())
+        ).all()
+        return [market_tick_to_domain(tick) for tick in ticks]
+
+    def _new_tick(self, tick: Tick) -> MarketTickOrm:
+        return MarketTickOrm(
+            symbol=tick.symbol,
+            instrument_id=tick.instrument_id,
+            trade_instrument_id=tick.trade_instrument_id,
+            exchange=tick.exchange,
+            trading_day=tick.trading_day,
+            ts=tick.ts,
+            price=tick.price,
+            volume=tick.volume,
+            turnover=tick.turnover,
+            open_interest=tick.open_interest,
+            bid_price_1=tick.bid_price_1,
+            ask_price_1=tick.ask_price_1,
+            bid_volume_1=tick.bid_volume_1,
+            ask_volume_1=tick.ask_volume_1,
+            source=tick.source,
+            raw_payload=tick.raw_payload,
+        )
+
+    def _get_orm_by_identity(
+        self,
+        exchange: str,
+        instrument_id: str,
+        ts: datetime,
+        source: str,
+    ) -> MarketTickOrm | None:
+        return self._session.scalar(
+            select(MarketTickOrm).where(
+                MarketTickOrm.exchange == exchange,
+                MarketTickOrm.instrument_id == instrument_id,
+                MarketTickOrm.ts == ts,
+                MarketTickOrm.source == source,
+            )
+        )
+
+    def _existing_tick_for_append(self, existing: MarketTickOrm, tick: Tick) -> Tick:
+        if not _same_canonical_tick_payload(existing, tick):
+            raise MarketDataConflictError(
+                "market tick identity reused with different canonical payload: "
+                f"{tick.exchange}/{tick.instrument_id}/{tick.ts}/{tick.source}"
+            )
+        return market_tick_to_domain(existing)
+
+
+class SQLAlchemyMarketBarRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def append_bar(self, bar: Bar) -> Bar:
+        existing = self._get_orm_by_identity(
+            bar.exchange,
+            bar.instrument_id,
+            bar.timeframe,
+            bar.bar_ts,
+            bar.source,
+        )
+        if existing is not None:
+            return self._existing_bar_for_append(existing, bar)
+
+        try:
+            with self._session.begin_nested():
+                bar_orm = self._new_bar(bar)
+                self._session.add(bar_orm)
+                self._session.flush()
+            return market_bar_to_domain(bar_orm)
+        except IntegrityError as exc:
+            existing_after_conflict = self._get_orm_by_identity(
+                bar.exchange,
+                bar.instrument_id,
+                bar.timeframe,
+                bar.bar_ts,
+                bar.source,
+            )
+            if existing_after_conflict is None:
+                raise RepositoryError(
+                    "market bar unique conflict but bar not found: "
+                    f"{bar.exchange}/{bar.instrument_id}/{bar.timeframe}/{bar.bar_ts}/{bar.source}"
+                ) from exc
+            return self._existing_bar_for_append(existing_after_conflict, bar)
+
+    def get_by_identity(
+        self,
+        exchange: str,
+        instrument_id: str,
+        timeframe: BarTimeframe,
+        bar_ts: datetime,
+        source: str,
+    ) -> Bar | None:
+        bar = self._get_orm_by_identity(exchange, instrument_id, timeframe, bar_ts, source)
+        return market_bar_to_domain(bar) if bar else None
+
+    def list_by_instrument(
+        self,
+        exchange: str,
+        instrument_id: str,
+        timeframe: BarTimeframe,
+        start_bar_ts: datetime,
+        end_bar_ts: datetime,
+    ) -> list[Bar]:
+        bars = self._session.scalars(
+            select(MarketBarOrm)
+            .where(
+                MarketBarOrm.exchange == exchange,
+                MarketBarOrm.instrument_id == instrument_id,
+                MarketBarOrm.timeframe == timeframe.value,
+                MarketBarOrm.bar_ts >= start_bar_ts,
+                MarketBarOrm.bar_ts <= end_bar_ts,
+            )
+            .order_by(MarketBarOrm.bar_ts.asc(), MarketBarOrm.id.asc())
+        ).all()
+        return [market_bar_to_domain(bar) for bar in bars]
+
+    def list_by_trading_day(
+        self,
+        exchange: str,
+        instrument_id: str,
+        timeframe: BarTimeframe,
+        trading_day: date,
+    ) -> list[Bar]:
+        bars = self._session.scalars(
+            select(MarketBarOrm)
+            .where(
+                MarketBarOrm.exchange == exchange,
+                MarketBarOrm.instrument_id == instrument_id,
+                MarketBarOrm.timeframe == timeframe.value,
+                MarketBarOrm.trading_day == trading_day,
+            )
+            .order_by(MarketBarOrm.bar_ts.asc(), MarketBarOrm.id.asc())
+        ).all()
+        return [market_bar_to_domain(bar) for bar in bars]
+
+    def _new_bar(self, bar: Bar) -> MarketBarOrm:
+        return MarketBarOrm(
+            symbol=bar.symbol,
+            instrument_id=bar.instrument_id,
+            trade_instrument_id=bar.trade_instrument_id,
+            exchange=bar.exchange,
+            trading_day=bar.trading_day,
+            timeframe=bar.timeframe.value,
+            bar_ts=bar.bar_ts,
+            open=bar.open,
+            high=bar.high,
+            low=bar.low,
+            close=bar.close,
+            volume=bar.volume,
+            turnover=bar.turnover,
+            open_interest=bar.open_interest,
+            source=bar.source,
+            quality_status=bar.quality_status.value,
+            raw_payload=bar.raw_payload,
+        )
+
+    def _get_orm_by_identity(
+        self,
+        exchange: str,
+        instrument_id: str,
+        timeframe: BarTimeframe,
+        bar_ts: datetime,
+        source: str,
+    ) -> MarketBarOrm | None:
+        return self._session.scalar(
+            select(MarketBarOrm).where(
+                MarketBarOrm.exchange == exchange,
+                MarketBarOrm.instrument_id == instrument_id,
+                MarketBarOrm.timeframe == timeframe.value,
+                MarketBarOrm.bar_ts == bar_ts,
+                MarketBarOrm.source == source,
+            )
+        )
+
+    def _existing_bar_for_append(self, existing: MarketBarOrm, bar: Bar) -> Bar:
+        if not _same_canonical_bar_payload(existing, bar):
+            raise MarketDataConflictError(
+                "market bar identity reused with different canonical payload: "
+                f"{bar.exchange}/{bar.instrument_id}/{bar.timeframe}/{bar.bar_ts}/{bar.source}"
+            )
+        return market_bar_to_domain(existing)
 
 
 class SQLAlchemyOrderRepository:

@@ -44,10 +44,9 @@
 合约身份：
 
 - `instrument_id` 是当前已经冻结的期货合约字段。
-- `symbol` 当前不是 Domain 字段。
-- `trade_instrument_id` 当前不是 Domain 字段。
-- 未来如果要分离 `symbol`、`instrument_id`、`trade_instrument_id`，必须通过 domain migration。在此之前，不得通过 `raw_payload` 或 JSON 字段偷带缺失的身份字段。
-- Stage G Market Data Contract Freeze 已冻结未来 Market Data identity 目标：`symbol` 是基础品种，例如 `au`；`instrument_id` 是行情合约 identity；`trade_instrument_id` 是交易合约 identity；`exchange` 是交易所；`trading_day` 是 calendar/session rule 给出的交易日。该目标尚未进入当前 Domain 代码或 schema。
+- Stage G 已在 Market Data domain/schema 中实现 `symbol` 和 `trade_instrument_id`。
+- Market Data identity 当前包括：`symbol` 是基础品种，例如 `au`；`instrument_id` 是行情合约 identity；`trade_instrument_id` 是交易合约 identity；`exchange` 是交易所；`trading_day` 是 calendar/session rule 给出的交易日。
+- 非 Market Data 事实如果后续要分离 `symbol`、`instrument_id`、`trade_instrument_id`，必须通过 domain migration；不得通过 `raw_payload` 或 JSON 字段偷带缺失的身份字段。
 
 价格：
 
@@ -997,7 +996,9 @@ Stage F 不实现：
 
 ## Stage G Market Data Contract Freeze
 
-本节冻结未来 Market Data Core 契约。当前代码、schema 和 tests 尚未实现 Market Data、FeatureSnapshot、Market repository 或 market tables；本节不得被解读为当前已存在字段。真正落地必须通过独立 domain migration、schema migration 和测试更新。
+Stage G 已实现 Market Data Core：typed `Tick` / `Bar` / `MarketDataEvent` / `MarketDataSnapshot` / `DataQualityResult`、`DataQualityGate`、`MarketTickRepository` / `MarketBarRepository`、SQLAlchemy repository、UoW integration、`market_ticks` / `market_bars` migration、MarketDataService ingestion 和 deterministic market replay。
+
+Stage G 未实现 `FeatureSnapshot` generation、Feature indicators、Strategy / Signal、Tick -> Bar Aggregator、Broker adapter、CTP / SimNow、Kafka ingestion、FastAPI service、live market feed、Accounting mutation 或 Risk direct market lookup。
 
 ### Market Data source-of-truth
 
@@ -1032,7 +1033,7 @@ Market Data Core 禁止：
 
 ### Instrument identity contract
 
-未来 `Tick`、`Bar` 和 `FeatureSnapshot` 必须携带完整 instrument identity：
+`Tick`、`Bar` 和未来 `FeatureSnapshot` 必须携带完整 instrument identity：
 
 | 字段 | 语义 |
 |---|---|
@@ -1061,7 +1062,7 @@ Market Data Core 禁止：
 
 ### Market Data domain contracts
 
-未来必须新增或冻结以下类型：
+Stage G 已新增或冻结以下类型：
 
 - `Tick`
 - `Bar`
@@ -1113,12 +1114,13 @@ Market Data Core 禁止：
 | `open_interest` | `Decimal` | required | 持仓量，必须 `>= 0`。 |
 | `source` | `str` | required | typed market source。 |
 | `quality_status` | `MarketDataResultStatus` | required | data quality gate 结果。 |
+| `raw_payload` | `dict[str, Any] \| None` | `None` | 可选诊断 payload；不承载 source-of-truth。 |
 
 #### DataQualityResult
 
 `DataQualityResult` 必须是 typed result，不得返回裸字符串或依赖 exception 文本作为契约。
 
-字段建议：
+字段：
 
 - `status: MarketDataResultStatus`
 - `event_type: MarketDataEventType | None`
@@ -1132,7 +1134,7 @@ Market Data Core 禁止：
 
 `MarketDataEvent` 是行情质量门和 replay 可消费的 typed event envelope，不是运行时 transport message。
 
-字段建议：
+字段：
 
 - `event_id: str`
 - `event_type: MarketDataEventType`
@@ -1151,7 +1153,7 @@ Market Data Core 禁止：
 
 `MarketDataSnapshot` 是给 FeatureSnapshot / Strategy 上游消费的 typed market view。
 
-字段建议：
+字段：
 
 - `symbol: str`
 - `instrument_id: str`
@@ -1197,7 +1199,7 @@ Market Data Core 禁止：
 
 `BarTimeframe` 必须是枚举或等价 typed value，不得使用任意裸字符串散落在实现中。
 
-初始建议值：
+初始值：
 
 - `M1`
 - `M5`
@@ -1251,7 +1253,7 @@ Stage G Contract Freeze 只定义 aggregation contract，不实现 aggregation�
 
 ### Repository and DB future contract
 
-Stage G Contract Freeze 不创建 schema。后续实现 Market facts 持久化时需要：
+Stage G 已创建 Market facts 持久化契约：
 
 - `MarketTickRepository`
 - `MarketBarRepository`
@@ -1301,9 +1303,9 @@ Canonical payload 排除：
 - Kafka 不能替代 DB facts。
 - FastAPI / Celery 不属于 Market Data Core。
 
-### Future implementation tests
+### Implementation tests
 
-后续实现必须覆盖：
+Stage G tests 覆盖：
 
 - Tick Decimal validation。
 - Bar OHLC validation。
@@ -1910,6 +1912,80 @@ Existing `settlement_snapshots` table is insufficient for Stage F. Stage F migra
 
 Stage F migration 不新增 `settlement_events`、broker reconciliation table 或 risk table，不改变 Stage B / C / D / E facts schema。如历史兼容要求保留 `raw_payload` column，该字段只能作为非事实诊断字段，不参与 canonical payload，不承载缺失的 typed source-of-truth 字段。
 
+### market_ticks
+
+Stage G 已新增 `market_ticks` 表作为 Tick market facts ledger。
+
+字段：
+
+- `id`
+- `symbol`
+- `instrument_id`
+- `trade_instrument_id`
+- `exchange`
+- `trading_day`
+- `ts`
+- `price`
+- `volume`
+- `turnover`
+- `open_interest`
+- `bid_price_1`
+- `ask_price_1`
+- `bid_volume_1`
+- `ask_volume_1`
+- `source`
+- `raw_payload`
+- `received_at`
+
+约束和索引：
+
+- `UNIQUE(exchange, instrument_id, ts, source)`，名称为 `uq_market_ticks_identity`
+- `exchange` 索引
+- `instrument_id` 索引
+- `trading_day` 索引
+- `ts` 索引
+- `(exchange, instrument_id, trading_day)` 复合索引
+
+Canonical payload 字段为 `exchange`、`instrument_id`、`trade_instrument_id`、`symbol`、`trading_day`、`ts`、`price`、`volume`、`turnover`、`open_interest`、`bid_price_1`、`ask_price_1`、`bid_volume_1`、`ask_volume_1`、`source`。`raw_payload` 和 `received_at` 不参与 canonical equality。
+
+### market_bars
+
+Stage G 已新增 `market_bars` 表作为 Bar market facts ledger。
+
+字段：
+
+- `id`
+- `symbol`
+- `instrument_id`
+- `trade_instrument_id`
+- `exchange`
+- `trading_day`
+- `timeframe`
+- `bar_ts`
+- `open`
+- `high`
+- `low`
+- `close`
+- `volume`
+- `turnover`
+- `open_interest`
+- `source`
+- `quality_status`
+- `raw_payload`
+- `received_at`
+
+约束和索引：
+
+- `UNIQUE(exchange, instrument_id, timeframe, bar_ts, source)`，名称为 `uq_market_bars_identity`
+- `exchange` 索引
+- `instrument_id` 索引
+- `trading_day` 索引
+- `bar_ts` 索引
+- `timeframe` 索引
+- `(exchange, instrument_id, trading_day)` 复合索引
+
+Canonical payload 字段为 `exchange`、`instrument_id`、`trade_instrument_id`、`symbol`、`trading_day`、`timeframe`、`bar_ts`、`open`、`high`、`low`、`close`、`volume`、`turnover`、`open_interest`、`source`、`quality_status`。`raw_payload` 和 `received_at` 不参与 canonical equality。
+
 ### risk_events
 
 字段：
@@ -2000,10 +2076,8 @@ uv run mypy src
 
 ## Future Migration Candidates
 
-以下不是当前代码字段；Stage G 已冻结其中 `symbol` 和 `trade_instrument_id` 的未来 Market Data identity 语义，但真正进入代码和 schema 仍必须通过 migration：
+以下不是当前代码字段，只能通过 domain migration 增加；迁移必须同步更新代码、必要的 ORM/Alembic、测试和本文档：
 
-- `symbol`
-- `trade_instrument_id`
 - `expected_price`
 
-它们只能通过 domain migration 增加；迁移必须同步更新代码、必要的 ORM/Alembic、测试和本文档。
+`symbol` 和 `trade_instrument_id` 已随 Stage G 进入 Market Data domain/schema；非 Market Data 事实如需新增这些字段仍必须另走 migration。
