@@ -50,14 +50,14 @@
   - 已实现 typed FeatureSnapshot、FeatureConfig、FeatureBuildResult、pure FeatureBuilder、canonical payload、FeatureSnapshotRepository、SQLAlchemy repository、UoW integration、`feature_snapshots` migration、FeatureService、deterministic feature replay 和 tests。
   - Stage H 未实现 Strategy、Signal、Tick -> Bar Aggregator、Broker adapter、Runtime infra、ML features、portfolio features 或 cross-instrument features。
 - Strategy / Signal Lifecycle Core 已完成。
-  - 当前基线：`stage-i-strategy-signal-contract-freeze / 0bcbfd8` 后实现。
+  - 当前基线：`stage-i-strategy-signal-lifecycle-core / 780acbd`。
   - 已实现 `StrategyConfig` canonicalization / hash、`StrategyContext`、deterministic `signal_id`、`SignalCandidate`、`SignalDecision`、`TriggerResult`、signal lifecycle、canonical payload、Signal repository protocols、SQLAlchemy repositories、UoW integration、`signal_candidates` / `signal_events` migration、`StrategyService` / `SignalLifecycleService`、deterministic strategy replay 和 tests。
   - Stage I 未实现 Order creation、Risk check、OMS integration、Execution integration、Broker adapter、runtime scheduling、paper / sim / live、portfolio optimization、ML model serving、cross-instrument strategy 或 Accounting mutation。
 
 当前尚未实现为业务能力的部分：
 
 - Application Execution Orchestrator。
-- OMS public UNKNOWN entry。
+- Trading Workflow Core implementation。
 - RiskContext、portfolio/account risk、intraday limits、kill switch risk。
 - Recovery / Replay Framework。
 - FastAPI / Celery / Kafka / Runtime control plane。
@@ -135,12 +135,12 @@
 2. Market Data Service 执行 data quality gate，处理缺口、延迟、乱序、异常价格和 session 归属。
 3. Feature Builder 基于 typed market facts、calendar、session 和规则版本生成 deterministic `FeatureSnapshot`。
 4. Strategy 消费 `FeatureSnapshot` 和允许的 typed context，输出 `SignalCandidate` / `SignalDecision`。
-5. Application Service 将 `SignalDecision` 转换为后续 OrderIntent / `OrderRequest`，生成稳定 `client_order_id`。
-6. RiskContext Builder 组装 account、portfolio、position、margin、market、intraday、kill switch 等 typed context。
-7. Pure Risk Core 计算并返回 `RiskResult`。
-8. Application Service 将 `RiskResult` 交给 `OMSService.apply_risk_result(...)`。
-9. OMS 推进 `OrderState` 到 `RISK_ACCEPTED` 或 `REJECTED_BY_RISK`，并写入 `order_events`。
-10. Application Execution Orchestrator 对 `RISK_ACCEPTED` 订单发起 submit。
+5. Trading Workflow application layer 组装 `SignalDecision`、Strategy / Position / Portfolio / Account / Margin / RiskConfig / Calendar typed context。
+6. RiskEngine deterministic evaluate 并返回 Stage J `RiskResult`。
+7. 只有 `ACCEPT` / `REDUCE` 进入 `OrderIntentBuilder`；`REJECT` / `BLOCK` / `UNKNOWN` 不创建 `OrderIntent`，不调用 OMS。
+8. `OrderIntentBuilder` 生成 deterministic `OrderIntent` 和 `intent_id`。
+9. OMS 通过 `OMS.create_order(OrderIntent)` 创建订单；`OrderIntent` 不是 Order，不承载 OMS state。
+10. Application Execution Orchestrator 对可提交订单发起 submit。
 11. Orchestrator 先通过 OMS 事件让订单进入 `SUBMITTING`，再调用 EMS command port。
 12. EMS 调用 Mock / paper / SimNow / live broker adapter 的 command port。
 13. Execution / Broker adapter 产生 typed `ExchangeReport`。
@@ -442,16 +442,27 @@ Stage F contract freeze：
 - Acceptance criteria：Strategy / Signal Lifecycle Core 可 deterministic 生成、持久化、幂等 duplicate、typed conflict/error、执行 lifecycle gate 和 replay；不得越过 Strategy source-of-truth、output boundary、replay/idempotency 和 Risk / OMS 隔离规则。
 - Suggested tag：`stage-i-strategy-signal-lifecycle-core`。
 
-### Stage J: OMS Public UNKNOWN Entry
+### Stage J: Trading Workflow Core Contract Freeze
 
-- Goal：为 UNKNOWN candidate / UNKNOWN_REPORT 提供公开、类型化、可审计的 OMS entry。
-- Inputs：OMS UNKNOWN 契约、mapper `UNKNOWN_REPORT_REQUIRES_OMS_UNKNOWN_ENTRY`、orchestrator 分流结果。
-- Outputs：typed UNKNOWN entry、diagnostic event、recovery handoff。
-- Allowed changes：OMS service contract、UNKNOWN entry tests、docs/test matrix update。
-- Forbidden changes：不新增非法状态迁移，不扩大 UNKNOWN 恢复目标，不让 adapter 自行进入 UNKNOWN。
-- Required tests：UNKNOWN entry reason validation、duplicate unknown event、terminal order protection、recoverable/unrecoverable UNKNOWN、raw_payload diagnostic-only。
-- Acceptance criteria：UNKNOWN_REPORT 可以被安全诊断进入或拒绝；UNKNOWN 恢复仍只走冻结目标。
-- Suggested tag：`stage-j-oms-public-unknown-entry`。
+- Goal：冻结 Strategy / Signal -> Risk -> OrderIntent -> OMS 的 Trading Workflow Core 契约；本阶段只改文档，不实现代码、schema、repository、OMS/Risk/Strategy/Execution 变更，也不进入 Broker / Paper / Sim / Live。
+- Inputs：`SignalDecision`、`StrategyConfig`、`PositionContext`、`PortfolioContext`、`AccountContext`、`MarginSnapshot`、`RiskConfig`、`TradingCalendar` / `Session`。
+- Forbidden inputs：`OrderStatus`、`OrderEvent`、`ExchangeReport`、`raw_payload`、Broker state、OMS state machine internals。
+- Outputs：`RiskResult`、`OrderIntent` 和 workflow/replay/idempotency/boundary contract；`OrderIntent` 不是 Order。
+- Allowed changes：`docs/architecture/SYSTEM_MASTER_PLAN.md`、`docs/domain/DOMAIN_FREEZE.md`。
+- Forbidden changes：`src/`、`tests/`、`alembic/`、schema、OMS implementation、Risk implementation、Strategy implementation、Execution implementation、Broker / Runtime。
+- `RiskResultStatus`：冻结为 `ACCEPT`、`REDUCE`、`REJECT`、`BLOCK`、`UNKNOWN`。
+- `RiskResult`：字段冻结为 `signal_id`、`risk_result_id`、`risk_status`、`risk_reason`、`risk_level`、`approved_quantity`、`max_quantity`、`expected_margin`、`expected_notional`、`config_hash`、`evaluation_ts`。RiskResult 必须 deterministic；`raw_payload` 不参与事实；same inputs -> same result。
+- `OrderIntent`：字段冻结为 `intent_id`、`signal_id`、`risk_result_id`、strategy identity、instrument identity、`side`、`offset`、`quantity`、`price`、`order_type`、`tif`、`expected_margin`、`expected_notional`、`intent_reason`。`intent_id` 必须 deterministic。
+- Workflow：`SignalDecision -> RiskEngine.evaluate(...) -> RiskResult -> OrderIntentBuilder -> OrderIntent -> OMS.create_order(...)`。只有 `ACCEPT` / `REDUCE` 可进入 `OrderIntent`；`REJECT` / `BLOCK` / `UNKNOWN` 不创建 `OrderIntent`，不调用 OMS。
+- Quantity reduction：`REDUCE` 必须满足 reduced quantity `> 0` 且 `< original requested quantity`；若 reduced quantity `<= 0`，必须转换为 `REJECT`。
+- Idempotency：`RiskResult` same canonical -> no-op，different canonical -> conflict/error；`OrderIntent` same canonical -> no-op，different canonical -> conflict/error。`signal_id + config_hash + position snapshot identity` 必须得到 deterministic result。
+- Replay：same `SignalDecision`、`RiskConfig`、`PositionContext`、`PortfolioContext`、`MarginSnapshot` 得到 same `RiskResult` 和 same `OrderIntent`；replay 不调用 OMS、不调用 Execution、不修改 Accounting。
+- Boundaries：Strategy 不创建 `OrderIntent`、不调用 OMS；Risk 不知道 Execution；Execution 不知道 Signal；OMS 不消费 `FeatureSnapshot`、不消费 `StrategyConfig`；Broker 不参与 Stage J。
+- Future repositories：后续实现需要 `RiskResultRepository` 和 `OrderIntentRepository`。唯一键分别为 `risk_result_id`、`intent_id`。Canonical 排除 `raw_payload`、`created_at`、`received_at`。
+- Required future tests：`ACCEPT`、`REDUCE`、`REJECT`、`BLOCK`、`UNKNOWN`；deterministic RiskResult；deterministic OrderIntent；REDUCE quantity rule；REJECT/BLOCK/UNKNOWN no OMS call；replay deterministic；duplicate same canonical；duplicate different canonical；no Strategy direct OMS call；no Execution direct Signal consumption；no raw_payload facts。
+- Explicit non-goals：Execution submit、Broker adapter、Paper、Sim、Live、Exchange connectivity、OMS state machine changes、Portfolio optimization。
+- Acceptance criteria：Trading Workflow Core 契约可作为下一阶段实现边界；不得提前改变代码、schema、OMS/Risk/Strategy/Execution 或 Broker/Runtime。
+- Suggested tag：`stage-j-trading-workflow-core-contract-freeze`。
 
 ### Stage K: Recovery / Replay Framework
 
@@ -478,7 +489,7 @@ Stage F contract freeze：
 ### Stage M: Broker / Adapter Layer
 
 - Goal：接入 CTP / SimNow / broker adapter。
-- Inputs：runtime ports、replay/reconciliation、orchestrator、UNKNOWN entry、Fill/Trade migration。
+- Inputs：runtime ports、replay/reconciliation、orchestrator、Trading Workflow Core、Fill/Trade migration。
 - Outputs：broker command/query/report adapter、heartbeat/reconnect/session manager、typed query result。
 - Allowed changes：adapter module、broker config/secrets requirements、sim tests、query reconciliation tests。
 - Forbidden changes：adapter 不调用 OMS/Risk/DB，不改 mapper 语义，不用 raw broker message 补事实。
@@ -523,11 +534,11 @@ Stage G -> Stage H
 Stage C + Stage G + Stage H -> Stage I
 ```
 
-UNKNOWN / Recovery / Runtime / Broker / Production 主线：
+Trading Workflow / Recovery / Runtime / Broker / Production 主线：
 
 ```text
-Stage A -> Stage J
-Stage A + Stage B + Stage C + Stage F + Stage G + Stage J -> Stage K
+Stage I + Stage C + Stage D + Stage F -> Stage J
+Stage A + Stage B + Stage C + Stage F + Stage G + Stage H + Stage I + Stage J -> Stage K
 Stage K -> Stage L
 Stage K + Stage L -> Stage M
 Stage M -> Stage N
@@ -536,11 +547,11 @@ Stage N -> Stage O
 
 依赖说明：
 
-- OMS Public UNKNOWN Entry 是异常回报治理能力，不是 Fill / Trade Domain Migration 的硬前置。
 - Market Data / Feature Snapshot 是 Strategy / Signal Lifecycle 的前置，并应作为并行主线提前规划；Stage H 只冻结 FeatureSnapshot，不进入 Strategy / Signal。
 - Stage I 实现 Strategy / Signal Lifecycle Core，但不实现 Order creation、Risk check、OMS integration 或 Execution integration。
-- Risk Context / Portfolio Risk Upgrade 依赖 Position、Market Data、Strategy / Signal，不应提前硬接真实账户上下文。
-- Recovery / Replay 依赖订单、成交、持仓、结算、行情和 UNKNOWN 语义。
+- Stage J 冻结 Trading Workflow Core 契约，只定义 SignalDecision -> RiskResult -> OrderIntent -> OMS.create_order 的边界；不改 OMS state machine，不接 Execution，不进入 Broker/Runtime。
+- Risk Context / Portfolio Risk Upgrade 依赖 Position、Margin、Accounting、Market Data、FeatureSnapshot、Strategy / Signal，不应提前硬接 broker state 或 raw payload。
+- Recovery / Replay 依赖订单、成交、持仓、结算、行情、Strategy / Signal 和 Trading Workflow 语义。
 - Broker / Adapter 必须在 Recovery / Replay 和 Runtime 边界稳定后进入。
 - Operations / Safety / Production Readiness 是 Paper / Sim / Live Rollout 的硬前置。
 - Broker / Adapter 完成后不得直接进入 rollout。
@@ -555,8 +566,7 @@ Stage N -> Stage O
 - 没有 Stage G，不冻结 Strategy 所需 typed market input。
 - 没有 Stage H，不冻结 Strategy 所需 FeatureSnapshot。
 - 没有 Stage I，不把 Strategy / Signal Lifecycle 写成已完成。
-- 没有后续 Risk Context / Portfolio Risk Upgrade，不把真实 account / portfolio / position / intraday / kill switch 风控写成已完成。
-- 没有 Stage J，不应用 UNKNOWN_REPORT。
+- 没有 Stage J，不把 SignalDecision 接入 Risk -> OrderIntent -> OMS workflow。
 - 没有 Stage K，不接 broker query reconciliation。
 - 没有 Stage L/M/N，不进入 sim/live。
 - 没有 Stage N，不进入 Stage O。
@@ -594,18 +604,20 @@ Contract Amendment 必须包含：
 ### Unit Tests
 
 - Domain enum/model/Decimal contract。
-- OMS state machine、UNKNOWN entry、recovery target。
+- OMS state machine、recovery target。
 - Risk pure rules、RiskContext input validation、account risk、portfolio exposure、position risk、intraday limit、kill switch context rule。
 - Execution DTO、mapper、mapping result、report handler。
 - Accounting calculation：Trade、Position、Margin、PnL、Settlement。
 - Market Data data quality、FeatureSnapshot deterministic generation。
 - Strategy deterministic signal id、SignalCandidate / SignalDecision validation、Signal lifecycle gate。
+- Trading Workflow RiskResult / OrderIntent deterministic contract。
 
 ### Integration Tests
 
 - OMS repository/UoW transaction。
 - Orchestrator submit/cancel + OMS + Execution runtime。
 - Risk -> OMS application orchestration。
+- Trading Workflow no-OMS-call gates for `REJECT` / `BLOCK` / `UNKNOWN`。
 - Fill/Trade -> Position -> Margin/PnL。
 - Runtime adapter command boundary。
 
@@ -626,6 +638,7 @@ Contract Amendment 必须包含：
 - Trade / Position replay。
 - Market data / FeatureSnapshot replay。
 - Strategy / Signal replay。
+- Trading Workflow replay。
 - Settlement replay。
 - Divergence detection and typed reconciliation result。
 
@@ -640,7 +653,7 @@ Contract Amendment 必须包含：
 ### Paper Trading Tests
 
 - No live broker submit/cancel。
-- Full strategy -> signal -> risk -> OMS -> execution simulation -> accounting chain。
+- Full strategy -> signal -> risk -> OrderIntent -> OMS -> execution simulation -> accounting chain。
 - Runtime worker retry idempotency。
 - Metrics, audit and kill switch gate。
 
@@ -716,23 +729,22 @@ FastAPI、Celery、Kafka、Redis、async runtime、cloud、KMS 是后续 Runtime
 
 本总方案没有发现 P0/P1 blocker。
 
-下一步不是继续写文档，而是进入：
+下一步不是继续写文档，也不是进入 Broker / Runtime，而是进入：
 
 ```text
-Stage A: Application Execution Orchestrator Scope/Implementation
+Stage J implementation: Trading Workflow Core
 ```
 
-Stage A 的实施入口应聚焦：
+Stage J implementation 的实施入口应聚焦：
 
-- 定义 orchestrator 的 submit/cancel public API。
-- 明确 orchestrator 如何读取当前 `OrderState` 并构造 `MappingContext`。
-- 明确 submit 前进入 `SUBMITTING`、cancel 前进入 `CANCEL_PENDING` 的 OMS event 语义。
-- 明确 `MAPPED_ORDER_EVENT`、`DUPLICATE_REPORT`、`IGNORED_REPORT`、`INSUFFICIENT_CONTEXT`、`MAPPING_ERROR`、`DOMAIN_FIELD_UNSUPPORTED`、`ENTER_UNKNOWN_CANDIDATE` 的分流行为。
-- 保持 mapper pure，保持 Risk pure，不修改 DB schema，不接真实 broker。
+- 新增 typed `RiskResultStatus` / Stage J `RiskResult` contract 实现，保持 deterministic canonical。
+- 新增 `OrderIntent` 与 deterministic `intent_id`。
+- 实现 `OrderIntentBuilder`，只允许 `ACCEPT` / `REDUCE` 进入。
+- 实现 replay / idempotency guards：same canonical no-op，different canonical conflict/error。
+- 保持 Strategy 不调用 OMS，Risk 不知道 Execution，Execution 不知道 Signal，OMS 不消费 FeatureSnapshot / StrategyConfig。
+- 后续需要 repository 时再新增 `RiskResultRepository` / `OrderIntentRepository` 和 schema migration。
 
-Stage A 完成后：
+Stage J implementation 完成后：
 
-- 主会计链可进入 Stage B: Fill / Trade Domain Migration。
-- Stage J: OMS Public UNKNOWN Entry 可并行准备，但它是异常回报治理能力，不阻塞 Fill / Trade。
-- Stage I 完成后，下一步建议进入后续 Risk Context / Portfolio Risk Upgrade 或 application orchestration 边界设计；仍不应直接跳到 Broker adapter 或 runtime infrastructure。
+- 可进入 Stage K: Recovery / Replay Framework。
 - 不应直接跳到 broker adapter 或 runtime infrastructure。

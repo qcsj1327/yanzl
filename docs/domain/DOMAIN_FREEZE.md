@@ -1841,6 +1841,260 @@ Stage I 已新增 `signal_events` 表作为 Signal lifecycle event ledger。
 
 `signal_events` 只记录 lifecycle status，不创建 Order、不写 Risk/OMS/Execution facts。`raw_payload` diagnostic only。
 
+## Stage J Trading Workflow Core Contract Freeze
+
+Stage J 冻结 Trading Workflow Core 契约：`SignalDecision -> RiskResult -> OrderIntent -> OMS.create_order`。本阶段只改文档，不写代码，不改 schema，不改 `src/` / `tests/` / `alembic/`，不改 OMS / Risk / Strategy / Execution implementation，不进入 Broker / Runtime / Paper / Sim / Live。
+
+Stage J 是契约冻结，不表示当前代码已经实现 `RiskResultRepository`、`OrderIntentRepository`、`OrderIntent` schema 或 `OMS.create_order(OrderIntent)`。这些只能在后续实现阶段通过明确 migration / tests 进入。
+
+### Trading Workflow source-of-truth
+
+Trading Workflow 只允许消费：
+
+- `SignalDecision`
+- `StrategyConfig`
+- `PositionContext`
+- `PortfolioContext`
+- `AccountContext`
+- `MarginSnapshot`
+- `RiskConfig`
+- `TradingCalendar` / `Session`
+
+Trading Workflow 禁止消费：
+
+- `OrderStatus`
+- `OrderEvent`
+- `ExchangeReport`
+- `raw_payload`
+- Broker state
+- OMS state machine internals
+
+`raw_payload` 只能 diagnostic，不得参与 RiskResult、OrderIntent、idempotency、replay 或 canonical equality。
+
+### RiskResultStatus contract
+
+Stage J `RiskResultStatus` 冻结为：
+
+- `ACCEPT`：完整接受 signal requested quantity。
+- `REDUCE`：接受降低后的 positive quantity。
+- `REJECT`：拒绝，不生成 `OrderIntent`。
+- `BLOCK`：策略、账户、组合、交易时段或安全门禁阻断，不生成 `OrderIntent`。
+- `UNKNOWN`：风控无法确定 typed result，不生成 `OrderIntent`。
+
+### RiskResult contract
+
+Stage J `RiskResult` 是 trading workflow 的 deterministic 风控事实。它不同于早期 pure Risk / OMS legacy `RiskResult(decision, rule_name, reason)`；后续实现如需迁移，必须显式处理兼容边界，不得把 legacy 字段扩展成隐式事实来源。
+
+字段冻结：
+
+| 字段 | 类型 | 默认值 | 语义 |
+|---|---|---|---|
+| `signal_id` | `str` | required | 输入 `SignalDecision` 身份。 |
+| `risk_result_id` | `str` | required | deterministic RiskResult identity。 |
+| `risk_status` | `RiskResultStatus` | required | `ACCEPT` / `REDUCE` / `REJECT` / `BLOCK` / `UNKNOWN`。 |
+| `risk_reason` | `str \| None` | `None` | 类型化风控说明；不是 raw diagnostic payload。 |
+| `risk_level` | `str` | required | 风控等级，例如 rule/policy severity；后续 enum 化前仍必须 canonical。 |
+| `approved_quantity` | `Decimal` | required | 允许下单数量；`ACCEPT` 等于 requested quantity，`REDUCE` 为降低后的 positive quantity，其他状态为 `Decimal("0")`。 |
+| `max_quantity` | `Decimal` | required | 本次上下文允许的最大数量。 |
+| `expected_margin` | `Decimal` | required | 预期保证金。 |
+| `expected_notional` | `Decimal` | required | 预期名义金额。 |
+| `config_hash` | `str` | required | `RiskConfig` canonical hash。 |
+| `evaluation_ts` | `datetime` | required | 风控评价时间；用于 audit，只有进入 canonical policy 时才可影响 identity。 |
+
+规则：
+
+- `RiskResult` 必须 deterministic。
+- `raw_payload` 不参与事实。
+- same inputs -> same result。
+- `signal_id + config_hash + position snapshot identity` 必须得到 deterministic result。
+- `risk_result_id` 必须由 canonical payload deterministic 派生，不得使用 runtime random value、DB id 或系统当前时间。
+- same canonical -> no-op。
+- different canonical -> conflict / error。
+
+### OrderIntent contract
+
+`OrderIntent` 是经过 RiskResult 授权后的下单意图。`OrderIntent` 不是 Order，不承载 OMS state，不替代 `OrderState`、`OrderEvent` 或 Execution command。
+
+字段冻结：
+
+| 字段 | 类型 | 默认值 | 语义 |
+|---|---|---|---|
+| `intent_id` | `str` | required | deterministic OrderIntent identity。 |
+| `signal_id` | `str` | required | 来源 `SignalDecision` 身份。 |
+| `risk_result_id` | `str` | required | 来源 `RiskResult` 身份。 |
+| `strategy_name` | `str` | required | strategy identity。 |
+| `strategy_version` | `str` | required | strategy identity。 |
+| `strategy_config_hash` | `str` | required | strategy identity。 |
+| `instrument_id` | `str` | required | instrument identity。 |
+| `trade_instrument_id` | `str` | required | tradable instrument identity。 |
+| `symbol` | `str` | required | display / market symbol identity。 |
+| `exchange` | `str` | required | exchange identity。 |
+| `side` | enum / `str` | required | 买卖方向。 |
+| `offset` | enum / `str` | required | 开平方向。 |
+| `quantity` | `Decimal` | required | 授权下单数量。 |
+| `price` | `Decimal` | required | 下单价格。 |
+| `order_type` | enum / `str` | required | 订单类型。 |
+| `tif` | enum / `str` | required | time-in-force。 |
+| `expected_margin` | `Decimal` | required | 来自 `RiskResult` 的预期保证金。 |
+| `expected_notional` | `Decimal` | required | 来自 `RiskResult` 的预期名义金额。 |
+| `intent_reason` | `str \| None` | `None` | 生成意图的 typed reason。 |
+
+规则：
+
+- `intent_id` 必须 deterministic。
+- `OrderIntent` 不得从 `OrderStatus`、`OrderEvent`、`ExchangeReport`、Broker state、OMS internals 或 `raw_payload` 派生。
+- `OrderIntent` same canonical -> no-op。
+- `OrderIntent` different canonical -> conflict / error。
+- Stage J 目标契约中，`OMS.create_order(...)` 只接受 `OrderIntent`。当前实现仍是 legacy `OrderRequest` 入口，后续实现必须通过显式 contract migration 改造。
+
+### Workflow contract
+
+冻结 workflow：
+
+```text
+SignalDecision
+↓
+RiskEngine.evaluate(...)
+↓
+RiskResult
+↓
+OrderIntentBuilder
+↓
+OrderIntent
+↓
+OMS.create_order(...)
+```
+
+只有以下 `RiskResultStatus` 允许进入 `OrderIntentBuilder` 并创建 `OrderIntent`：
+
+- `ACCEPT`
+- `REDUCE`
+
+以下状态必须停止 workflow：
+
+- `REJECT`
+- `BLOCK`
+- `UNKNOWN`
+
+停止 workflow 时：
+
+- 不创建 `OrderIntent`。
+- 不调用 OMS。
+- 不调用 Execution。
+- 不修改 Accounting。
+
+### Quantity reduction contract
+
+`REDUCE` 必须满足：
+
+- reduced quantity `> 0`
+- reduced quantity `< original requested quantity`
+
+如果 reduced quantity `<= 0`，必须转换为 `REJECT`。
+
+`ACCEPT` 必须保持 approved quantity 等于 original requested quantity。`REJECT` / `BLOCK` / `UNKNOWN` 的 approved quantity 必须为 `Decimal("0")`。
+
+### Replay / idempotency contract
+
+RiskResult idempotency：
+
+- same canonical -> no-op。
+- different canonical -> conflict / error。
+
+OrderIntent idempotency：
+
+- same canonical -> no-op。
+- different canonical -> conflict / error。
+
+Replay 输入相同：
+
+- `SignalDecision`
+- `RiskConfig`
+- `PositionContext`
+- `PortfolioContext`
+- `MarginSnapshot`
+
+Replay 结果必须相同：
+
+- `RiskResult`
+- `OrderIntent`
+
+Replay 禁止：
+
+- 调用 OMS。
+- 调用 Execution。
+- 修改 Accounting。
+- 读取 Broker state。
+- 使用 `raw_payload` 补事实。
+
+### Boundary contract
+
+- Strategy 不创建 `OrderIntent`。
+- Strategy 不调用 OMS。
+- Risk 不知道 Execution。
+- Execution 不知道 Signal。
+- OMS 不消费 `FeatureSnapshot`。
+- OMS 不消费 `StrategyConfig`。
+- Broker 不参与 Stage J。
+- Trading Workflow application layer 负责连接 `SignalDecision`、`RiskEngine.evaluate(...)`、`OrderIntentBuilder` 和 `OMS.create_order(...)`，但不得把 OMS state machine internals 暴露给 Risk 或 Strategy。
+
+### Future repositories
+
+Stage J 后续实现需要：
+
+- `RiskResultRepository`
+- `OrderIntentRepository`
+
+唯一键：
+
+- `RiskResult`：`risk_result_id`
+- `OrderIntent`：`intent_id`
+
+Canonical excludes：
+
+- `raw_payload`
+- `created_at`
+- `received_at`
+
+Repository behavior：
+
+- duplicate same canonical -> return existing / no-op。
+- duplicate different canonical -> typed conflict / error。
+- 不裸露 `IntegrityError`。
+
+### Stage J future implementation tests
+
+未来实现必须覆盖：
+
+- `ACCEPT`
+- `REDUCE`
+- `REJECT`
+- `BLOCK`
+- `UNKNOWN`
+- deterministic RiskResult
+- deterministic OrderIntent
+- REDUCE quantity rule
+- REJECT / BLOCK / UNKNOWN no OMS call
+- replay deterministic
+- duplicate same canonical
+- duplicate different canonical
+- no Strategy direct OMS call
+- no Execution direct Signal consumption
+- no raw_payload facts
+
+### Stage J explicit non-goals
+
+Stage J 不实现：
+
+- Execution submit。
+- Broker adapter。
+- Paper。
+- Sim。
+- Live。
+- Exchange connectivity。
+- OMS state machine changes。
+- Portfolio optimization。
+
 ### feature_snapshots
 
 Stage H 已新增 `feature_snapshots` 表作为 FeatureSnapshot derived facts ledger。
