@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from futures_mvp.db.repositories import (
     SQLAlchemyAccountSnapshotRepository,
+    SQLAlchemyFeatureSnapshotRepository,
     SQLAlchemyMarginSnapshotRepository,
     SQLAlchemyMarketBarRepository,
     SQLAlchemyMarketTickRepository,
@@ -41,6 +42,7 @@ class SQLAlchemyUnitOfWork:
         self.settlement_snapshots: SQLAlchemySettlementSnapshotRepository
         self.market_ticks: SQLAlchemyMarketTickRepository
         self.market_bars: SQLAlchemyMarketBarRepository
+        self.feature_snapshots: SQLAlchemyFeatureSnapshotRepository
 
     def __enter__(self) -> "SQLAlchemyUnitOfWork":
         self._session = self._provided_session or self._session_factory()
@@ -55,6 +57,7 @@ class SQLAlchemyUnitOfWork:
         self.settlement_snapshots = SQLAlchemySettlementSnapshotRepository(self._session)
         self.market_ticks = SQLAlchemyMarketTickRepository(self._session)
         self.market_bars = SQLAlchemyMarketBarRepository(self._session)
+        self.feature_snapshots = SQLAlchemyFeatureSnapshotRepository(self._session)
         return self
 
     def __exit__(

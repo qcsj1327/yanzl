@@ -421,6 +421,63 @@ class MarketBar(Base):
     )
 
 
+class FeatureSnapshot(Base):
+    __tablename__ = "feature_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "exchange",
+            "instrument_id",
+            "timeframe",
+            "bar_ts",
+            "feature_version",
+            "feature_config_hash",
+            name="uq_feature_snapshots_identity",
+        ),
+        Index(
+            "ix_feature_snapshots_exchange_instrument_day",
+            "exchange",
+            "instrument_id",
+            "trading_day",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(64), nullable=False)
+    instrument_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    trade_instrument_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    exchange: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    trading_day: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    timeframe: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    bar_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    feature_version: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    feature_config_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    source_bar_keys: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    returns: Mapped[Decimal | None] = mapped_column(DECIMAL)
+    bar_return: Mapped[Decimal | None] = mapped_column(DECIMAL)
+    price_range: Mapped[Decimal | None] = mapped_column(DECIMAL)
+    range: Mapped[Decimal | None] = mapped_column(DECIMAL)
+    atr: Mapped[Decimal | None] = mapped_column(DECIMAL)
+    volume_ratio: Mapped[Decimal | None] = mapped_column(DECIMAL)
+    moving_average: Mapped[Decimal | None] = mapped_column(DECIMAL)
+    bias: Mapped[Decimal | None] = mapped_column(DECIMAL)
+    breakout_level: Mapped[Decimal | None] = mapped_column(DECIMAL)
+    volatility: Mapped[Decimal | None] = mapped_column(DECIMAL)
+    momentum: Mapped[Decimal | None] = mapped_column(DECIMAL)
+    source_window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source_window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    warmup_complete: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    quality_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    missing_bar_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    gap_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    raw_payload: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    calculated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class RiskEvent(Base):
     __tablename__ = "risk_events"
 

@@ -8,6 +8,7 @@ from futures_mvp.domain.errors import FuturesMvpError
 from futures_mvp.domain.models import (
     AccountSnapshot,
     Bar,
+    FeatureSnapshot,
     MarginSnapshot,
     OrderEvent,
     OrderRequest,
@@ -67,6 +68,10 @@ class SettlementSnapshotConflictError(RepositoryError):
 
 class MarketDataConflictError(RepositoryError):
     """Raised when a market data identity is reused with different facts."""
+
+
+class FeatureSnapshotConflictError(RepositoryError):
+    """Raised when a feature snapshot identity is reused with different facts."""
 
 
 @runtime_checkable
@@ -308,6 +313,38 @@ class MarketBarRepository(Protocol):
 
 
 @runtime_checkable
+class FeatureSnapshotRepository(Protocol):
+    def append_feature_snapshot(self, snapshot: FeatureSnapshot) -> FeatureSnapshot: ...
+
+    def get_by_identity(
+        self,
+        exchange: str,
+        instrument_id: str,
+        timeframe: BarTimeframe,
+        bar_ts: datetime,
+        feature_version: str,
+        feature_config_hash: str,
+    ) -> FeatureSnapshot | None: ...
+
+    def list_by_instrument(
+        self,
+        exchange: str,
+        instrument_id: str,
+        timeframe: BarTimeframe,
+        start_bar_ts: datetime,
+        end_bar_ts: datetime,
+    ) -> list[FeatureSnapshot]: ...
+
+    def list_by_trading_day(
+        self,
+        exchange: str,
+        instrument_id: str,
+        timeframe: BarTimeframe,
+        trading_day: date,
+    ) -> list[FeatureSnapshot]: ...
+
+
+@runtime_checkable
 class UnitOfWork(Protocol):
     orders: OrderRepository
     order_events: OrderEventRepository
@@ -320,6 +357,7 @@ class UnitOfWork(Protocol):
     settlement_snapshots: SettlementSnapshotRepository
     market_ticks: MarketTickRepository
     market_bars: MarketBarRepository
+    feature_snapshots: FeatureSnapshotRepository
 
     def commit(self) -> None: ...
 
@@ -345,6 +383,24 @@ class MarketDataUnitOfWork(Protocol):
     def rollback(self) -> None: ...
 
     def __enter__(self) -> "MarketDataUnitOfWork": ...
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> bool | None: ...
+
+
+@runtime_checkable
+class FeatureUnitOfWork(Protocol):
+    feature_snapshots: FeatureSnapshotRepository
+
+    def commit(self) -> None: ...
+
+    def rollback(self) -> None: ...
+
+    def __enter__(self) -> "FeatureUnitOfWork": ...
 
     def __exit__(
         self,

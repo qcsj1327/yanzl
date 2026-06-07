@@ -1,3 +1,5 @@
+import hashlib
+import json
 from collections.abc import Mapping
 from datetime import date, datetime
 from decimal import Decimal
@@ -11,6 +13,8 @@ from futures_mvp.domain.enums import (
     Direction,
     EventApplicationStatus,
     EventSource,
+    FeatureQualityStatus,
+    FeatureResultStatus,
     MarginPriceBasis,
     MarginResultStatus,
     MarketDataEventType,
@@ -394,6 +398,207 @@ class MarketDataSnapshot(DomainModel):
             raise ValueError("MarketDataSnapshot identity must match latest_bars")
         if bar.bar_ts > self.as_of_ts:
             raise ValueError("bar.bar_ts must be less than or equal to as_of_ts")
+
+
+class FeatureConfig(DomainModel):
+    feature_version: str
+    timeframe: BarTimeframe
+    ma_window: int
+    atr_window: int
+    volume_window: int
+    breakout_window: int
+    volatility_window: int
+    momentum_window: int
+    allow_gap: bool = False
+
+    @field_validator("feature_version")
+    @classmethod
+    def _required_feature_version(cls, value: str) -> str:
+        return require_non_empty_string(value, field_name="feature_version")
+
+    @field_validator(
+        "ma_window",
+        "atr_window",
+        "volume_window",
+        "breakout_window",
+        "volatility_window",
+        "momentum_window",
+        mode="before",
+    )
+    @classmethod
+    def _window_not_bool(cls, value: Any, info: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError(f"{info.field_name} must be an integer")
+        return value
+
+    @field_validator(
+        "ma_window",
+        "atr_window",
+        "volume_window",
+        "breakout_window",
+        "volatility_window",
+        "momentum_window",
+    )
+    @classmethod
+    def _positive_window(cls, value: int, info: Any) -> int:
+        if value <= 0:
+            raise ValueError(f"{info.field_name} must be greater than 0")
+        return value
+
+    def config_hash(self) -> str:
+        payload = {
+            "allow_gap": self.allow_gap,
+            "atr_window": self.atr_window,
+            "breakout_window": self.breakout_window,
+            "feature_version": self.feature_version,
+            "ma_window": self.ma_window,
+            "momentum_window": self.momentum_window,
+            "timeframe": self.timeframe.value,
+            "volatility_window": self.volatility_window,
+            "volume_window": self.volume_window,
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+
+class FeatureSnapshot(DomainModel):
+    symbol: str
+    instrument_id: str
+    trade_instrument_id: str
+    exchange: str
+    trading_day: date
+    timeframe: BarTimeframe
+    bar_ts: datetime
+    feature_version: str
+    feature_config_hash: str
+    source_bar_keys: tuple[str, ...]
+    returns: Decimal | None = None
+    bar_return: Decimal | None = None
+    price_range: Decimal | None = None
+    range: Decimal | None = None
+    atr: Decimal | None = None
+    volume_ratio: Decimal | None = None
+    moving_average: Decimal | None = None
+    bias: Decimal | None = None
+    breakout_level: Decimal | None = None
+    volatility: Decimal | None = None
+    momentum: Decimal | None = None
+    source_window_start: datetime
+    source_window_end: datetime
+    warmup_complete: bool
+    quality_status: FeatureQualityStatus
+    missing_bar_count: int = 0
+    gap_count: int = 0
+    raw_payload: dict[str, Any] | None = None
+
+    @field_validator(
+        "symbol",
+        "instrument_id",
+        "trade_instrument_id",
+            "exchange",
+            "feature_version",
+            "feature_config_hash",
+        )
+    @classmethod
+    def _required_identity(cls, value: str, info: Any) -> str:
+        return require_non_empty_string(value, field_name=info.field_name)
+
+    @field_validator("source_bar_keys", mode="before")
+    @classmethod
+    def _source_bar_keys_tuple(cls, value: Any) -> tuple[str, ...]:
+        if isinstance(value, str):
+            raise ValueError("source_bar_keys must be a non-empty sequence")
+        try:
+            keys = tuple(value)
+        except TypeError as exc:
+            raise ValueError("source_bar_keys must be a non-empty sequence") from exc
+        if not keys:
+            raise ValueError("source_bar_keys is required")
+        for key in keys:
+            if not isinstance(key, str) or not key:
+                raise ValueError("source_bar_keys must contain non-empty strings")
+        return keys
+
+    @field_validator(
+        "returns",
+        "bar_return",
+        "price_range",
+        "range",
+        "atr",
+        "volume_ratio",
+        "moving_average",
+        "bias",
+        "breakout_level",
+        "volatility",
+        "momentum",
+        mode="before",
+    )
+    @classmethod
+    def _decimal_or_none(cls, value: Any) -> Decimal | None:
+        if value is None:
+            return None
+        return require_decimal(value)
+
+    @field_validator("missing_bar_count", "gap_count")
+    @classmethod
+    def _non_negative_count(cls, value: int, info: Any) -> int:
+        if value < 0:
+            raise ValueError(f"{info.field_name} must be greater than or equal to 0")
+        return value
+
+    @model_validator(mode="after")
+    def _valid_feature_quality_state(self) -> "FeatureSnapshot":
+        feature_values = (
+            self.returns,
+            self.bar_return,
+            self.price_range,
+            self.range,
+            self.atr,
+            self.volume_ratio,
+            self.moving_average,
+            self.bias,
+            self.breakout_level,
+            self.volatility,
+            self.momentum,
+        )
+        all_features_ready = all(value is not None for value in feature_values)
+
+        if self.warmup_complete and not all_features_ready:
+            raise ValueError("warmup_complete requires all feature values")
+        if self.warmup_complete and self.quality_status is FeatureQualityStatus.WARMUP_INCOMPLETE:
+            raise ValueError("warmup_complete cannot use WARMUP_INCOMPLETE quality")
+        if not self.warmup_complete and self.quality_status is FeatureQualityStatus.ACCEPTED:
+            raise ValueError("ACCEPTED quality requires warmup_complete")
+
+        if self.quality_status is FeatureQualityStatus.ACCEPTED:
+            if not self.warmup_complete:
+                raise ValueError("ACCEPTED quality requires warmup_complete")
+            if self.gap_count != 0:
+                raise ValueError("ACCEPTED quality requires gap_count to be 0")
+            if self.missing_bar_count != 0:
+                raise ValueError("ACCEPTED quality requires missing_bar_count to be 0")
+            if not all_features_ready:
+                raise ValueError("ACCEPTED quality requires all feature values")
+
+        if self.quality_status is FeatureQualityStatus.GAP_DETECTED and self.gap_count <= 0:
+            raise ValueError("GAP_DETECTED quality requires gap_count greater than 0")
+        if self.quality_status is FeatureQualityStatus.WARMUP_INCOMPLETE and self.warmup_complete:
+            raise ValueError("WARMUP_INCOMPLETE quality requires warmup_complete=False")
+        if self.gap_count > 0 and self.quality_status is not FeatureQualityStatus.GAP_DETECTED:
+            raise ValueError("gap_count requires GAP_DETECTED quality")
+        if self.missing_bar_count > 0 and self.gap_count == 0:
+            raise ValueError("missing_bar_count requires gap_count")
+        if self.quality_status is FeatureQualityStatus.GAP_DETECTED:
+            if self.missing_bar_count < self.gap_count:
+                raise ValueError("missing_bar_count must be greater than or equal to gap_count")
+
+        return self
+
+
+class FeatureBuildResult(DomainModel):
+    status: FeatureResultStatus
+    snapshot: FeatureSnapshot | None = None
+    reason: str | None = None
 
 
 _MARKET_DATA_REJECTED_STATUSES = frozenset(

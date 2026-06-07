@@ -45,12 +45,15 @@
   - 当前 tag：`stage-g-market-data-core / 62e3240`。
   - 已实现 typed Tick / Bar / MarketDataEvent / MarketDataSnapshot / DataQualityResult、DataQualityGate、MarketTickRepository / MarketBarRepository、SQLAlchemy repository、UoW integration、`market_ticks` / `market_bars` migration、MarketDataService ingestion 和 deterministic market replay。
   - Stage G 未实现 Tick -> Bar Aggregator、FeatureSnapshot generation、Strategy / Signal、Broker adapter、Kafka ingestion、FastAPI service 或 live market feed。
+- Feature Snapshot Core 已完成。
+  - 当前基线：`stage-h-feature-snapshot-contract-freeze / 9bbbf9d` 后实现。
+  - 已实现 typed FeatureSnapshot、FeatureConfig、FeatureBuildResult、pure FeatureBuilder、canonical payload、FeatureSnapshotRepository、SQLAlchemy repository、UoW integration、`feature_snapshots` migration、FeatureService、deterministic feature replay 和 tests。
+  - Stage H 未实现 Strategy、Signal、Tick -> Bar Aggregator、Broker adapter、Runtime infra、ML features、portfolio features 或 cross-instrument features。
 
 当前尚未实现为业务能力的部分：
 
 - Application Execution Orchestrator。
 - OMS public UNKNOWN entry。
-- FeatureSnapshot。
 - RiskContext、portfolio/account risk、intraday limits、kill switch risk。
 - Strategy / Signal Lifecycle。
 - Recovery / Replay Framework。
@@ -392,26 +395,26 @@ Stage F contract freeze：
 - Acceptance criteria：Market Data Core 可独立接收 typed Tick / Bar，执行 data quality gate，持久化 accepted market facts，幂等处理 duplicate，typed 返回 conflict/error，并可 deterministic replay；不得污染 Strategy、Risk、OMS、Execution、Accounting、Broker 或 Runtime。
 - Suggested tag：`stage-g-market-data-contract-freeze`。
 
-### Stage H: Feature Snapshot Contract Freeze
+### Stage H: Feature Snapshot Core
 
-- Goal：冻结 `FeatureSnapshot` source-of-truth、identity、字段、计算规则、warmup / missing data、future repository、builder/service、replay 和 Strategy 关系；本阶段只改文档，不实现。
+- Goal：实现 `FeatureSnapshot` source-of-truth、identity、字段、计算规则、warmup / missing data、repository、builder/service、replay 和 Strategy 边界；本阶段不进入 Strategy / Signal。
 - Inputs：typed `Bar`、typed `MarketDataSnapshot`、trading calendar / session、instrument identity、deterministic feature config / rule version。
-- Outputs：`FeatureSnapshot` domain contract、future `FeatureSnapshotRepository` / `feature_snapshots` migration contract、future implementation tests list。
-- Allowed changes：`docs/architecture/SYSTEM_MASTER_PLAN.md`、`docs/domain/DOMAIN_FREEZE.md`。
-- Forbidden changes：不改 `src/`、`tests/`、`alembic/`、schema、Market Data implementation、Strategy / Signal、OMS / Risk / Execution / Accounting、Broker 或 Runtime。
+- Outputs：typed `FeatureSnapshot` / `FeatureConfig` / `FeatureBuildResult`、pure FeatureBuilder、canonical payload、`FeatureSnapshotRepository`、`feature_snapshots` table、FeatureService、deterministic replay 和 tests。
+- Implemented changes：domain enum/model、feature builder/canonical/service/replay module、repository Protocol、SQLAlchemy repository、UoW integration、`0009_stage_h_feature_snapshot_core` migration、unit/integration/boundary tests、docs update。
+- Forbidden changes：不实现 Strategy / Signal、OMS / Risk / Execution / Accounting integration、Tick -> Bar Aggregator、Broker adapter、Runtime infra、ML features、portfolio features 或 cross-instrument features；FeatureService 不查询 MarketBarRepository；Redis/Kafka 不作为 source-of-truth。
 - Source-of-truth：`FeatureSnapshot` 只能消费 typed Bar、MarketDataSnapshot、trading calendar/session、instrument identity、deterministic feature config / rule version；不得消费 `raw_payload`、OrderStatus、OrderEvent、ExchangeReport、Trade / Position / Margin / PnL / Settlement、Broker query，或把 Redis/Kafka 当 source-of-truth。
-- Identity：必须携带 `symbol`、`instrument_id`、`trade_instrument_id`、`exchange`、`trading_day`、`timeframe`、`bar_ts`、`feature_version`、`source_bar_ids` 或 `source_bar_keys`；instrument identity 和 timeframe 必须与 source bars 一致；`bar_ts` 使用 bar start timestamp；`feature_version` 必须 deterministic；FeatureSnapshot 不猜合约映射。
+- Identity：必须携带 `symbol`、`instrument_id`、`trade_instrument_id`、`exchange`、`trading_day`、`timeframe`、`bar_ts`、`feature_version`、`feature_config_hash`、`source_bar_ids` 或 `source_bar_keys`；instrument identity 和 timeframe 必须与 source bars 一致；`bar_ts` 使用 bar start timestamp；`feature_version` 不是完整 config identity，`feature_config_hash` 必须由 deterministic config 派生；FeatureSnapshot 不猜合约映射。
 - Fields：冻结 `returns`、`bar_return`、`price_range`、`range`、`atr`、`volume_ratio`、`moving_average`、`bias`、`breakout_level`、`volatility`、`momentum`、`source_window_start`、`source_window_end`、`warmup_complete`、`quality_status`、`missing_bar_count`、`gap_count`；`raw_payload` 如存在仅 diagnostic。Numeric features 必须为 `Decimal | None`，禁止 float；insufficient warmup 时 affected features 为 `None` 且 `warmup_complete=False`；不得静默用 0 填补缺失值。
 - Calculation rules：`returns` / `bar_return` 使用 typed close prices；`range` / `price_range = high - low`；ATR 使用 configured window 和 typed OHLC；MA 使用 configured window 和 close；`bias = close - moving_average`，ratio 后续如需要另增 `bias_ratio`；`volume_ratio` 使用 configured window average volume；`breakout_level` 使用 configured window high/low；`volatility` / `momentum` 必须在实现前另行冻结 window 和 formula。
 - Warmup / missing data：source bars 少于 required window 时 `warmup_complete=False`、affected features 为 `None`、不得 fake 0；gap detected 时 `quality_status` 反映 gap、`gap_count > 0`，仅当 policy `allow_gap=True` 时可继续 emit；missing bars 必须由 `missing_bar_count` 记录。
-- Repository / DB future contract：后续实现 `FeatureSnapshotRepository` 和 `feature_snapshots` table；方法冻结为 `append_feature_snapshot(snapshot)`、`get_by_identity(exchange, instrument_id, timeframe, bar_ts, feature_version)`、`list_by_instrument(exchange, instrument_id, timeframe, start_bar_ts, end_bar_ts)`、`list_by_trading_day(exchange, instrument_id, timeframe, trading_day)`；唯一键为 `exchange + instrument_id + timeframe + bar_ts + feature_version`；canonical 排除 `raw_payload`、`calculated_at`、`received_at`。
+- Repository / DB contract：已实现 `FeatureSnapshotRepository` 和 `feature_snapshots` table；方法为 `append_feature_snapshot(snapshot)`、`get_by_identity(exchange, instrument_id, timeframe, bar_ts, feature_version, feature_config_hash)`、`list_by_instrument(exchange, instrument_id, timeframe, start_bar_ts, end_bar_ts)`、`list_by_trading_day(exchange, instrument_id, timeframe, trading_day)`；唯一键为 `exchange + instrument_id + timeframe + bar_ts + feature_version + feature_config_hash`；canonical 排除 `raw_payload`、`calculated_at`、`received_at`。
 - Builder / Service boundary：`FeatureBuilder` 是从 typed bars + config 到 FeatureSnapshot 的 pure calculation；`FeatureService` 负责持久化 snapshots；rejected / insufficient input 不创建 fake facts；不得调用 Strategy、创建 Signal、直接查 Risk 或 mutate Accounting。
-- Replay：Feature replay 消费 ordered Bars；same inputs/config 必须生成 same FeatureSnapshot；same canonical no-op；different canonical conflict/error；replay 不调用 Strategy，不修改 Market facts 或 Accounting。
+- Replay：Feature replay 消费 ordered Bars，并按 `exchange + instrument_id + timeframe + feature_version + feature_config_hash` grouping；same inputs/config 必须生成 same FeatureSnapshot；same canonical no-op；different canonical conflict/error；replay 不调用 Strategy，不修改 Market facts 或 Accounting。
 - Strategy relation：Strategy 后续消费 `FeatureSnapshot`；`FeatureSnapshot` 不是 `Signal`；`FeatureBuilder` 不做交易决策；Strategy 不得为了补缺失 feature 直接读取 raw bars，除非后续 Strategy replay contract 显式允许。
-- Required future tests：FeatureSnapshot Decimal validation、insufficient warmup -> `None` 且 no zero-fill、MA calculation、ATR calculation、bias formula、volume_ratio、breakout_level、source identity mismatch reject、timeframe mismatch reject、gap handling、duplicate same canonical、duplicate different canonical、replay deterministic、no Strategy/Risk/Accounting mutation、raw_payload excluded。
+- Tests：FeatureSnapshot Decimal validation、warmup/gap/quality invariant validation、FeatureConfig deterministic config hash、insufficient warmup -> `None` 且 no zero-fill、MA calculation、ATR calculation、bias formula、volume_ratio、breakout_level、volatility、momentum、source identity mismatch reject、timeframe mismatch reject、gap handling、duplicate same canonical、duplicate different canonical、replay deterministic、no Strategy/Risk/Accounting mutation、raw_payload excluded。
 - Explicit non-goals：Stage H 不实现 Strategy、Signal、OMS/Risk integration、Tick -> Bar Aggregator、Broker adapter、live feed、Kafka/FastAPI/Celery runtime、ML features、portfolio features、cross-instrument features 或 execution/accounting mutation。
-- Acceptance criteria：FeatureSnapshot 契约可作为后续 implementation / migration / tests 的唯一冻结依据，且当前代码、schema 和运行时行为不变。
-- Suggested tag：`stage-h-feature-snapshot-contract-freeze`。
+- Acceptance criteria：FeatureSnapshot Core 可从 caller-supplied ordered Bars deterministic 生成、持久化、幂等 duplicate、typed conflict/error，并可 replay；不得污染 Strategy、Risk、OMS、Execution、Accounting、Broker、Runtime 或 Market facts。
+- Suggested tag：`stage-h-feature-snapshot-core`。
 
 ### Stage I: Risk Context / Portfolio Risk Upgrade
 

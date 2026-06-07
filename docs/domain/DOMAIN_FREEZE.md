@@ -1286,9 +1286,11 @@ Canonical payload 排除：
 - Replay 不修改 `Trade`、`Position`、`MarginSnapshot`、`PnLSnapshot`、`SettlementSnapshot` 或 account state。
 - Redis/Kafka replay payload 只能作为 transport input；持久化 DB fact 仍是 replay source-of-truth。
 
-## Stage H Feature Snapshot Contract Freeze
+## Stage H Feature Snapshot Core
 
-Stage H 只冻结 `FeatureSnapshot` 契约，不实现 domain object、repository、migration、builder、service 或 tests。当前基线是 Stage G Market Data Core：typed `Tick` / `Bar` / `MarketDataSnapshot`、DataQualityGate、MarketDataService、`market_ticks` / `market_bars` 和 market replay 已完成；Tick -> Bar Aggregator、FeatureSnapshot、Strategy / Signal Lifecycle 尚未进入。
+Stage H 已实现 `FeatureSnapshot` Core：typed `FeatureSnapshot` / `FeatureConfig` / `FeatureBuildResult`、`FeatureQualityStatus` / `FeatureResultStatus`、pure `FeatureBuilder`、canonical payload、`FeatureSnapshotRepository`、SQLAlchemy repository、UoW integration、`feature_snapshots` migration、`FeatureService`、deterministic feature replay 和 tests。
+
+Stage H 不实现 Tick -> Bar Aggregator、Strategy / Signal Lifecycle、Broker adapter、Runtime infra、ML features、portfolio features、cross-instrument features、OMS / Risk / Execution integration 或 Accounting mutation。
 
 ### FeatureSnapshot source-of-truth
 
@@ -1324,14 +1326,18 @@ Stage H 只冻结 `FeatureSnapshot` 契约，不实现 domain object、repositor
 - `timeframe: BarTimeframe`
 - `bar_ts: datetime`
 - `feature_version: str`
-- `source_bar_ids: Sequence[str]` 或 `source_bar_keys: Sequence[str]`
+- `feature_config_hash: str`
+- `source_bar_keys: Sequence[str]`
 
 Identity 规则：
 
 - `symbol`、`instrument_id`、`trade_instrument_id`、`exchange`、`trading_day` 必须与 source bars 一致。
 - `timeframe` 必须与 source bars 一致。
 - `bar_ts` 使用 feature 所属 bar 的 bar start timestamp。
-- `feature_version` 必须由 deterministic feature config / rule version 派生。
+- `feature_version` 是 feature rule/version label，但不能单独作为完整 config identity。
+- `feature_config_hash` 必须由 `feature_version`、`timeframe`、全部 configured windows 和 `allow_gap` deterministic 派生。
+- `source_bar_keys` 使用 deterministic format：`{exchange}|{instrument_id}|{timeframe}|{bar_ts.isoformat()}|{source}`。
+- `source_bar_keys` 不得使用 database id、`received_at`、`calculated_at` 或 random value。
 - `FeatureSnapshot` 不猜测合约映射，不从主力连续合约、行情合约、交易合约或 base symbol 自动推断 identity。
 - source bars identity 不一致时，后续实现必须 typed reject，不得合成 snapshot。
 - source bars timeframe 不一致时，后续实现必须 typed reject，不得合成 snapshot。
@@ -1358,6 +1364,7 @@ Stage H 冻结以下字段：
 - `missing_bar_count`
 - `gap_count`
 - `raw_payload` diagnostic only if present
+- `feature_config_hash`
 
 Decimal / `None` policy：
 
@@ -1369,30 +1376,33 @@ Decimal / `None` policy：
 
 ### Feature calculation rules
 
-Stage H 冻结计算契约，不冻结具体实现代码：
+Stage H 实现以下最小计算规则：
 
-- `returns` / `bar_return` 使用 typed close prices。
+- `bar_return = close - open`。
+- `returns = close - previous_close`，无 previous close 时为 `None`。
 - `range` / `price_range = high - low`。
-- `atr` 使用 configured window 和 typed OHLC。
-- `moving_average` 使用 configured window 和 close。
+- `atr` 使用 configured window 和 typed OHLC；`true_range = max(high-low, abs(high-previous_close), abs(low-previous_close))`。
+- `moving_average` 使用 configured window 和 close average。
 - `bias = close - moving_average`。
 - 如后续需要 ratio 形式 bias，必须新增独立字段 `bias_ratio`，不得改变 `bias` 语义。
-- `volume_ratio` 使用 configured window average volume。
-- `breakout_level` 使用 configured window high / low。
-- `volatility` 必须在实现前另行冻结 window 和 formula。
-- `momentum` 必须在实现前另行冻结 window 和 formula。
+- `volume_ratio = current_volume / average(previous volume window)`。
+- `breakout_level = max(high over breakout_window)`。
+- `volatility = average(abs(close - previous_close) over volatility_window)`。
+- `momentum = close - close_n_periods_ago over momentum_window`。
 
 ### Warmup and missing data
 
 - 如果 source bars 少于某个 feature 的 required window，`warmup_complete=False`，affected features 为 `None`，不得 fake 0。
 - 如果 gaps detected，`quality_status` 必须反映 gap，`gap_count > 0`。
+- `quality_status=ACCEPTED` 时 `warmup_complete=True`、`gap_count=0`、`missing_bar_count=0`，且全部 implemented numeric features 非 `None`。
+- `quality_status=WARMUP_INCOMPLETE` 时 `warmup_complete=False`。
 - Gap 情况下仅当 explicit policy `allow_gap=True` 时可以 emit `FeatureSnapshot`。
 - Missing bars 必须由 `missing_bar_count` 记录。
 - Rejected input 或 insufficient input 不得创建 fake facts。
 
-### FeatureSnapshotRepository future contract
+### FeatureSnapshotRepository contract
 
-后续实现需要新增：
+Stage H 已新增：
 
 - `FeatureSnapshotRepository`。
 - `feature_snapshots` table。
@@ -1400,13 +1410,13 @@ Stage H 冻结计算契约，不冻结具体实现代码：
 Repository methods 冻结为：
 
 - `append_feature_snapshot(snapshot)`。
-- `get_by_identity(exchange, instrument_id, timeframe, bar_ts, feature_version)`。
+- `get_by_identity(exchange, instrument_id, timeframe, bar_ts, feature_version, feature_config_hash)`。
 - `list_by_instrument(exchange, instrument_id, timeframe, start_bar_ts, end_bar_ts)`。
 - `list_by_trading_day(exchange, instrument_id, timeframe, trading_day)`。
 
-Future unique constraint：
+Unique constraint：
 
-- `exchange + instrument_id + timeframe + bar_ts + feature_version`。
+- `exchange + instrument_id + timeframe + bar_ts + feature_version + feature_config_hash`。
 
 Canonical equality 必须排除：
 
@@ -1418,8 +1428,10 @@ Canonical equality 必须排除：
 
 - `FeatureBuilder` 是 pure calculation boundary，只从 typed bars + deterministic config 生成 `FeatureSnapshot`。
 - `FeatureBuilder` 不持久化 facts。
+- `FeatureBuilder` 不查询 DB，不使用 UoW。
 - `FeatureService` 负责持久化 snapshots。
-- Rejected / insufficient input 不创建 fake facts。
+- `FeatureService` 接收 caller supplied bars + config，不查询 `MarketBarRepository`。
+- Fatal rejected input 不持久化；warmup incomplete 可持久化 typed snapshot，但 affected feature values 必须为 `None`。
 - `FeatureBuilder` / `FeatureService` 不调用 Strategy。
 - `FeatureBuilder` / `FeatureService` 不创建 Signal。
 - `FeatureBuilder` / `FeatureService` 不直接查 Risk。
@@ -1429,6 +1441,7 @@ Canonical equality 必须排除：
 
 - Feature replay 消费 ordered Bars。
 - 相同 inputs/config 必须生成相同 `FeatureSnapshot`。
+- Replay grouping 必须包含 `feature_config_hash`，同一 `feature_version` 的不同 config 不得互相覆盖或误判 duplicate/conflict。
 - Existing same canonical 返回 no-op。
 - Existing different canonical 返回 conflict / error。
 - Replay 不调用 Strategy。
@@ -1442,17 +1455,21 @@ Canonical equality 必须排除：
 - `FeatureBuilder` 不做交易决策。
 - Strategy 不得为了补齐缺失 feature 直接读取 raw bars，除非后续 Strategy replay contract 显式允许。
 
-### Stage H future implementation tests
+### Stage H implementation tests
 
-后续实现必须覆盖：
+Stage H tests 覆盖：
 
 - FeatureSnapshot Decimal validation。
+- FeatureSnapshot warmup / gap / quality invariant validation。
+- FeatureConfig deterministic config hash。
 - Insufficient warmup -> affected features `None`，no zero-fill。
 - MA calculation。
 - ATR calculation。
 - Bias formula。
 - Volume ratio。
 - Breakout level。
+- Volatility。
+- Momentum。
 - Source identity mismatch reject。
 - Timeframe mismatch reject。
 - Gap handling。
@@ -1477,6 +1494,58 @@ Stage H 不实现：
 - Portfolio features。
 - Cross-instrument features。
 - Execution / Accounting mutation。
+
+### feature_snapshots
+
+Stage H 已新增 `feature_snapshots` 表作为 FeatureSnapshot derived facts ledger。
+
+字段：
+
+- `id`
+- `symbol`
+- `instrument_id`
+- `trade_instrument_id`
+- `exchange`
+- `trading_day`
+- `timeframe`
+- `bar_ts`
+- `feature_version`
+- `feature_config_hash`
+- `source_bar_keys`
+- `returns`
+- `bar_return`
+- `price_range`
+- `range`
+- `atr`
+- `volume_ratio`
+- `moving_average`
+- `bias`
+- `breakout_level`
+- `volatility`
+- `momentum`
+- `source_window_start`
+- `source_window_end`
+- `warmup_complete`
+- `quality_status`
+- `missing_bar_count`
+- `gap_count`
+- `raw_payload`
+- `calculated_at`
+- `received_at`
+
+约束和索引：
+
+- `UNIQUE(exchange, instrument_id, timeframe, bar_ts, feature_version, feature_config_hash)`，名称为 `uq_feature_snapshots_identity`
+- `exchange` 索引
+- `instrument_id` 索引
+- `trading_day` 索引
+- `timeframe` 索引
+- `bar_ts` 索引
+- `feature_version` 索引
+- `feature_config_hash` 索引
+- `(exchange, instrument_id, trading_day)` 复合索引
+
+Canonical payload 字段为 identity、`feature_version`、`feature_config_hash`、`source_bar_keys`、全部 feature values、`source_window_start`、`source_window_end`、`warmup_complete`、`quality_status`、`missing_bar_count` 和 `gap_count`。`raw_payload`、`calculated_at`、`received_at` 和 database id 不参与 canonical equality。
 
 ### Runtime boundary
 

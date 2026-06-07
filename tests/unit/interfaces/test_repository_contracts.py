@@ -6,6 +6,7 @@ from futures_mvp.domain.enums import (
     BarTimeframe,
     Direction,
     EventSource,
+    FeatureQualityStatus,
     MarketDataResultStatus,
     Offset,
     OrderStatus,
@@ -16,6 +17,7 @@ from futures_mvp.domain.enums import (
 from futures_mvp.domain.models import (
     AccountSnapshot,
     Bar,
+    FeatureSnapshot,
     MarginSnapshot,
     OrderEvent,
     OrderRequest,
@@ -30,6 +32,8 @@ from futures_mvp.domain.models import (
 )
 from futures_mvp.interfaces.repositories import (
     AccountSnapshotRepository,
+    FeatureSnapshotRepository,
+    FeatureUnitOfWork,
     MarginSnapshotRepository,
     MarketBarRepository,
     MarketDataUnitOfWork,
@@ -254,6 +258,38 @@ def _bar() -> Bar:
         open_interest=Decimal("10"),
         source="adapter",
         quality_status=MarketDataResultStatus.ACCEPTED,
+    )
+
+
+def _feature_snapshot() -> FeatureSnapshot:
+    return FeatureSnapshot(
+        symbol="au",
+        instrument_id="au2606",
+        trade_instrument_id="au2606",
+        exchange="SHFE",
+        trading_day=date(2026, 6, 7),
+        timeframe=BarTimeframe.M1,
+        bar_ts=datetime(2026, 6, 7, 9, tzinfo=UTC),
+        feature_version="feature-v1",
+        feature_config_hash="config-hash-a",
+        source_bar_keys=("SHFE|au2606|M1|2026-06-07T09:00:00+00:00|adapter",),
+        returns=None,
+        bar_return=Decimal("1"),
+        price_range=Decimal("2"),
+        range=Decimal("2"),
+        atr=None,
+        volume_ratio=None,
+        moving_average=None,
+        bias=None,
+        breakout_level=None,
+        volatility=None,
+        momentum=None,
+        source_window_start=datetime(2026, 6, 7, 9, tzinfo=UTC),
+        source_window_end=datetime(2026, 6, 7, 9, tzinfo=UTC),
+        warmup_complete=False,
+        quality_status=FeatureQualityStatus.WARMUP_INCOMPLETE,
+        missing_bar_count=0,
+        gap_count=0,
     )
 
 
@@ -696,6 +732,73 @@ class FakeMarketBarRepository:
         ]
 
 
+class FakeFeatureSnapshotRepository:
+    def __init__(self) -> None:
+        self.snapshots: dict[
+            tuple[str, str, BarTimeframe, datetime, str, str],
+            FeatureSnapshot,
+        ] = {}
+
+    def append_feature_snapshot(self, snapshot: FeatureSnapshot) -> FeatureSnapshot:
+        self.snapshots[
+            (
+                snapshot.exchange,
+                snapshot.instrument_id,
+                snapshot.timeframe,
+                snapshot.bar_ts,
+                snapshot.feature_version,
+                snapshot.feature_config_hash,
+            )
+        ] = snapshot
+        return snapshot
+
+    def get_by_identity(
+        self,
+        exchange: str,
+        instrument_id: str,
+        timeframe: BarTimeframe,
+        bar_ts: datetime,
+        feature_version: str,
+        feature_config_hash: str,
+    ) -> FeatureSnapshot | None:
+        return self.snapshots.get(
+            (exchange, instrument_id, timeframe, bar_ts, feature_version, feature_config_hash)
+        )
+
+    def list_by_instrument(
+        self,
+        exchange: str,
+        instrument_id: str,
+        timeframe: BarTimeframe,
+        start_bar_ts: datetime,
+        end_bar_ts: datetime,
+    ) -> list[FeatureSnapshot]:
+        return [
+            snapshot
+            for snapshot in self.snapshots.values()
+            if snapshot.exchange == exchange
+            and snapshot.instrument_id == instrument_id
+            and snapshot.timeframe == timeframe
+            and start_bar_ts <= snapshot.bar_ts <= end_bar_ts
+        ]
+
+    def list_by_trading_day(
+        self,
+        exchange: str,
+        instrument_id: str,
+        timeframe: BarTimeframe,
+        trading_day: date,
+    ) -> list[FeatureSnapshot]:
+        return [
+            snapshot
+            for snapshot in self.snapshots.values()
+            if snapshot.exchange == exchange
+            and snapshot.instrument_id == instrument_id
+            and snapshot.timeframe == timeframe
+            and snapshot.trading_day == trading_day
+        ]
+
+
 class FakeUnitOfWork:
     def __init__(self) -> None:
         self.orders = FakeOrderRepository()
@@ -709,6 +812,7 @@ class FakeUnitOfWork:
         self.settlement_snapshots = FakeSettlementSnapshotRepository()
         self.market_ticks = FakeMarketTickRepository()
         self.market_bars = FakeMarketBarRepository()
+        self.feature_snapshots = FakeFeatureSnapshotRepository()
         self.commit_count = 0
         self.rollback_count = 0
 
@@ -757,6 +861,31 @@ class FakeMarketDataUnitOfWork:
         return None
 
 
+class FakeFeatureUnitOfWork:
+    def __init__(self) -> None:
+        self.feature_snapshots = FakeFeatureSnapshotRepository()
+        self.commit_count = 0
+        self.rollback_count = 0
+
+    def commit(self) -> None:
+        self.commit_count += 1
+
+    def rollback(self) -> None:
+        self.rollback_count += 1
+
+    def __enter__(self) -> "FakeFeatureUnitOfWork":
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: object,
+    ) -> bool | None:
+        del exc_type, exc, tb
+        return None
+
+
 def test_repository_protocols_can_be_implemented_by_fakes() -> None:
     order_repo = FakeOrderRepository()
     event_repo = FakeOrderEventRepository()
@@ -769,6 +898,7 @@ def test_repository_protocols_can_be_implemented_by_fakes() -> None:
     settlement_snapshot_repo = FakeSettlementSnapshotRepository()
     market_tick_repo = FakeMarketTickRepository()
     market_bar_repo = FakeMarketBarRepository()
+    feature_snapshot_repo = FakeFeatureSnapshotRepository()
 
     assert isinstance(order_repo, OrderRepository)
     assert isinstance(event_repo, OrderEventRepository)
@@ -781,6 +911,7 @@ def test_repository_protocols_can_be_implemented_by_fakes() -> None:
     assert isinstance(settlement_snapshot_repo, SettlementSnapshotRepository)
     assert isinstance(market_tick_repo, MarketTickRepository)
     assert isinstance(market_bar_repo, MarketBarRepository)
+    assert isinstance(feature_snapshot_repo, FeatureSnapshotRepository)
 
     order = order_repo.create_order(_order_request(), client_order_id="client-1")
     event = event_repo.append_event(_order_event(order.order_id))
@@ -795,6 +926,7 @@ def test_repository_protocols_can_be_implemented_by_fakes() -> None:
     )
     tick = market_tick_repo.append_tick(_tick())
     bar = market_bar_repo.append_bar(_bar())
+    feature_snapshot = feature_snapshot_repo.append_feature_snapshot(_feature_snapshot())
 
     assert order_repo.get_by_id(order.order_id) == order
     assert order_repo.get_by_client_order_id("client-1") == order
@@ -835,6 +967,17 @@ def test_repository_protocols_can_be_implemented_by_fakes() -> None:
         )
         == bar
     )
+    assert (
+        feature_snapshot_repo.get_by_identity(
+            "SHFE",
+            "au2606",
+            BarTimeframe.M1,
+            feature_snapshot.bar_ts,
+            "feature-v1",
+            feature_snapshot.feature_config_hash,
+        )
+        == feature_snapshot
+    )
 
 
 def test_unit_of_work_protocol_supports_commit_and_rollback() -> None:
@@ -865,6 +1008,21 @@ def test_market_data_unit_of_work_protocol_is_narrow() -> None:
     with uow as current:
         current.market_ticks.append_tick(_tick())
         current.market_bars.append_bar(_bar())
+        current.commit()
+
+    assert uow.commit_count == 1
+
+
+def test_feature_unit_of_work_protocol_is_narrow() -> None:
+    uow = FakeFeatureUnitOfWork()
+
+    assert isinstance(uow, FeatureUnitOfWork)
+    assert not hasattr(uow, "orders")
+    assert not hasattr(uow, "market_bars")
+    assert not hasattr(uow, "account_snapshots")
+
+    with uow as current:
+        current.feature_snapshots.append_feature_snapshot(_feature_snapshot())
         current.commit()
 
     assert uow.commit_count == 1

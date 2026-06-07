@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from futures_mvp.db.models import AccountSnapshot as AccountSnapshotOrm
+from futures_mvp.db.models import FeatureSnapshot as FeatureSnapshotOrm
 from futures_mvp.db.models import MarginSnapshot as MarginSnapshotOrm
 from futures_mvp.db.models import MarketBar as MarketBarOrm
 from futures_mvp.db.models import MarketTick as MarketTickOrm
@@ -23,6 +24,7 @@ from futures_mvp.domain.enums import (
     BarTimeframe,
     Direction,
     EventSource,
+    FeatureQualityStatus,
     MarketDataResultStatus,
     Offset,
     OrderStatus,
@@ -33,6 +35,7 @@ from futures_mvp.domain.enums import (
 from futures_mvp.domain.models import (
     AccountSnapshot,
     Bar,
+    FeatureSnapshot,
     MarginSnapshot,
     OrderEvent,
     OrderRequest,
@@ -47,6 +50,7 @@ from futures_mvp.domain.models import (
 )
 from futures_mvp.interfaces.repositories import (
     EventAlreadyExistsError,
+    FeatureSnapshotConflictError,
     IdempotencyConflictError,
     MarginSnapshotConflictError,
     MarketDataConflictError,
@@ -58,6 +62,7 @@ from futures_mvp.interfaces.repositories import (
     SettlementSnapshotConflictError,
     TradeIdempotencyConflictError,
 )
+from futures_mvp.modules.feature.canonical import canonical_feature_snapshot_payload
 from futures_mvp.modules.market.canonical import canonical_bar_payload, canonical_tick_payload
 
 OPEN_RECOVERY_STATUSES = frozenset(
@@ -307,6 +312,39 @@ def market_bar_to_domain(bar: MarketBarOrm) -> Bar:
         source=bar.source,
         quality_status=MarketDataResultStatus(bar.quality_status),
         raw_payload=bar.raw_payload,
+    )
+
+
+def feature_snapshot_to_domain(snapshot: FeatureSnapshotOrm) -> FeatureSnapshot:
+    return FeatureSnapshot(
+        symbol=snapshot.symbol,
+        instrument_id=snapshot.instrument_id,
+        trade_instrument_id=snapshot.trade_instrument_id,
+        exchange=snapshot.exchange,
+        trading_day=snapshot.trading_day,
+        timeframe=BarTimeframe(snapshot.timeframe),
+        bar_ts=snapshot.bar_ts,
+        feature_version=snapshot.feature_version,
+        feature_config_hash=snapshot.feature_config_hash,
+        source_bar_keys=tuple(snapshot.source_bar_keys),
+        returns=snapshot.returns,
+        bar_return=snapshot.bar_return,
+        price_range=snapshot.price_range,
+        range=snapshot.range,
+        atr=snapshot.atr,
+        volume_ratio=snapshot.volume_ratio,
+        moving_average=snapshot.moving_average,
+        bias=snapshot.bias,
+        breakout_level=snapshot.breakout_level,
+        volatility=snapshot.volatility,
+        momentum=snapshot.momentum,
+        source_window_start=snapshot.source_window_start,
+        source_window_end=snapshot.source_window_end,
+        warmup_complete=snapshot.warmup_complete,
+        quality_status=FeatureQualityStatus(snapshot.quality_status),
+        missing_bar_count=snapshot.missing_bar_count,
+        gap_count=snapshot.gap_count,
+        raw_payload=snapshot.raw_payload,
     )
 
 
@@ -748,6 +786,21 @@ def _same_canonical_bar_payload(existing: MarketBarOrm, bar: Bar) -> bool:
     return _canonical_bar_payload_from_orm(existing) == canonical_bar_payload(bar)
 
 
+def _canonical_feature_snapshot_payload_from_orm(
+    snapshot: FeatureSnapshotOrm,
+) -> tuple[object, ...]:
+    return canonical_feature_snapshot_payload(feature_snapshot_to_domain(snapshot))
+
+
+def _same_canonical_feature_snapshot_payload(
+    existing: FeatureSnapshotOrm,
+    snapshot: FeatureSnapshot,
+) -> bool:
+    return _canonical_feature_snapshot_payload_from_orm(
+        existing
+    ) == canonical_feature_snapshot_payload(snapshot)
+
+
 class SQLAlchemyMarketTickRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
@@ -1006,6 +1059,172 @@ class SQLAlchemyMarketBarRepository:
                 f"{bar.exchange}/{bar.instrument_id}/{bar.timeframe}/{bar.bar_ts}/{bar.source}"
             )
         return market_bar_to_domain(existing)
+
+
+class SQLAlchemyFeatureSnapshotRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def append_feature_snapshot(self, snapshot: FeatureSnapshot) -> FeatureSnapshot:
+        existing = self._get_orm_by_identity(
+            snapshot.exchange,
+            snapshot.instrument_id,
+            snapshot.timeframe,
+            snapshot.bar_ts,
+            snapshot.feature_version,
+            snapshot.feature_config_hash,
+        )
+        if existing is not None:
+            return self._existing_snapshot_for_append(existing, snapshot)
+
+        try:
+            with self._session.begin_nested():
+                snapshot_orm = self._new_snapshot(snapshot)
+                self._session.add(snapshot_orm)
+                self._session.flush()
+            return feature_snapshot_to_domain(snapshot_orm)
+        except IntegrityError as exc:
+            existing_after_conflict = self._get_orm_by_identity(
+                snapshot.exchange,
+                snapshot.instrument_id,
+                snapshot.timeframe,
+                snapshot.bar_ts,
+                snapshot.feature_version,
+                snapshot.feature_config_hash,
+            )
+            if existing_after_conflict is None:
+                raise RepositoryError(
+                    "feature snapshot unique conflict but snapshot not found: "
+                    f"{snapshot.exchange}/{snapshot.instrument_id}/"
+                    f"{snapshot.timeframe}/{snapshot.bar_ts}/{snapshot.feature_version}/"
+                    f"{snapshot.feature_config_hash}"
+                ) from exc
+            return self._existing_snapshot_for_append(existing_after_conflict, snapshot)
+
+    def get_by_identity(
+        self,
+        exchange: str,
+        instrument_id: str,
+        timeframe: BarTimeframe,
+        bar_ts: datetime,
+        feature_version: str,
+        feature_config_hash: str,
+    ) -> FeatureSnapshot | None:
+        snapshot = self._get_orm_by_identity(
+            exchange,
+            instrument_id,
+            timeframe,
+            bar_ts,
+            feature_version,
+            feature_config_hash,
+        )
+        return feature_snapshot_to_domain(snapshot) if snapshot else None
+
+    def list_by_instrument(
+        self,
+        exchange: str,
+        instrument_id: str,
+        timeframe: BarTimeframe,
+        start_bar_ts: datetime,
+        end_bar_ts: datetime,
+    ) -> list[FeatureSnapshot]:
+        snapshots = self._session.scalars(
+            select(FeatureSnapshotOrm)
+            .where(
+                FeatureSnapshotOrm.exchange == exchange,
+                FeatureSnapshotOrm.instrument_id == instrument_id,
+                FeatureSnapshotOrm.timeframe == timeframe.value,
+                FeatureSnapshotOrm.bar_ts >= start_bar_ts,
+                FeatureSnapshotOrm.bar_ts <= end_bar_ts,
+            )
+            .order_by(FeatureSnapshotOrm.bar_ts.asc(), FeatureSnapshotOrm.id.asc())
+        ).all()
+        return [feature_snapshot_to_domain(snapshot) for snapshot in snapshots]
+
+    def list_by_trading_day(
+        self,
+        exchange: str,
+        instrument_id: str,
+        timeframe: BarTimeframe,
+        trading_day: date,
+    ) -> list[FeatureSnapshot]:
+        snapshots = self._session.scalars(
+            select(FeatureSnapshotOrm)
+            .where(
+                FeatureSnapshotOrm.exchange == exchange,
+                FeatureSnapshotOrm.instrument_id == instrument_id,
+                FeatureSnapshotOrm.timeframe == timeframe.value,
+                FeatureSnapshotOrm.trading_day == trading_day,
+            )
+            .order_by(FeatureSnapshotOrm.bar_ts.asc(), FeatureSnapshotOrm.id.asc())
+        ).all()
+        return [feature_snapshot_to_domain(snapshot) for snapshot in snapshots]
+
+    def _new_snapshot(self, snapshot: FeatureSnapshot) -> FeatureSnapshotOrm:
+        return FeatureSnapshotOrm(
+            symbol=snapshot.symbol,
+            instrument_id=snapshot.instrument_id,
+            trade_instrument_id=snapshot.trade_instrument_id,
+            exchange=snapshot.exchange,
+            trading_day=snapshot.trading_day,
+            timeframe=snapshot.timeframe.value,
+            bar_ts=snapshot.bar_ts,
+            feature_version=snapshot.feature_version,
+            feature_config_hash=snapshot.feature_config_hash,
+            source_bar_keys=list(snapshot.source_bar_keys),
+            returns=snapshot.returns,
+            bar_return=snapshot.bar_return,
+            price_range=snapshot.price_range,
+            range=snapshot.range,
+            atr=snapshot.atr,
+            volume_ratio=snapshot.volume_ratio,
+            moving_average=snapshot.moving_average,
+            bias=snapshot.bias,
+            breakout_level=snapshot.breakout_level,
+            volatility=snapshot.volatility,
+            momentum=snapshot.momentum,
+            source_window_start=snapshot.source_window_start,
+            source_window_end=snapshot.source_window_end,
+            warmup_complete=snapshot.warmup_complete,
+            quality_status=snapshot.quality_status.value,
+            missing_bar_count=snapshot.missing_bar_count,
+            gap_count=snapshot.gap_count,
+            raw_payload=snapshot.raw_payload,
+        )
+
+    def _get_orm_by_identity(
+        self,
+        exchange: str,
+        instrument_id: str,
+        timeframe: BarTimeframe,
+        bar_ts: datetime,
+        feature_version: str,
+        feature_config_hash: str,
+    ) -> FeatureSnapshotOrm | None:
+        return self._session.scalar(
+            select(FeatureSnapshotOrm).where(
+                FeatureSnapshotOrm.exchange == exchange,
+                FeatureSnapshotOrm.instrument_id == instrument_id,
+                FeatureSnapshotOrm.timeframe == timeframe.value,
+                FeatureSnapshotOrm.bar_ts == bar_ts,
+                FeatureSnapshotOrm.feature_version == feature_version,
+                FeatureSnapshotOrm.feature_config_hash == feature_config_hash,
+            )
+        )
+
+    def _existing_snapshot_for_append(
+        self,
+        existing: FeatureSnapshotOrm,
+        snapshot: FeatureSnapshot,
+    ) -> FeatureSnapshot:
+        if not _same_canonical_feature_snapshot_payload(existing, snapshot):
+            raise FeatureSnapshotConflictError(
+                "feature snapshot identity reused with different canonical payload: "
+                f"{snapshot.exchange}/{snapshot.instrument_id}/"
+                f"{snapshot.timeframe}/{snapshot.bar_ts}/{snapshot.feature_version}/"
+                f"{snapshot.feature_config_hash}"
+            )
+        return feature_snapshot_to_domain(existing)
 
 
 class SQLAlchemyOrderRepository:

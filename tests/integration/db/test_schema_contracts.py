@@ -21,6 +21,7 @@ from sqlalchemy import (
 
 from futures_mvp.db.models import (
     Base,
+    FeatureSnapshot,
     MarketBar,
     MarketTick,
     Order,
@@ -67,6 +68,7 @@ def test_required_tables_are_declared() -> None:
         "settlement_snapshots",
         "market_ticks",
         "market_bars",
+        "feature_snapshots",
         "risk_events",
     }.issubset(Base.metadata.tables)
 
@@ -321,6 +323,63 @@ def test_market_bars_match_stage_g_market_data_contract() -> None:
         "ix_market_bars_timeframe",
         "ix_market_bars_exchange_instrument_day",
     }.issubset({index.name for index in MarketBar.__table__.indexes})
+
+
+def test_feature_snapshots_match_stage_h_feature_snapshot_contract() -> None:
+    assert _unique_constraint_columns(FeatureSnapshot, "uq_feature_snapshots_identity") == (
+        "exchange",
+        "instrument_id",
+        "timeframe",
+        "bar_ts",
+        "feature_version",
+        "feature_config_hash",
+    )
+    for column_name in [
+        "id",
+        "symbol",
+        "instrument_id",
+        "trade_instrument_id",
+        "exchange",
+        "trading_day",
+        "timeframe",
+        "bar_ts",
+        "feature_version",
+        "feature_config_hash",
+        "source_bar_keys",
+        "returns",
+        "bar_return",
+        "price_range",
+        "range",
+        "atr",
+        "volume_ratio",
+        "moving_average",
+        "bias",
+        "breakout_level",
+        "volatility",
+        "momentum",
+        "source_window_start",
+        "source_window_end",
+        "warmup_complete",
+        "quality_status",
+        "missing_bar_count",
+        "gap_count",
+        "raw_payload",
+        "calculated_at",
+        "received_at",
+    ]:
+        assert column_name in FeatureSnapshot.__table__.columns
+    assert isinstance(FeatureSnapshot.__table__.columns["source_bar_keys"].type, JSON)
+    assert isinstance(FeatureSnapshot.__table__.columns["returns"].type, Numeric)
+    assert {
+        "ix_feature_snapshots_exchange",
+        "ix_feature_snapshots_instrument_id",
+        "ix_feature_snapshots_trading_day",
+        "ix_feature_snapshots_timeframe",
+        "ix_feature_snapshots_bar_ts",
+        "ix_feature_snapshots_feature_version",
+        "ix_feature_snapshots_feature_config_hash",
+        "ix_feature_snapshots_exchange_instrument_day",
+    }.issubset({index.name for index in FeatureSnapshot.__table__.indexes})
 
 
 def test_stage_f_migration_backfills_legacy_calculation_key() -> None:
