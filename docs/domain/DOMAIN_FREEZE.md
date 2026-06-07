@@ -47,6 +47,7 @@
 - `symbol` 当前不是 Domain 字段。
 - `trade_instrument_id` 当前不是 Domain 字段。
 - 未来如果要分离 `symbol`、`instrument_id`、`trade_instrument_id`，必须通过 domain migration。在此之前，不得通过 `raw_payload` 或 JSON 字段偷带缺失的身份字段。
+- Stage G Market Data Contract Freeze 已冻结未来 Market Data identity 目标：`symbol` 是基础品种，例如 `au`；`instrument_id` 是行情合约 identity；`trade_instrument_id` 是交易合约 identity；`exchange` 是交易所；`trading_day` 是 calendar/session rule 给出的交易日。该目标尚未进入当前 Domain 代码或 schema。
 
 价格：
 
@@ -994,6 +995,346 @@ Stage F 不实现：
 
 交易时段是结构化 Domain 事实，不得隐藏在 instrument JSON 中。
 
+## Stage G Market Data Contract Freeze
+
+本节冻结未来 Market Data Core 契约。当前代码、schema 和 tests 尚未实现 Market Data、FeatureSnapshot、Market repository 或 market tables；本节不得被解读为当前已存在字段。真正落地必须通过独立 domain migration、schema migration 和测试更新。
+
+### Market Data source-of-truth
+
+Market Data Core 只能消费以下类型化输入：
+
+- external market adapter typed input。
+- instrument identity mapping。
+- trading calendar / trading session。
+- timestamp normalization rule。
+- data quality policy。
+
+Market Data Core 输出以下类型化事实：
+
+- typed `Tick`。
+- typed `Bar`。
+- typed `MarketDataEvent`。
+- typed `MarketDataSnapshot`。
+- `DataQualityResult`。
+- replayable market facts。
+
+Market Data Core 禁止：
+
+- 创建订单。
+- 调用 OMS。
+- 调用 Risk。
+- 调用 Execution。
+- 修改 `Trade`、`Position`、`MarginSnapshot`、`PnLSnapshot` 或 `SettlementSnapshot`。
+- 从 `raw_payload` 补 source-of-truth 字段。
+- 把 Redis / Kafka message 当 DB fact。
+
+`raw_payload` 在 Market Data 中只能作为 optional diagnostic payload，不参与 canonical equality、idempotency、replay conflict 判定或任何 source-of-truth 字段恢复。
+
+### Instrument identity contract
+
+未来 `Tick`、`Bar` 和 `FeatureSnapshot` 必须携带完整 instrument identity：
+
+| 字段 | 语义 |
+|---|---|
+| `symbol` | 基础品种，例如 `au`。 |
+| `instrument_id` | 行情合约 identity。 |
+| `trade_instrument_id` | 交易合约 identity。 |
+| `exchange` | 交易所。 |
+| `trading_day` | 由 calendar/session rule 给出的交易日。 |
+| calendar/session 归属 | 对应交易所、品种或合约的交易日与交易时段归属。 |
+
+规则：
+
+- 不得混用主力连续合约、行情合约、交易合约和 base symbol。
+- Adapter 负责把外部字段 normalize 成 typed identity。
+- Market Data Core 不猜测合约映射。
+- 缺失 identity 必须由 data quality gate 返回 typed reject，不得通过 `raw_payload`、Redis/Kafka payload 或 runtime message 补齐。
+
+### Timestamp and bar_ts contract
+
+- External timestamp 可以是 ms/us/ns，但 adapter 必须 normalize。
+- Domain timestamp 使用与当前 Domain 契约一致的 typed `datetime` / `date`；不得在 Market Data Core 内混用 system date、adapter receive time 和 exchange event time。
+- `Tick.ts` 表示 normalized market event timestamp。
+- `Bar.bar_ts` 冻结为 bar start timestamp，不使用 bar end timestamp。
+- `trading_day` 不得从系统日期推断，必须由 calendar/session rule 给出。
+- `received_at`、`calculated_at` 等本地处理时间只可作为 diagnostic / audit 时间，不参与 canonical equality。
+
+### Market Data domain contracts
+
+未来必须新增或冻结以下类型：
+
+- `Tick`
+- `Bar`
+- `MarketDataEvent`
+- `MarketDataSnapshot`
+- `DataQualityResult`
+- `MarketDataResultStatus`
+- `MarketDataEventType`
+- `BarTimeframe`
+
+#### Tick
+
+| 字段 | 类型 | 默认值 | 语义 |
+|---|---|---|---|
+| `symbol` | `str` | required | 基础品种。 |
+| `instrument_id` | `str` | required | 行情合约 identity。 |
+| `trade_instrument_id` | `str` | required | 交易合约 identity。 |
+| `exchange` | `str` | required | 交易所。 |
+| `trading_day` | `date` | required | 交易日，由 calendar/session rule 给出。 |
+| `ts` | `datetime` | required | normalized market event timestamp。 |
+| `price` | `Decimal` | required | 最新价，必须 `> 0`。 |
+| `volume` | `Decimal` | required | 成交量，必须 `>= 0`。 |
+| `turnover` | `Decimal` | required | 成交额，必须 `>= 0`。 |
+| `open_interest` | `Decimal` | required | 持仓量，必须 `>= 0`。 |
+| `bid_price_1` | `Decimal \| None` | `None` | 一档买价。 |
+| `ask_price_1` | `Decimal \| None` | `None` | 一档卖价。 |
+| `bid_volume_1` | `Decimal \| None` | `None` | 一档买量，存在时必须 `>= 0`。 |
+| `ask_volume_1` | `Decimal \| None` | `None` | 一档卖量，存在时必须 `>= 0`。 |
+| `source` | `str` | required | typed market source。 |
+| `raw_payload` | `dict[str, Any] \| None` | `None` | 可选诊断 payload；不承载 source-of-truth。 |
+
+#### Bar
+
+| 字段 | 类型 | 默认值 | 语义 |
+|---|---|---|---|
+| `symbol` | `str` | required | 基础品种。 |
+| `instrument_id` | `str` | required | 行情合约 identity。 |
+| `trade_instrument_id` | `str` | required | 交易合约 identity。 |
+| `exchange` | `str` | required | 交易所。 |
+| `trading_day` | `date` | required | 交易日，由 calendar/session rule 给出。 |
+| `timeframe` | `BarTimeframe` | required | Bar 周期。 |
+| `bar_ts` | `datetime` | required | bar start timestamp。 |
+| `open` | `Decimal` | required | 开盘价，必须 `> 0`。 |
+| `high` | `Decimal` | required | 最高价，必须 `> 0`。 |
+| `low` | `Decimal` | required | 最低价，必须 `> 0`。 |
+| `close` | `Decimal` | required | 收盘价，必须 `> 0`。 |
+| `volume` | `Decimal` | required | 成交量，必须 `>= 0`。 |
+| `turnover` | `Decimal` | required | 成交额，必须 `>= 0`。 |
+| `open_interest` | `Decimal` | required | 持仓量，必须 `>= 0`。 |
+| `source` | `str` | required | typed market source。 |
+| `quality_status` | `MarketDataResultStatus` | required | data quality gate 结果。 |
+
+#### DataQualityResult
+
+`DataQualityResult` 必须是 typed result，不得返回裸字符串或依赖 exception 文本作为契约。
+
+字段建议：
+
+- `status: MarketDataResultStatus`
+- `event_type: MarketDataEventType | None`
+- `instrument_id: str | None`
+- `exchange: str | None`
+- `trading_day: date | None`
+- `ts: datetime | None`
+- `reason: str | None`
+
+#### MarketDataEvent
+
+`MarketDataEvent` 是行情质量门和 replay 可消费的 typed event envelope，不是运行时 transport message。
+
+字段建议：
+
+- `event_id: str`
+- `event_type: MarketDataEventType`
+- `instrument_id: str`
+- `exchange: str`
+- `trading_day: date`
+- `ts: datetime`
+- `source: str`
+- `result: DataQualityResult`
+- `tick: Tick | None`
+- `bar: Bar | None`
+
+`MarketDataEvent` 不得包含订单、风控、执行或 accounting mutation intent。
+
+#### MarketDataSnapshot
+
+`MarketDataSnapshot` 是给 FeatureSnapshot / Strategy 上游消费的 typed market view。
+
+字段建议：
+
+- `symbol: str`
+- `instrument_id: str`
+- `trade_instrument_id: str`
+- `exchange: str`
+- `trading_day: date`
+- `as_of_ts: datetime`
+- `latest_tick: Tick | None`
+- `latest_bars: Mapping[BarTimeframe, Bar]`
+- `quality_status: MarketDataResultStatus`
+
+`MarketDataSnapshot` 是行情视图，不是 DB fact 的替代；持久化 source-of-truth 仍是 market tick/bar facts。
+
+#### MarketDataResultStatus
+
+| 名称 | 语义 |
+|---|---|
+| `ACCEPTED` | 类型化行情事实通过质量门。 |
+| `REJECTED_MISSING_IDENTITY` | 缺失 symbol / instrument / exchange / trading_day / session identity。 |
+| `REJECTED_BAD_TIMESTAMP` | timestamp 缺失、无法 normalize 或不符合 Domain 时间契约。 |
+| `REJECTED_OUT_OF_SESSION` | 不属于有效 trading session。 |
+| `REJECTED_BAD_PRICE` | price、bid/ask 或 OHLC 价格非法。 |
+| `REJECTED_NON_MONOTONIC` | 对同一 identity 的 timestamp 非单调。 |
+| `DUPLICATE` | canonical 相同的重复 Tick / Bar，no-op。 |
+| `GAP_DETECTED` | 检测到行情缺口。 |
+| `ERROR` | 未分类错误或 duplicate different canonical conflict。 |
+
+如果后续需要区分 duplicate different canonical，可以新增 `CONFLICT`，但 Stage G 冻结期接受返回 `ERROR`。
+
+#### MarketDataEventType
+
+| 名称 | 语义 |
+|---|---|
+| `TICK_ACCEPTED` | Tick 通过质量门并成为 typed market fact。 |
+| `BAR_ACCEPTED` | Bar 通过质量门并成为 typed market fact。 |
+| `TICK_REJECTED` | Tick 被质量门拒绝。 |
+| `BAR_REJECTED` | Bar 被质量门拒绝。 |
+| `DUPLICATE` | 重复 canonical fact no-op。 |
+| `GAP_DETECTED` | 检测到行情缺口。 |
+| `ERROR` | 未分类错误或 conflict event。 |
+
+#### BarTimeframe
+
+`BarTimeframe` 必须是枚举或等价 typed value，不得使用任意裸字符串散落在实现中。
+
+初始建议值：
+
+- `M1`
+- `M5`
+- `M15`
+- `M30`
+- `H1`
+- `D1`
+
+如需新增周期，必须通过 domain migration 和测试更新；同一周期的 duration / session alignment 必须 deterministic。
+
+### Price / volume validation
+
+- `price` 必须是 `Decimal > 0`。
+- `volume >= 0`。
+- `turnover >= 0`。
+- `open_interest >= 0`。
+- Bar 必须满足 `high >= max(open, close, low)`。
+- Bar 必须满足 `low <= min(open, close, high)`。
+- `bid_price_1` 和 `ask_price_1` 同时存在时必须 `bid_price_1 <= ask_price_1`。
+- Zero-volume bar 只有 data quality policy 显式允许时可接受。
+- 非法事实必须返回 typed rejected，不得静默修正、截断、默认填值或从 diagnostic payload 补值。
+
+### Data quality gate
+
+冻结行为：
+
+- Missing identity：`REJECTED_MISSING_IDENTITY`。
+- Bad timestamp：`REJECTED_BAD_TIMESTAMP`。
+- Out of session：`REJECTED_OUT_OF_SESSION`。
+- Duplicate same canonical：`DUPLICATE` no-op。
+- Duplicate different canonical：`ERROR`，或后续 migration 明确新增 `CONFLICT`。
+- Non-monotonic timestamp：`REJECTED_NON_MONOTONIC`。
+- Market gap：`GAP_DETECTED`；只有显式 policy `allow_gap=True` 时才可继续接受。
+- Bad price：`REJECTED_BAD_PRICE`。
+- Bad OHLC：`REJECTED_BAD_PRICE`。
+- Quality result 必须 typed。
+
+### Bar aggregation contract
+
+Stage G Contract Freeze 只定义 aggregation contract，不实现 aggregation。
+
+后续实现规则：
+
+- `Tick -> Bar` aggregator 必须 deterministic。
+- Bar identity 为 `instrument_id + timeframe + bar_ts`，并必须同时保留 `exchange`、`symbol`、`trade_instrument_id`、`trading_day` 和 `source`。
+- Same canonical duplicate no-op。
+- Different canonical duplicate conflict / `ERROR`。
+- Aggregator 不创建订单。
+- Aggregator 不调用 OMS / Risk / Execution。
+- Aggregator 不生成 Strategy signal。
+
+### Repository and DB future contract
+
+Stage G Contract Freeze 不创建 schema。后续实现 Market facts 持久化时需要：
+
+- `MarketTickRepository`
+- `MarketBarRepository`
+- `market_ticks` table
+- `market_bars` table
+
+Tick idempotency：
+
+- `account_id` 与 Market Data 无关。
+- 默认唯一身份：`exchange + instrument_id + ts + source`。
+- 如果未来交易所或 vendor 提供稳定 exchange tick id，应优先使用 exchange tick id。
+
+Bar idempotency：
+
+- `exchange + instrument_id + timeframe + bar_ts + source`。
+
+Canonical payload 排除：
+
+- `raw_payload`
+- `received_at`
+- `calculated_at`
+
+### Replay contract
+
+- Market replay 使用 ordered typed market facts。
+- Same canonical 返回 no-op。
+- Different canonical 返回 conflict / `ERROR`。
+- Replay 必须 deterministic。
+- Replay 不直接调用 Strategy，除非后续 Strategy Replay stage 另行定义。
+- Replay 不修改 `Trade`、`Position`、`MarginSnapshot`、`PnLSnapshot`、`SettlementSnapshot` 或 account state。
+- Redis/Kafka replay payload 只能作为 transport input；持久化 DB fact 仍是 replay source-of-truth。
+
+### FeatureSnapshot boundary
+
+- `FeatureSnapshot` 消费 typed `Bar` / `MarketDataSnapshot`。
+- `FeatureSnapshot` 是 deterministic derived fact。
+- `FeatureSnapshot` 不修改 Market facts。
+- `FeatureSnapshot` 不创建订单。
+- Strategy 后续消费 `FeatureSnapshot`。
+- Stage G 不实现 indicators。
+
+### Runtime boundary
+
+- Kafka / Redis 未来只能作为 transport / cache。
+- DB 仍是 persisted market facts 的 source-of-truth。
+- Redis 不能作为 source-of-truth。
+- Kafka 不能替代 DB facts。
+- FastAPI / Celery 不属于 Market Data Core。
+
+### Future implementation tests
+
+后续实现必须覆盖：
+
+- Tick Decimal validation。
+- Bar OHLC validation。
+- missing identity reject。
+- bad timestamp reject。
+- out-of-session reject。
+- duplicate same canonical。
+- duplicate different canonical conflict / `ERROR`。
+- `raw_payload` diagnostic only。
+- non-monotonic reject。
+- gap detection。
+- bar idempotency。
+- replay deterministic。
+- no OMS / Risk / Execution / Accounting mutation。
+
+### Explicit non-goals
+
+Stage G 不实现：
+
+- Strategy。
+- Signal。
+- Feature indicators。
+- Broker adapter。
+- CTP / SimNow。
+- Kafka ingestion。
+- FastAPI service。
+- live market feed。
+- paper / sim / live。
+- accounting mutation。
+- risk direct market lookup。
+
 ## 当前接口边界
 
 - `MarketDataMock.latest_price(instrument_id: str) -> Decimal`：Mock 行情价格查询。
@@ -1659,7 +2000,7 @@ uv run mypy src
 
 ## Future Migration Candidates
 
-以下不是当前冻结字段：
+以下不是当前代码字段；Stage G 已冻结其中 `symbol` 和 `trade_instrument_id` 的未来 Market Data identity 语义，但真正进入代码和 schema 仍必须通过 migration：
 
 - `symbol`
 - `trade_instrument_id`

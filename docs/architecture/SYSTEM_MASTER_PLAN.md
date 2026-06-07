@@ -37,15 +37,19 @@
   - 当前 tag：`phase-4-execution-command-report-runtime / bd6f0d4`。
   - 已有本地 command port、in-memory report sink、EMS command boundary、ConfigurableMockFuturesExchange skeleton 和 report handler。
   - 当前仍不接 OMS，不写 DB，不接 CTP、SimNow、broker adapter、Kafka、Celery 或 FastAPI。
+- Accounting Core 已完成并可作为后续路线基础。
+  - 当前 tag：`accounting-chain-core-baseline / 83c2948`。
+  - 已完成 Trade、Position、Margin、PnL 和 Settlement。
+  - Accounting source-of-truth 仍只能来自类型化 Trade、Position、MarginSnapshot、PnLSnapshot、SettlementSnapshot、AccountContext / AccountSnapshot 和结算价格输入。
 
 当前尚未实现为业务能力的部分：
 
 - Application Execution Orchestrator。
 - OMS public UNKNOWN entry。
-- 类型化 Fill domain 与真实 Trade/Fill 接入。
-- Position Manager、Margin Engine、PnL Engine、Settlement Engine。
-- Tick / Bar / Kline / MarketContext / FeatureSnapshot。
+- Market Data Core。
+- FeatureSnapshot。
 - RiskContext、portfolio/account risk、intraday limits、kill switch risk。
+- Strategy / Signal Lifecycle。
 - Recovery / Replay Framework。
 - FastAPI / Celery / Kafka / Runtime control plane。
 - CTP / SimNow / live broker adapter。
@@ -89,9 +93,12 @@
 
 ### Strategy / Market Data Layer
 
-- Market adapter 将外部行情解析为 typed Tick / Bar / Kline。
-- Market Data Service 负责去重、排序、数据质量、交易日/session 归属。
-- Feature Builder 生成 deterministic `FeatureSnapshot`。
+- Market adapter 将外部行情解析为 typed Tick / Bar。
+- Market Data Core 只能消费 external market adapter typed input、instrument identity mapping、trading calendar / trading session、timestamp normalization rule 和 data quality policy。
+- Market Data Core 输出 typed `Tick`、typed `Bar`、typed `MarketDataEvent`、typed `MarketDataSnapshot`、`DataQualityResult` 和 replayable market facts。
+- Market Data Core 负责去重、排序、数据质量、交易日/session 归属；不得创建订单、调用 OMS / Risk / Execution，或修改 Trade / Position / Margin / PnL / Settlement。
+- Market Data Core 不得从 `raw_payload` 补 source-of-truth 字段，不得把 Redis/Kafka message 当作 DB fact。
+- Feature Builder 生成 deterministic `FeatureSnapshot`，只消费 typed Bar / MarketDataSnapshot，不修改 Market facts，不创建订单。
 - Strategy 只消费 typed market input 或 `FeatureSnapshot`，只输出 `Signal`。
 - Strategy 不创建订单，不调用 OMS，不调用 Execution。
 - Risk 不直接查询行情 adapter、行情 DB、Kafka 或 Redis；由 application layer 组装 typed RiskContext。
@@ -115,7 +122,7 @@
 
 终态交易链路如下：
 
-1. Market adapter 接收外部行情，解析为 typed Tick / Bar / Kline。
+1. Market adapter 接收外部行情，解析为 typed Tick / Bar。
 2. Market Data Service 执行 data quality gate，处理缺口、延迟、乱序、异常价格和 session 归属。
 3. Feature Builder 基于 typed market facts、calendar、session 和规则版本生成 deterministic `FeatureSnapshot`。
 4. Strategy 消费 `FeatureSnapshot`，输出 `Signal`。
@@ -364,14 +371,23 @@ Stage F contract freeze：
 
 ### Stage G: Market Data / Feature Snapshot
 
-- Goal：建立 typed market data、MarketContext、FeatureSnapshot 和 data quality gate。
-- Inputs：instruments、trading calendar/session、external market adapter output、historical data source。
-- Outputs：Tick / Bar / Kline、MarketContext、FeatureSnapshot、data quality events、replay fixtures。
-- Allowed changes：market data domain/interface/schema/tests、feature builder、replay reader。
-- Forbidden changes：不改 OMS 状态机；Risk 不直连行情；Strategy 不创建订单；不使用 raw_payload 补价格或 feature 事实。
-- Required tests：tick/bar/kline Decimal contract、session/trading_day attribution、gap/late/out-of-order、stale market, feature deterministic replay。
-- Acceptance criteria：同一历史输入可复现 FeatureSnapshot 和 Signal；异常行情可被标记/隔离。
-- Suggested tag：`stage-g-market-data-feature-snapshot`。
+- Goal：冻结 Market Data Core 契约，建立 typed Tick / Bar / MarketDataEvent / MarketDataSnapshot、data quality gate、repository future contract、replay contract 和 FeatureSnapshot 边界。本阶段是 Contract Freeze，不实现代码、不新增 schema、不修改 src/tests。
+- Inputs：external market adapter typed input、instrument identity mapping、trading calendar / trading session、timestamp normalization rule、data quality policy。
+- Outputs：typed `Tick`、typed `Bar`、typed `MarketDataEvent`、typed `MarketDataSnapshot`、`DataQualityResult`、replayable market facts。
+- Allowed changes：`docs/architecture/SYSTEM_MASTER_PLAN.md`、`docs/domain/DOMAIN_FREEZE.md`；如已有 `docs/market/*` 可更新。
+- Forbidden changes：不写代码；不改 schema、`src/`、`tests/`、`alembic/`；不改 OMS / Risk / Execution / Accounting 行为；不实现 Broker adapter、CTP、SimNow、live feed、Kafka ingestion、FastAPI、Celery、Strategy 或 indicators。
+- Source-of-truth：Market Data 只能消费 typed adapter input、typed identity mapping、calendar/session、timestamp normalization rule 和 data quality policy；`raw_payload` 只诊断，Redis/Kafka 只可作为未来 transport/cache，不是 DB fact。
+- Instrument identity：冻结 `symbol`、`instrument_id`、`trade_instrument_id`、`exchange`、`trading_day`、calendar/session 归属；不得混用主力连续合约、行情合约、交易合约和 base symbol；Adapter 负责 normalized typed identity；Market Data Core 不猜测合约映射。
+- Timestamp：external ts 可以是 ms/us/ns，但 adapter 必须 normalize；Domain 时间必须使用已有 Domain 契约一致的 typed `datetime` / `date`；`bar_ts` 冻结为 bar start timestamp；`trading_day` 必须由 calendar/session rule 给出，不得从系统日期推断。
+- Data quality：missing identity、bad timestamp、out-of-session、bad price、bad OHLC、non-monotonic timestamp 均返回 typed rejected；duplicate same canonical 返回 `DUPLICATE` no-op；duplicate different canonical 返回 `CONFLICT` 或 `ERROR`；gap 返回 `GAP_DETECTED`，只有显式 policy `allow_gap=True` 时才可继续接受。
+- Price / volume validation：price 必须为 `Decimal > 0`；volume / turnover / open_interest 必须 `>= 0`；OHLC 必须满足 high/low 边界；bid/ask 同时存在时必须 `bid <= ask`；zero-volume bar 只有显式 policy 允许时可接受；非法事实必须 typed reject，不得静默修正。
+- Bar aggregation：Stage G 只冻结 aggregation contract，不实现 aggregator。后续 `Tick -> Bar` aggregator 必须按 `instrument_id + timeframe + bar_ts` deterministic；same canonical no-op；different canonical conflict；不得创建订单或生成 strategy signal。
+- Future repository / DB contract：后续实现需要 `MarketTickRepository`、`MarketBarRepository`、`market_ticks` table、`market_bars` table；Stage G 不创建 schema。Tick idempotency 为 `exchange + instrument_id + ts + source`，如未来 exchange tick id 存在则优先使用；Bar idempotency 为 `exchange + instrument_id + timeframe + bar_ts + source`。Canonical 排除 `raw_payload`、`received_at`、`calculated_at`。
+- Replay：Market replay 使用 ordered typed market facts；same canonical no-op；different canonical conflict；replay 必须 deterministic；不得直接调用 Strategy，除非后续 Strategy Replay stage 另行定义；不得 mutate Accounting。
+- FeatureSnapshot boundary：`FeatureSnapshot` 消费 typed Bar / MarketDataSnapshot，是 deterministic derived fact；不修改 Market facts，不创建订单；Strategy 后续消费 FeatureSnapshot；Stage G 不实现 indicators。
+- Future tests：Tick decimal validation、Bar OHLC validation、missing identity reject、bad timestamp reject、out-of-session reject、duplicate same canonical、duplicate different canonical conflict、raw_payload diagnostic only、non-monotonic reject、gap detection、bar idempotency、replay deterministic、no OMS/Risk/Execution/Accounting mutation。
+- Acceptance criteria：本文档完整冻结 Market Data Core 契约与非目标；后续实现必须先通过独立 domain/schema/test migration 落地，不得在 Contract Freeze 中偷实现。
+- Suggested tag：`stage-g-market-data-contract-freeze`。
 
 ### Stage H: Strategy / Signal Lifecycle
 
