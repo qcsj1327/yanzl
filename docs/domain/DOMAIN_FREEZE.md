@@ -1286,14 +1286,197 @@ Canonical payload 排除：
 - Replay 不修改 `Trade`、`Position`、`MarginSnapshot`、`PnLSnapshot`、`SettlementSnapshot` 或 account state。
 - Redis/Kafka replay payload 只能作为 transport input；持久化 DB fact 仍是 replay source-of-truth。
 
-### FeatureSnapshot boundary
+## Stage H Feature Snapshot Contract Freeze
 
-- `FeatureSnapshot` 消费 typed `Bar` / `MarketDataSnapshot`。
-- `FeatureSnapshot` 是 deterministic derived fact。
-- `FeatureSnapshot` 不修改 Market facts。
-- `FeatureSnapshot` 不创建订单。
+Stage H 只冻结 `FeatureSnapshot` 契约，不实现 domain object、repository、migration、builder、service 或 tests。当前基线是 Stage G Market Data Core：typed `Tick` / `Bar` / `MarketDataSnapshot`、DataQualityGate、MarketDataService、`market_ticks` / `market_bars` 和 market replay 已完成；Tick -> Bar Aggregator、FeatureSnapshot、Strategy / Signal Lifecycle 尚未进入。
+
+### FeatureSnapshot source-of-truth
+
+`FeatureSnapshot` 只能消费：
+
+- typed `Bar`。
+- typed `MarketDataSnapshot`。
+- trading calendar / trading session。
+- instrument identity。
+- deterministic feature config / rule version。
+
+`FeatureSnapshot` 禁止消费：
+
+- `raw_payload` 作为 source-of-truth。
+- `OrderStatus`。
+- `OrderEvent`。
+- `ExchangeReport`。
+- `Trade` / `Position` / `Margin` / `PnL` / `Settlement`。
+- Broker query。
+- Redis / Kafka 作为 source-of-truth。
+
+`raw_payload` 如未来存在，只能作为 optional diagnostic payload，不参与 canonical equality、idempotency、replay conflict 判定或 feature 字段恢复。
+
+### FeatureSnapshot identity
+
+`FeatureSnapshot` 必须携带：
+
+- `symbol: str`
+- `instrument_id: str`
+- `trade_instrument_id: str`
+- `exchange: str`
+- `trading_day: date`
+- `timeframe: BarTimeframe`
+- `bar_ts: datetime`
+- `feature_version: str`
+- `source_bar_ids: Sequence[str]` 或 `source_bar_keys: Sequence[str]`
+
+Identity 规则：
+
+- `symbol`、`instrument_id`、`trade_instrument_id`、`exchange`、`trading_day` 必须与 source bars 一致。
+- `timeframe` 必须与 source bars 一致。
+- `bar_ts` 使用 feature 所属 bar 的 bar start timestamp。
+- `feature_version` 必须由 deterministic feature config / rule version 派生。
+- `FeatureSnapshot` 不猜测合约映射，不从主力连续合约、行情合约、交易合约或 base symbol 自动推断 identity。
+- source bars identity 不一致时，后续实现必须 typed reject，不得合成 snapshot。
+- source bars timeframe 不一致时，后续实现必须 typed reject，不得合成 snapshot。
+
+### FeatureSnapshot fields
+
+Stage H 冻结以下字段：
+
+- `returns`
+- `bar_return`
+- `price_range`
+- `range`
+- `atr`
+- `volume_ratio`
+- `moving_average`
+- `bias`
+- `breakout_level`
+- `volatility`
+- `momentum`
+- `source_window_start`
+- `source_window_end`
+- `warmup_complete`
+- `quality_status`
+- `missing_bar_count`
+- `gap_count`
+- `raw_payload` diagnostic only if present
+
+Decimal / `None` policy：
+
+- Numeric features 必须为 `Decimal | None`。
+- 禁止使用 `float` 表示 feature 数值。
+- Insufficient warmup 时 affected feature values 必须为 `None`，且 `warmup_complete=False`。
+- 不得静默使用 `0` 填补 missing / insufficient values。
+- `raw_payload` 不属于 canonical feature fields。
+
+### Feature calculation rules
+
+Stage H 冻结计算契约，不冻结具体实现代码：
+
+- `returns` / `bar_return` 使用 typed close prices。
+- `range` / `price_range = high - low`。
+- `atr` 使用 configured window 和 typed OHLC。
+- `moving_average` 使用 configured window 和 close。
+- `bias = close - moving_average`。
+- 如后续需要 ratio 形式 bias，必须新增独立字段 `bias_ratio`，不得改变 `bias` 语义。
+- `volume_ratio` 使用 configured window average volume。
+- `breakout_level` 使用 configured window high / low。
+- `volatility` 必须在实现前另行冻结 window 和 formula。
+- `momentum` 必须在实现前另行冻结 window 和 formula。
+
+### Warmup and missing data
+
+- 如果 source bars 少于某个 feature 的 required window，`warmup_complete=False`，affected features 为 `None`，不得 fake 0。
+- 如果 gaps detected，`quality_status` 必须反映 gap，`gap_count > 0`。
+- Gap 情况下仅当 explicit policy `allow_gap=True` 时可以 emit `FeatureSnapshot`。
+- Missing bars 必须由 `missing_bar_count` 记录。
+- Rejected input 或 insufficient input 不得创建 fake facts。
+
+### FeatureSnapshotRepository future contract
+
+后续实现需要新增：
+
+- `FeatureSnapshotRepository`。
+- `feature_snapshots` table。
+
+Repository methods 冻结为：
+
+- `append_feature_snapshot(snapshot)`。
+- `get_by_identity(exchange, instrument_id, timeframe, bar_ts, feature_version)`。
+- `list_by_instrument(exchange, instrument_id, timeframe, start_bar_ts, end_bar_ts)`。
+- `list_by_trading_day(exchange, instrument_id, timeframe, trading_day)`。
+
+Future unique constraint：
+
+- `exchange + instrument_id + timeframe + bar_ts + feature_version`。
+
+Canonical equality 必须排除：
+
+- `raw_payload`。
+- `calculated_at`。
+- `received_at`。
+
+### Feature Builder and Service boundary
+
+- `FeatureBuilder` 是 pure calculation boundary，只从 typed bars + deterministic config 生成 `FeatureSnapshot`。
+- `FeatureBuilder` 不持久化 facts。
+- `FeatureService` 负责持久化 snapshots。
+- Rejected / insufficient input 不创建 fake facts。
+- `FeatureBuilder` / `FeatureService` 不调用 Strategy。
+- `FeatureBuilder` / `FeatureService` 不创建 Signal。
+- `FeatureBuilder` / `FeatureService` 不直接查 Risk。
+- `FeatureBuilder` / `FeatureService` 不 mutate Accounting。
+
+### Feature replay
+
+- Feature replay 消费 ordered Bars。
+- 相同 inputs/config 必须生成相同 `FeatureSnapshot`。
+- Existing same canonical 返回 no-op。
+- Existing different canonical 返回 conflict / error。
+- Replay 不调用 Strategy。
+- Replay 不修改 Market facts。
+- Replay 不修改 Accounting。
+
+### Relation to Strategy
+
 - Strategy 后续消费 `FeatureSnapshot`。
-- Stage G 不实现 indicators。
+- `FeatureSnapshot` 不是 `Signal`。
+- `FeatureBuilder` 不做交易决策。
+- Strategy 不得为了补齐缺失 feature 直接读取 raw bars，除非后续 Strategy replay contract 显式允许。
+
+### Stage H future implementation tests
+
+后续实现必须覆盖：
+
+- FeatureSnapshot Decimal validation。
+- Insufficient warmup -> affected features `None`，no zero-fill。
+- MA calculation。
+- ATR calculation。
+- Bias formula。
+- Volume ratio。
+- Breakout level。
+- Source identity mismatch reject。
+- Timeframe mismatch reject。
+- Gap handling。
+- Duplicate same canonical。
+- Duplicate different canonical。
+- Replay deterministic。
+- No Strategy / Risk / Accounting mutation。
+- `raw_payload` excluded from canonical equality。
+
+### Stage H explicit non-goals
+
+Stage H 不实现：
+
+- Strategy。
+- Signal。
+- OMS / Risk integration。
+- Tick -> Bar Aggregator，除非另行 scoped。
+- Broker adapter。
+- Live feed。
+- Kafka / FastAPI / Celery runtime。
+- ML features。
+- Portfolio features。
+- Cross-instrument features。
+- Execution / Accounting mutation。
 
 ### Runtime boundary
 
