@@ -6,7 +6,7 @@
 
 不得提前新增 live、production、remote、kms、cloud 或真实交易运行流程。
 
-Stage M Runtime / Infrastructure contract freeze 当前记录在：
+Stage M Runtime / Infrastructure contract freeze 和 Stage O Operations / Safety / Production Readiness contract freeze 当前记录在：
 
 - `docs/architecture/SYSTEM_MASTER_PLAN.md`
 - `docs/domain/DOMAIN_FREEZE.md`
@@ -23,3 +23,16 @@ Stage M implementation 当前新增 `src/futures_mvp/modules/runtime`：
 - health 状态为 `READY`、`DEGRADED`、`FAILED`。
 - Runtime 不引入 FastAPI / Celery / Kafka 硬依赖。
 - Runtime 不新增 schema，不拥有业务事实。
+
+Stage O contract freeze 当前只冻结运维安全契约，不实现生产 rollout：
+
+- Safety source-of-truth 只能来自 runtime health、typed config、scheduler state、replay report、application service status、DB migration state 和 explicit operator decision。
+- `raw_payload`、broker rumor、manual DB edits 和 runtime guessing 不得作为 readiness、live submit 或 recovery 判断依据。
+- global kill switch、per-stage kill switch、scheduler pause 和 replay pause 都是 hard gate；live submit 默认 disabled。
+- Runtime 和 replay 默认 dry-run；broker live disabled；live submit 需要 explicit operator approval。
+- invalid config fail closed；unknown environment reject；production mode requires explicit flags；broker credentials absent means broker disabled。
+- app cannot become `READY` if DB migration state is incompatible；migration check must run before scheduler start；runtime auto-migration forbidden unless explicitly allowed。
+- observability requires structured logs、health status、replay summary、scheduler status、last successful stage and conflict/error counters。
+- recovery playbook must cover replay recovery、conflict recovery、broker post-send uncertain recovery and unresolved callback quarantine handling。
+- incident states are `READY`、`DEGRADED`、`FAILED`、`PAUSED` and `KILLED`。
+- Stage O does not implement real live rollout、CTP/SimNow production integration、external monitoring stack、Kubernetes/systemd deployment、remote server deployment or automatic self-healing trade repair。

@@ -4218,6 +4218,353 @@ Stage N schema decision：
 - No `BrokerCommand`、`BrokerReport` or `BrokerReportEnvelope` business fact model。
 - No CTP / SimNow / live adapter and no network dependency。
 
+## Stage O Operations / Safety / Production Readiness Contract Freeze
+
+Stage O freezes the Operations / Safety / Production Readiness contract on baseline `stage-n-broker-adapter-core / a32b810`。
+
+This is a documentation-only freeze. It does not add code, schema, Alembic revisions, source/tests changes, deployment automation, external monitoring integrations or live trading enablement.
+
+Stage O purpose：
+
+- Freeze Safety source-of-truth。
+- Freeze kill switch / pause behavior。
+- Freeze dry-run / live gate。
+- Freeze config validation fail-closed rules。
+- Freeze migration readiness。
+- Freeze observability requirements。
+- Freeze recovery playbook boundaries。
+- Freeze incident states。
+- Freeze operator checklist。
+- Freeze explicit non-goals before Stage P。
+
+### Stage O dependency graph
+
+```text
+Stage N Broker / Adapter Layer
+-> Stage O Operations / Safety / Production Readiness
+-> Stage P Paper / Sim / Live Rollout
+```
+
+Runtime safety control path：
+
+```text
+Typed Config
++ DB Migration State
++ Runtime Health
++ Application Service Status
++ Scheduler State
++ Replay Report
++ Operator Decision
+-> Safety Gate Evaluation
+-> Incident State
+-> Scheduler / Replay / Broker Enablement Decision
+```
+
+Dependency rules：
+
+- Stage O may read runtime health、typed config、scheduler state、replay reports、application service status、DB migration state and operator decisions。
+- Stage O must not own or rewrite OMS、Trade、Position、Margin、PnL、Settlement、AccountSnapshot、ExecutionCommand or NormalizedExecutionReport facts。
+- Stage O must not make broker query results local truth；broker evidence can only enter through Stage N typed adapter/reconciliation and existing replay/application boundaries。
+- Stage P is blocked until Stage O readiness、kill switch、dry-run/live gate、observability、recovery playbook and operator checklist are implemented and accepted。
+
+### Safety source-of-truth
+
+Allowed Safety source-of-truth：
+
+- Runtime health。
+- Typed config。
+- Scheduler state。
+- Replay report。
+- Application service status。
+- DB migration state。
+- Explicit operator decision。
+
+Forbidden Safety source-of-truth：
+
+- `raw_payload`。
+- broker rumor。
+- manual DB edits。
+- runtime guessing。
+
+Rules：
+
+- Safety decisions must be derived from typed, inspectable inputs。
+- `raw_payload` remains diagnostic-only and must not enable READY、live submit、scheduler start or replay live apply。
+- Broker rumor means untyped chat/log/operator hearsay, partial transport messages or unverified broker UI observation. It is not safety truth。
+- Manual DB edits are not safety truth and do not repair readiness unless a documented operator procedure records the exact typed repair and verification path。
+- Runtime guessing, default inference and missing-field assumptions must fail closed。
+
+### Kill switch contract
+
+Global kill switch：
+
+- Stops scheduler-triggered work。
+- Stops replay live apply。
+- Stops broker submit / cancel dispatch。
+- Forces incident state to `KILLED` or keeps it `KILLED` until explicit operator release。
+- Does not delete, rewrite or repair business facts。
+
+Per-stage kill switch：
+
+- Stops the named stage before it starts new unsafe work。
+- Stops downstream live effects for that stage。
+- Does not imply upstream facts are invalid。
+- Does not mutate stage-owned business ledgers。
+
+Scheduler pause：
+
+- Prevents new scheduled runs。
+- Keeps runtime inspectable。
+- Does not abort already-persisted facts。
+- Does not imply broker live is enabled when resumed。
+
+Replay pause：
+
+- Prevents replay execution。
+- Prevents live replay apply。
+- Keeps replay reports available for inspection。
+- Does not delete replay evidence。
+
+Live submit disabled by default：
+
+- Runtime startup must not enable live submit。
+- Replay startup must not enable live submit。
+- Scheduler startup must not enable live submit。
+- Broker adapter construction must not enable live submit。
+
+Broker adapter disabled unless explicitly enabled：
+
+- Missing broker enable flag disables broker flow。
+- Missing broker credentials disable broker flow。
+- Missing adapter target disables broker flow。
+- Enabled broker health check is read-only and not a repair action。
+
+### Dry-run / live gate
+
+Runtime default：
+
+- Runtime mode is dry-run by default。
+- Any unset, unknown or invalid runtime mode fails closed。
+
+Replay default：
+
+- Replay is dry-run by default。
+- Per-stage live apply requires explicit allowlist。
+- Non-allowlisted stages remain dry-run even if a global live flag exists。
+
+Broker live gate：
+
+- Broker live is disabled by default。
+- Broker live submit requires explicit broker enable flag、explicit live flag、valid credentials、compatible migration state、healthy runtime dependencies and explicit operator approval。
+- Broker live cannot be inferred from environment name alone。
+
+Operator approval：
+
+- Live submit requires an explicit operator decision captured as safety source-of-truth。
+- Approval must identify environment、account、adapter target、allowed stage/command surface and approval time。
+- Approval must be revocable by global kill switch、per-stage kill switch、scheduler pause or replay pause。
+
+No implicit live from config typo：
+
+- Unknown environment is rejected。
+- Unknown flag is rejected or ignored fail-closed according to typed config policy。
+- Misspelled production/live values must not coerce to live。
+- Missing production flags must not inherit from defaults。
+
+### Config validation
+
+Required env vars：
+
+- Runtime environment。
+- Database URL / storage location。
+- Migration expected head or compatible migration policy。
+- Scheduler enable flag。
+- Replay enable flag。
+- Broker enable flag。
+- Broker target/environment when broker is enabled。
+- Broker credentials handle when broker command flow is enabled。
+- Production explicit flags when production mode is requested。
+
+Validation rules：
+
+- Invalid config fails closed。
+- Unknown environment is rejected。
+- Production mode requires explicit production flags。
+- Broker credentials absent means broker is disabled。
+- Secret values must not enter logs、metrics、`raw_payload` or canonical payload。
+- A disabled broker is acceptable for Runtime readiness when broker flow is not requested；it is not acceptable for broker live readiness。
+
+### Migration readiness
+
+DB migration state：
+
+- App cannot become `READY` if DB migration state is incompatible with the runtime contract。
+- Migration check must run before scheduler start。
+- Migration check must run before broker live enablement。
+- Migration check must be read-only by default。
+
+Auto-migration：
+
+- No auto-migration in runtime unless explicitly allowed。
+- Explicitly allowed runtime migration, if ever introduced, must be separately frozen with operator approval、backup/rollback procedure and post-checks。
+- Stage O freeze does not grant runtime migration permission。
+
+### Observability
+
+Required observability outputs：
+
+- Structured logs。
+- Health status。
+- Replay summary。
+- Scheduler status。
+- Last successful stage。
+- Conflict counters。
+- Error counters。
+
+Rules：
+
+- Logs must carry typed correlation fields where available, such as runtime id、stage、account、instrument、command id、report id、replay id and scheduler run id。
+- Logs must redact secrets。
+- Health status must expose incident state and degraded dependency summary without mutating dependencies。
+- Replay summary must show dry-run/live mode、stage allowlist、processed count、duplicate/no-op count、conflict count、error count and last successful item/stage。
+- Scheduler status must show enabled/paused/killed state, last run, next run if known and last successful stage。
+- Conflict/error counters must be monotonically inspectable within the runtime reporting surface and must not be used to repair data automatically。
+
+### Recovery playbook
+
+Replay recovery：
+
+- Start from dry-run replay。
+- Compare replay summary and conflict/error counters。
+- Only enable live apply for explicitly allowed stages after operator approval。
+- Stop on conflict unless a documented recovery procedure resolves it。
+
+Conflict recovery：
+
+- Preserve both canonical payloads/evidence。
+- Do not overwrite local truth directly。
+- Route through the owning stage contract or a documented operator procedure。
+- Re-run dry-run verification before live apply resumes。
+
+Broker post-send uncertain recovery：
+
+- Do not blindly resend。
+- Query broker by typed lookup keys such as `adapter_order_ref`、exchange order id or client order id。
+- Convert proven broker evidence to typed report/reconciliation input。
+- Re-enter existing Stage L normalization and downstream replay/application boundary。
+
+Unresolved callback quarantine handling：
+
+- Keep unresolved callback evidence quarantined until lineage is proven。
+- Do not invent `command_id`、`order_id`、`client_order_id`、`raw_report_id` or trade identity from `raw_payload`。
+- Do not mutate OMS、Trade、Position or Accounting from quarantined evidence。
+
+DB repair：
+
+- No direct DB repair unless a documented operator procedure exists。
+- Any documented repair must name the owning fact ledger、reason、before/after typed evidence、verification command and rollback/compensation path。
+- Manual DB edits alone never make the app READY。
+
+### Incident states
+
+`READY`：
+
+- Config valid。
+- Migration state compatible。
+- Required services healthy。
+- Scheduler/replay/broker enablement decisions are consistent with configured mode。
+- No active global kill switch。
+
+`DEGRADED`：
+
+- App remains inspectable but one or more non-critical dependencies, counters or health checks are unhealthy。
+- New live effects may be blocked by policy。
+- Operator review is required before escalation or resume。
+
+`FAILED`：
+
+- Required config, migration, service, replay, scheduler or adapter condition failed。
+- New scheduled work and live broker effects are blocked。
+- Recovery requires a documented playbook path。
+
+`PAUSED`：
+
+- Operator or policy paused scheduler and/or replay。
+- App remains inspectable。
+- No new paused-surface work starts until explicit resume。
+
+`KILLED`：
+
+- Global kill switch is active。
+- Scheduler-triggered work, replay live apply and broker submit/cancel are stopped。
+- Only read-only inspection and documented recovery steps are allowed until explicit operator release。
+
+### Operator checklist
+
+Before startup：
+
+- Confirm environment name is known。
+- Confirm config validates。
+- Confirm secrets are present only when required and redacted from logs。
+- Confirm DB migration state is compatible。
+- Confirm global kill switch default state。
+- Confirm broker adapter is disabled unless explicitly needed。
+
+Before scheduler enable：
+
+- Confirm app health is `READY` or policy-approved `DEGRADED` for non-live work。
+- Confirm migration check passed before scheduler start。
+- Confirm scheduler pause is released by operator decision。
+- Confirm live submit remains disabled unless separately approved。
+
+Before broker enable：
+
+- Confirm broker target/environment is explicit。
+- Confirm credentials handle exists and secrets are not logged。
+- Confirm adapter health is read-only until broker command flow is explicitly allowed。
+- Confirm broker enablement does not bypass dry-run/live gate。
+
+Before live submit：
+
+- Confirm global kill switch is released。
+- Confirm per-stage kill switch is released for the live stage。
+- Confirm runtime and replay are not paused for the live surface。
+- Confirm migration state is compatible。
+- Confirm dry-run replay/preflight has no blocking conflict。
+- Confirm explicit operator approval identifies environment、account、adapter target and allowed command/stage surface。
+
+After incident：
+
+- Record incident state and trigger。
+- Preserve replay report、structured logs、scheduler status、last successful stage and conflict/error counters。
+- Use the relevant recovery playbook before resume。
+- Re-run config and migration readiness checks。
+- Re-enter dry-run before any live apply or broker submit resumes。
+
+### Stage O explicit non-goals
+
+- No real live rollout。
+- No CTP / SimNow production integration。
+- No external monitoring stack。
+- No Kubernetes / systemd deployment。
+- No remote server deployment。
+- No automatic self-healing trade repair。
+- No code implementation。
+- No schema migration。
+- No source/test changes。
+- No broker ledger。
+- No direct DB repair flow beyond documented operator procedure contract。
+
+### Stage O implementation recommendation
+
+- Implement first as a small runtime/ops safety gate around existing Runtime config、health、scheduler、replay coordinator and broker adapter injection points。
+- Keep safety inputs typed and read-only；do not infer from `raw_payload` or broker transport strings。
+- Add explicit config models for environment、dry-run/live flags、scheduler/replay pause、kill switches and broker enablement。
+- Add migration compatibility check before scheduler start and before broker live enablement。
+- Add structured observability reports before external monitoring integrations。
+- Add recovery playbook tests before any Stage P paper/sim/live rollout work。
+- Keep Stage P as Paper / Sim / Live Rollout and do not treat Stage O as live enablement。
+
 ### feature_snapshots
 
 Stage H 已新增 `feature_snapshots` 表作为 FeatureSnapshot derived facts ledger。

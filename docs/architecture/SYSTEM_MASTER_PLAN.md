@@ -1113,14 +1113,45 @@ Stage N current implementation facts：
 
 ### Stage O: Operations / Safety / Production Readiness
 
-- Goal：建立生产门禁、安全控制、监控、审计、runbook 和 DR。
-- Inputs：runtime、broker adapter、replay framework、accounting source-of-truth。
-- Outputs：metrics、audit trail、kill switch、readiness、healthcheck、deployment gates、runbook。
-- Allowed changes：ops control/audit schema if needed、metrics/logging adapters、readiness/preflight tests。
-- Forbidden changes：ops 不直接改业务事实；kill switch 不塞进 OMS 状态机；secret 不进入业务事件。
-- Required tests：kill switch gate、audit event、health/readiness、deployment preflight、incident replay、secret redaction。
-- Acceptance criteria：safety gates 可审计；UNKNOWN/recovery/position mismatch 有 runbook 和 typed workflow。
+- Goal：冻结 Operations / Safety / Production Readiness 契约，使 Runtime、Scheduler、Replay、Broker Adapter 和后续 rollout 只能在明确安全门禁下运行。
+- Baseline：`stage-n-broker-adapter-core / a32b810`。
+- Inputs：runtime health、typed config、scheduler state、replay report、application service status、DB migration state、operator decision。
+- Outputs：safety source-of-truth、kill switch contract、dry-run/live gate、config validation、migration readiness、observability、recovery playbook、incident states、operator checklist 和 Stage P rollout preflight contract。
+- Allowed changes：documentation-only contract freeze for this stage；后续实现可在 ops/runtime/config/readiness/preflight/logging/test 层落地该契约。
+- Forbidden changes：Stage O freeze 不写代码、不改 schema、不改 src/tests、不直接改业务事实；kill switch 不塞进 OMS 状态机；secret 不进入业务事件；不得把 `raw_payload`、broker rumor、manual DB edits 或 runtime guessing 当作 safety truth。
+- Required tests for later implementation：kill switch gate、dry-run/live gate、config fail-closed、migration readiness before scheduler start、structured observability、replay/conflict/broker uncertain recovery、incident state transitions、secret redaction 和 operator checklist preflight。
+- Acceptance criteria：Runtime / Replay / Scheduler / Broker live flow 默认 fail closed；live submit 必须显式 operator approval；DB migration 不兼容时 app 不得 READY；Stage P 只能在 Stage O readiness、kill switch、observability、runbook 和 operator checklist 全部满足后进入。
 - Suggested tag：`stage-o-operations-safety-readiness`。
+
+Stage O safety source-of-truth：
+
+- Allowed safety truth：runtime health、typed config、scheduler state、replay report、application service status、DB migration state and explicit operator decision。
+- Forbidden safety truth：`raw_payload`、broker rumor、manual DB edits and runtime guessing。
+
+Stage O kill switch / pause contract：
+
+- Global kill switch stops scheduler-triggered work、replay live apply and broker submit。
+- Per-stage kill switch stops only the named stage and its downstream unsafe live effects。
+- Scheduler pause prevents new scheduled runs without rewriting domain facts。
+- Replay pause prevents replay execution；existing persisted facts are not repaired or deleted。
+- Live submit is disabled by default。
+- Broker adapter is disabled unless explicitly enabled。
+
+Stage O dry-run / live gate：
+
+- Runtime default is dry-run。
+- Replay default is dry-run。
+- Broker live is disabled。
+- Live requires explicit operator approval plus explicit config gates。
+- Config typo, missing flag or unknown environment must never imply live。
+
+Stage O readiness / observability / recovery：
+
+- Invalid config fails closed；unknown environment is rejected；production mode requires explicit production flags；missing broker credentials disable broker flow。
+- App cannot become `READY` when DB migration state is incompatible；migration check must run before scheduler start；runtime auto-migration is forbidden unless explicitly allowed。
+- Required observability：structured logs、health status、replay summary、scheduler status、last successful stage and conflict/error counters。
+- Recovery playbook must cover replay recovery、conflict recovery、broker post-send uncertain recovery、unresolved callback quarantine handling and documented operator-only DB repair procedure。
+- Incident states are `READY`、`DEGRADED`、`FAILED`、`PAUSED` and `KILLED`。
 
 ### Stage P: Paper / Sim / Live Rollout
 
