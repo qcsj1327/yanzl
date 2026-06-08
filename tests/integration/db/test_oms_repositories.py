@@ -321,6 +321,8 @@ def _position_event(
 def _margin_snapshot(
     *,
     position_version: int = 1,
+    trading_day: date = date(2026, 1, 1),
+    config_hash: str = "margin-config-v1",
     calculation_key: str = "account-1:rb2601:1:v1",
     initial_margin: Decimal = Decimal("3500"),
     margin_used: Decimal | None = None,
@@ -329,6 +331,8 @@ def _margin_snapshot(
         account_id="account-1",
         instrument_id="rb2601",
         position_version=position_version,
+        trading_day=trading_day,
+        config_hash=config_hash,
         rule_id="rule-1",
         rule_version="v1",
         calculation_key=calculation_key,
@@ -348,6 +352,8 @@ def _margin_snapshot(
 def _pnl_snapshot(
     *,
     position_version: int = 1,
+    trading_day: date = date(2026, 1, 1),
+    config_hash: str = "pnl-config-v1",
     calculation_key: str = "account-1:rb2601:1:pnl",
     realized_pnl: Decimal = Decimal("100"),
     unrealized_pnl: Decimal = Decimal("50"),
@@ -357,6 +363,8 @@ def _pnl_snapshot(
         account_id="account-1",
         instrument_id="rb2601",
         position_version=position_version,
+        trading_day=trading_day,
+        config_hash=config_hash,
         trade_id=trade_id,
         margin_snapshot_id="margin-1",
         calculation_key=calculation_key,
@@ -1624,11 +1632,21 @@ def test_margin_snapshot_repository_round_trip_and_latest(
 
         latest = repository.get_latest("account-1", "rb2601")
         by_version = repository.get_by_position_version("account-1", "rb2601", 1)
+        by_identity = repository.get_by_accounting_identity(
+            "account-1",
+            "rb2601",
+            1,
+            date(2026, 1, 1),
+            "margin-config-v1",
+        )
         listed = repository.list_by_account("account-1")
 
     assert first.id is not None
+    assert first.trading_day == date(2026, 1, 1)
+    assert first.config_hash == "margin-config-v1"
     assert latest == second
     assert by_version == first
+    assert by_identity == first
     assert listed == [first, second]
 
 
@@ -1692,6 +1710,32 @@ def test_margin_snapshot_same_position_version_different_key_different_facts_con
     assert count == 1
 
 
+def test_margin_snapshot_different_trading_day_or_config_are_independent_facts(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        repository = SQLAlchemyMarginSnapshotRepository(session)
+        first = repository.append_margin_snapshot(_margin_snapshot())
+        next_day = repository.append_margin_snapshot(
+            _margin_snapshot(
+                trading_day=date(2026, 1, 2),
+                calculation_key="account-1:rb2601:1:v1:2026-01-02",
+            )
+        )
+        next_config = repository.append_margin_snapshot(
+            _margin_snapshot(
+                config_hash="margin-config-v2",
+                calculation_key="account-1:rb2601:1:v2",
+            )
+        )
+        by_version = repository.get_by_position_version("account-1", "rb2601", 1)
+        count = session.scalar(select(func.count()).select_from(MarginSnapshotOrm))
+
+    assert {first.id, next_day.id, next_config.id}
+    assert by_version is None
+    assert count == 3
+
+
 def test_unit_of_work_exposes_margin_snapshots(
     db_session_factory: sessionmaker[Session],
 ) -> None:
@@ -1731,6 +1775,8 @@ def test_margin_engine_persists_snapshot_and_updates_margin_used_only(
         _account_context(),
         calculation_key="account-1:rb2601:0:v1",
         calculated_at=datetime(2026, 1, 1, 9, 2, tzinfo=UTC),
+        trading_day=date(2026, 1, 1),
+        config_hash="margin-config-v1",
     )
 
     with db_session_factory() as session:
@@ -1779,6 +1825,8 @@ def test_margin_engine_live_duplicate_same_position_version_same_facts_noop(
         _account_context(),
         calculation_key="account-1:rb2601:0:v1",
         calculated_at=datetime(2026, 1, 1, 9, 2, tzinfo=UTC),
+        trading_day=date(2026, 1, 1),
+        config_hash="margin-config-v1",
     )
     second = engine.calculate_margin(
         domain_position,
@@ -1786,6 +1834,8 @@ def test_margin_engine_live_duplicate_same_position_version_same_facts_noop(
         _account_context(),
         calculation_key="account-1:rb2601:0:v1-retry",
         calculated_at=datetime(2026, 1, 1, 9, 3, tzinfo=UTC),
+        trading_day=date(2026, 1, 1),
+        config_hash="margin-config-v1",
     )
 
     with db_session_factory() as session:
@@ -1827,6 +1877,8 @@ def test_margin_engine_live_duplicate_same_position_version_different_facts_conf
         _account_context(),
         calculation_key="account-1:rb2601:0:v1",
         calculated_at=datetime(2026, 1, 1, 9, 2, tzinfo=UTC),
+        trading_day=date(2026, 1, 1),
+        config_hash="margin-config-v1",
     )
     conflict = engine.calculate_margin(
         domain_position,
@@ -1834,6 +1886,8 @@ def test_margin_engine_live_duplicate_same_position_version_different_facts_conf
         _account_context(),
         calculation_key="account-1:rb2601:0:v1-retry",
         calculated_at=datetime(2026, 1, 1, 9, 3, tzinfo=UTC),
+        trading_day=date(2026, 1, 1),
+        config_hash="margin-config-v1",
     )
 
     with db_session_factory() as session:
@@ -1890,6 +1944,8 @@ def test_margin_engine_margin_only_update_cannot_overwrite_malformed_position_fi
         _account_context(Decimal("10000000")),
         calculation_key="account-1:rb2601:0:malformed",
         calculated_at=datetime(2026, 1, 1, 9, 2, tzinfo=UTC),
+        trading_day=date(2026, 1, 1),
+        config_hash="margin-config-v1",
     )
 
     with db_session_factory() as session:
@@ -1932,6 +1988,8 @@ def test_margin_engine_rejected_result_does_not_persist_or_update(
         _account_context(),
         calculation_key="account-1:rb2601:0:v1",
         calculated_at=datetime(2026, 1, 1, 9, 2, tzinfo=UTC),
+        trading_day=date(2026, 1, 1),
+        config_hash="margin-config-v1",
     )
 
     with db_session_factory() as session:
@@ -1964,6 +2022,8 @@ def test_margin_engine_identity_mismatch_does_not_persist_or_update(
         _account_context().model_copy(update={"account_id": "account-2"}),
         calculation_key="account-1:rb2601:0:account-mismatch",
         calculated_at=datetime(2026, 1, 1, 9, 2, tzinfo=UTC),
+        trading_day=date(2026, 1, 1),
+        config_hash="margin-config-v1",
     )
     instrument_mismatch = engine.calculate_margin(
         domain_position,
@@ -1971,6 +2031,8 @@ def test_margin_engine_identity_mismatch_does_not_persist_or_update(
         _account_context(),
         calculation_key="account-1:rb2601:0:instrument-mismatch",
         calculated_at=datetime(2026, 1, 1, 9, 2, tzinfo=UTC),
+        trading_day=date(2026, 1, 1),
+        config_hash="margin-config-v1",
     )
 
     with db_session_factory() as session:
@@ -2010,6 +2072,8 @@ def test_margin_engine_duplicate_replay_noop_and_live_divergence_conflict(
         _account_context(),
         calculation_key="account-1:rb2601:0:v1",
         calculated_at=datetime(2026, 1, 1, 9, 2, tzinfo=UTC),
+        trading_day=date(2026, 1, 1),
+        config_hash="margin-config-v1",
     )
     assert first.status == MarginResultStatus.CALCULATED
 
@@ -2021,6 +2085,8 @@ def test_margin_engine_duplicate_replay_noop_and_live_divergence_conflict(
         _account_context(),
         calculation_key="account-1:rb2601:0:v1",
         calculated_at=datetime(2026, 1, 1, 9, 2, tzinfo=UTC),
+        trading_day=date(2026, 1, 1),
+        config_hash="margin-config-v1",
     )
 
     assert replay.status == MarginResultStatus.CALCULATED
@@ -2037,6 +2103,8 @@ def test_margin_engine_duplicate_replay_noop_and_live_divergence_conflict(
         _account_context(),
         calculation_key="account-1:rb2601:0:v1",
         calculated_at=datetime(2026, 1, 1, 9, 2, tzinfo=UTC),
+        trading_day=date(2026, 1, 1),
+        config_hash="margin-config-v1",
     )
 
     assert divergence.status == MarginResultStatus.CONFLICT
@@ -2067,6 +2135,8 @@ def test_margin_replay_same_position_version_different_key_same_facts_noop(
         _account_context(),
         calculation_key="account-1:rb2601:0:v1",
         calculated_at=datetime(2026, 1, 1, 9, 2, tzinfo=UTC),
+        trading_day=date(2026, 1, 1),
+        config_hash="margin-config-v1",
     )
     assert first.status == MarginResultStatus.CALCULATED
     assert first.snapshot is not None
@@ -2078,6 +2148,8 @@ def test_margin_replay_same_position_version_different_key_same_facts_noop(
         _account_context(),
         calculation_key="account-1:rb2601:0:v2",
         calculated_at=datetime(2026, 1, 1, 9, 2, tzinfo=UTC),
+        trading_day=date(2026, 1, 1),
+        config_hash="margin-config-v1",
     )
     replay_conflict = engine.replay_margin(
         replay_position,
@@ -2085,6 +2157,8 @@ def test_margin_replay_same_position_version_different_key_same_facts_noop(
         _account_context(),
         calculation_key="account-1:rb2601:0:v3",
         calculated_at=datetime(2026, 1, 1, 9, 2, tzinfo=UTC),
+        trading_day=date(2026, 1, 1),
+        config_hash="margin-config-v1",
     )
 
     with db_session_factory() as session:
@@ -2128,6 +2202,8 @@ def test_margin_engine_snapshot_conflict_rolls_back_position_update(
         _account_context(),
         calculation_key="account-1:rb2601:0:v1",
         calculated_at=datetime(2026, 1, 1, 9, 2, tzinfo=UTC),
+        trading_day=date(2026, 1, 1),
+        config_hash="margin-config-v1",
     )
 
     with db_session_factory() as session:
@@ -2161,6 +2237,8 @@ def test_margin_engine_optimistic_lock_rolls_back_snapshot_append(
         _account_context(),
         calculation_key="account-1:rb2601:0:v1",
         calculated_at=datetime(2026, 1, 1, 9, 2, tzinfo=UTC),
+        trading_day=date(2026, 1, 1),
+        config_hash="margin-config-v1",
     )
 
     with db_session_factory() as session:
@@ -2190,12 +2268,22 @@ def test_pnl_snapshot_repository_round_trip_and_latest(
         latest = repository.get_latest("account-1", "rb2601")
         by_key = repository.get_by_calculation_key("account-1", "rb2601", first.calculation_key)
         by_version = repository.get_by_position_version("account-1", "rb2601", 1)
+        by_identity = repository.get_by_accounting_identity(
+            "account-1",
+            "rb2601",
+            1,
+            date(2026, 1, 1),
+            "pnl-config-v1",
+        )
         listed = repository.list_by_account("account-1")
 
     assert first.id is not None
+    assert first.trading_day == date(2026, 1, 1)
+    assert first.config_hash == "pnl-config-v1"
     assert latest == second
     assert by_key == first
     assert by_version == first
+    assert by_identity == first
     assert listed == [first, second]
 
 
@@ -2257,6 +2345,32 @@ def test_pnl_snapshot_same_position_version_different_key_different_canonical_co
         count = session.scalar(select(func.count()).select_from(PnLSnapshotOrm))
 
     assert count == 1
+
+
+def test_pnl_snapshot_different_trading_day_or_config_are_independent_facts(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        repository = SQLAlchemyPnLSnapshotRepository(session)
+        first = repository.append_pnl_snapshot(_pnl_snapshot())
+        next_day = repository.append_pnl_snapshot(
+            _pnl_snapshot(
+                trading_day=date(2026, 1, 2),
+                calculation_key="account-1:rb2601:1:pnl:2026-01-02",
+            )
+        )
+        next_config = repository.append_pnl_snapshot(
+            _pnl_snapshot(
+                config_hash="pnl-config-v2",
+                calculation_key="account-1:rb2601:1:pnl-v2",
+            )
+        )
+        by_version = repository.get_by_position_version("account-1", "rb2601", 1)
+        count = session.scalar(select(func.count()).select_from(PnLSnapshotOrm))
+
+    assert {first.id, next_day.id, next_config.id}
+    assert by_version is None
+    assert count == 3
 
 
 def test_unit_of_work_exposes_pnl_snapshots(
@@ -2338,6 +2452,8 @@ def test_pnl_engine_persists_snapshot_and_updates_pnl_only(
         contract_multiplier=Decimal("10"),
         calculation_key="account-1:rb2601:0:pnl",
         calculated_at=datetime(2026, 1, 1, 9, 3, tzinfo=UTC),
+        trading_day=date(2026, 1, 1),
+        config_hash="pnl-config-v1",
     )
 
     with db_session_factory() as session:
@@ -2377,6 +2493,8 @@ def test_pnl_engine_rejected_result_does_not_persist_or_update(
         contract_multiplier=Decimal("10"),
         calculation_key="account-1:rb2601:0:pnl",
         calculated_at=datetime(2026, 1, 1, 9, 3, tzinfo=UTC),
+        trading_day=date(2026, 1, 1),
+        config_hash="pnl-config-v1",
     )
 
     with db_session_factory() as session:
@@ -2425,6 +2543,8 @@ def test_pnl_engine_fee_unknown_rejects_persistent_projection(
         contract_multiplier=Decimal("10"),
         calculation_key="account-1:rb2601:0:pnl",
         calculated_at=datetime(2026, 1, 1, 9, 3, tzinfo=UTC),
+        trading_day=date(2026, 1, 1),
+        config_hash="pnl-config-v1",
     )
 
     with db_session_factory() as session:
@@ -2469,6 +2589,8 @@ def test_pnl_engine_duplicate_calculate_same_canonical_noop(
         contract_multiplier=Decimal("10"),
         calculation_key="account-1:rb2601:0:pnl",
         calculated_at=datetime(2026, 1, 1, 9, 3, tzinfo=UTC),
+        trading_day=date(2026, 1, 1),
+        config_hash="pnl-config-v1",
     )
     duplicate = engine.calculate_pnl(
         domain_position,
@@ -2477,6 +2599,8 @@ def test_pnl_engine_duplicate_calculate_same_canonical_noop(
         contract_multiplier=Decimal("10"),
         calculation_key="account-1:rb2601:0:pnl",
         calculated_at=datetime(2026, 1, 1, 9, 4, tzinfo=UTC),
+        trading_day=date(2026, 1, 1),
+        config_hash="pnl-config-v1",
     )
 
     with db_session_factory() as session:
@@ -2518,6 +2642,8 @@ def test_pnl_engine_duplicate_calculate_different_canonical_conflicts_without_up
         contract_multiplier=Decimal("10"),
         calculation_key="account-1:rb2601:0:pnl",
         calculated_at=datetime(2026, 1, 1, 9, 3, tzinfo=UTC),
+        trading_day=date(2026, 1, 1),
+        config_hash="pnl-config-v1",
     )
     conflict = engine.calculate_pnl(
         domain_position,
@@ -2526,6 +2652,8 @@ def test_pnl_engine_duplicate_calculate_different_canonical_conflicts_without_up
         contract_multiplier=Decimal("10"),
         calculation_key="account-1:rb2601:0:pnl",
         calculated_at=datetime(2026, 1, 1, 9, 4, tzinfo=UTC),
+        trading_day=date(2026, 1, 1),
+        config_hash="pnl-config-v1",
     )
 
     with db_session_factory() as session:
@@ -2567,6 +2695,8 @@ def test_pnl_replay_duplicate_noop_and_live_divergence_conflict(
         contract_multiplier=Decimal("10"),
         calculation_key="account-1:rb2601:0:pnl",
         calculated_at=datetime(2026, 1, 1, 9, 3, tzinfo=UTC),
+        trading_day=date(2026, 1, 1),
+        config_hash="pnl-config-v1",
     )
     assert first.status == PnLResultStatus.CALCULATED
     assert first.snapshot is not None
@@ -2584,6 +2714,8 @@ def test_pnl_replay_duplicate_noop_and_live_divergence_conflict(
         contract_multiplier=Decimal("10"),
         calculation_key="account-1:rb2601:0:pnl",
         calculated_at=datetime(2026, 1, 1, 9, 3, tzinfo=UTC),
+        trading_day=date(2026, 1, 1),
+        config_hash="pnl-config-v1",
     )
     diverged = engine.replay_pnl(
         domain_position,
@@ -2592,6 +2724,8 @@ def test_pnl_replay_duplicate_noop_and_live_divergence_conflict(
         contract_multiplier=Decimal("10"),
         calculation_key="account-1:rb2601:0:pnl",
         calculated_at=datetime(2026, 1, 1, 9, 3, tzinfo=UTC),
+        trading_day=date(2026, 1, 1),
+        config_hash="pnl-config-v1",
     )
 
     with db_session_factory() as session:
@@ -2628,6 +2762,8 @@ def test_pnl_replay_uses_live_position_row_for_divergence(
         contract_multiplier=Decimal("10"),
         calculation_key="account-1:rb2601:0:pnl",
         calculated_at=datetime(2026, 1, 1, 9, 3, tzinfo=UTC),
+        trading_day=date(2026, 1, 1),
+        config_hash="pnl-config-v1",
     )
     assert first.status == PnLResultStatus.CALCULATED
     assert first.snapshot is not None
@@ -2651,6 +2787,8 @@ def test_pnl_replay_uses_live_position_row_for_divergence(
         contract_multiplier=Decimal("10"),
         calculation_key="account-1:rb2601:0:pnl",
         calculated_at=datetime(2026, 1, 1, 9, 3, tzinfo=UTC),
+        trading_day=date(2026, 1, 1),
+        config_hash="pnl-config-v1",
     )
 
     with db_session_factory() as session:
@@ -2695,6 +2833,8 @@ def test_pnl_replay_canonical_conflict_does_not_update_position(
         contract_multiplier=Decimal("10"),
         calculation_key="account-1:rb2601:0:pnl",
         calculated_at=datetime(2026, 1, 1, 9, 3, tzinfo=UTC),
+        trading_day=date(2026, 1, 1),
+        config_hash="pnl-config-v1",
     )
 
     with db_session_factory() as session:
@@ -2737,6 +2877,8 @@ def test_pnl_engine_snapshot_conflict_rolls_back_position_update(
         contract_multiplier=Decimal("10"),
         calculation_key="account-1:rb2601:0:pnl",
         calculated_at=datetime(2026, 1, 1, 9, 3, tzinfo=UTC),
+        trading_day=date(2026, 1, 1),
+        config_hash="pnl-config-v1",
     )
 
     with db_session_factory() as session:
@@ -2772,6 +2914,8 @@ def test_pnl_engine_optimistic_lock_rolls_back_snapshot_append(
         contract_multiplier=Decimal("10"),
         calculation_key="account-1:rb2601:0:pnl",
         calculated_at=datetime(2026, 1, 1, 9, 3, tzinfo=UTC),
+        trading_day=date(2026, 1, 1),
+        config_hash="pnl-config-v1",
     )
 
     with db_session_factory() as session:
@@ -2874,11 +3018,16 @@ def test_settlement_engine_persists_account_snapshot_rolls_positions_and_duplica
             "rb2601",
         )
         margin_snapshot = SQLAlchemyMarginSnapshotRepository(session).append_margin_snapshot(
-            _margin_snapshot(position_version=0, calculation_key="settlement-margin")
+            _margin_snapshot(
+                position_version=0,
+                trading_day=date(2026, 6, 4),
+                calculation_key="settlement-margin",
+            )
         )
         pnl_snapshot = SQLAlchemyPnLSnapshotRepository(session).append_pnl_snapshot(
             _pnl_snapshot(
                 position_version=0,
+                trading_day=date(2026, 6, 4),
                 calculation_key="settlement-pnl",
                 trade_id=None,
             ).model_copy(update={"price_basis": PnLPriceBasis.SETTLEMENT_PRICE})
@@ -2945,11 +3094,16 @@ def test_settlement_engine_rejected_frozen_qty_has_no_persistence(
             "rb2601",
         )
         margin_snapshot = SQLAlchemyMarginSnapshotRepository(session).append_margin_snapshot(
-            _margin_snapshot(position_version=0, calculation_key="settlement-margin")
+            _margin_snapshot(
+                position_version=0,
+                trading_day=date(2026, 6, 4),
+                calculation_key="settlement-margin",
+            )
         )
         pnl_snapshot = SQLAlchemyPnLSnapshotRepository(session).append_pnl_snapshot(
             _pnl_snapshot(
                 position_version=0,
+                trading_day=date(2026, 6, 4),
                 calculation_key="settlement-pnl",
                 trade_id=None,
             ).model_copy(update={"price_basis": PnLPriceBasis.SETTLEMENT_PRICE})
@@ -3003,11 +3157,16 @@ def test_settlement_replay_detects_live_position_divergence(
             "rb2601",
         )
         margin_snapshot = SQLAlchemyMarginSnapshotRepository(session).append_margin_snapshot(
-            _margin_snapshot(position_version=0, calculation_key="settlement-margin")
+            _margin_snapshot(
+                position_version=0,
+                trading_day=date(2026, 6, 4),
+                calculation_key="settlement-margin",
+            )
         )
         pnl_snapshot = SQLAlchemyPnLSnapshotRepository(session).append_pnl_snapshot(
             _pnl_snapshot(
                 position_version=0,
+                trading_day=date(2026, 6, 4),
                 calculation_key="settlement-pnl",
                 trade_id=None,
             ).model_copy(update={"price_basis": PnLPriceBasis.SETTLEMENT_PRICE})

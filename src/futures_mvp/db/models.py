@@ -250,12 +250,22 @@ class MarginSnapshot(Base):
             "instrument_id",
             "position_version",
         ),
+        Index(
+            "ix_margin_snapshots_l5_accounting_identity",
+            "account_id",
+            "instrument_id",
+            "position_version",
+            "trading_day",
+            "config_hash",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     account_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     instrument_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     position_version: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    trading_day: Mapped[date] = mapped_column(Date, nullable=False)
+    config_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     rule_id: Mapped[str | None] = mapped_column(String(128))
     rule_version: Mapped[str | None] = mapped_column(String(128))
     calculation_key: Mapped[str] = mapped_column(String(256), nullable=False)
@@ -282,12 +292,22 @@ class PnLSnapshot(Base):
             name="uq_pnl_snapshots_account_instrument_calculation",
         ),
         Index("ix_pnl_snapshots_account_instrument", "account_id", "instrument_id"),
+        Index(
+            "ix_pnl_snapshots_l5_accounting_identity",
+            "account_id",
+            "instrument_id",
+            "position_version",
+            "trading_day",
+            "config_hash",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     account_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     instrument_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     position_version: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    trading_day: Mapped[date] = mapped_column(Date, nullable=False)
+    config_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     trade_id: Mapped[str | None] = mapped_column(String(128), index=True)
     margin_snapshot_id: Mapped[str | None] = mapped_column(String(128))
     calculation_key: Mapped[str] = mapped_column(String(256), nullable=False, index=True)

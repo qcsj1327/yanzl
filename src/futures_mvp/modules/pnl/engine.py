@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from futures_mvp.domain.enums import PnLPriceBasis, PnLResultStatus
@@ -35,6 +35,8 @@ class PnLEngine:
         contract_multiplier: Decimal | None,
         calculation_key: str,
         calculated_at: datetime,
+        trading_day: date | None = None,
+        config_hash: str | None = None,
         trade: Trade | None = None,
         close_context: CloseTradeContext | None = None,
         margin_snapshot_id: str | None = None,
@@ -46,6 +48,17 @@ class PnLEngine:
                 account_id=position.account_id if position else None,
                 instrument_id=position.instrument_id if position else None,
             )
+        gate_result = _validate_l5_gate(
+            position,
+            trading_day=trading_day,
+            config_hash=config_hash,
+            mark_price=mark_price,
+            contract_multiplier=contract_multiplier,
+        )
+        if gate_result is not None:
+            return gate_result
+        assert trading_day is not None
+        assert config_hash is not None
         with self._uow_factory() as uow:
             return self._calculate_and_persist(
                 uow,
@@ -57,6 +70,8 @@ class PnLEngine:
                 contract_multiplier=contract_multiplier,
                 calculation_key=calculation_key,
                 calculated_at=calculated_at,
+                trading_day=trading_day,
+                config_hash=config_hash,
                 margin_snapshot_id=margin_snapshot_id,
                 replay=False,
             )
@@ -70,6 +85,8 @@ class PnLEngine:
         contract_multiplier: Decimal | None,
         calculation_key: str,
         calculated_at: datetime,
+        trading_day: date | None = None,
+        config_hash: str | None = None,
         trade: Trade | None = None,
         close_context: CloseTradeContext | None = None,
         margin_snapshot_id: str | None = None,
@@ -81,6 +98,17 @@ class PnLEngine:
                 account_id=position.account_id if position else None,
                 instrument_id=position.instrument_id if position else None,
             )
+        gate_result = _validate_l5_gate(
+            position,
+            trading_day=trading_day,
+            config_hash=config_hash,
+            mark_price=mark_price,
+            contract_multiplier=contract_multiplier,
+        )
+        if gate_result is not None:
+            return gate_result
+        assert trading_day is not None
+        assert config_hash is not None
         with self._uow_factory() as uow:
             return self._calculate_and_persist(
                 uow,
@@ -92,6 +120,8 @@ class PnLEngine:
                 contract_multiplier=contract_multiplier,
                 calculation_key=calculation_key,
                 calculated_at=calculated_at,
+                trading_day=trading_day,
+                config_hash=config_hash,
                 margin_snapshot_id=margin_snapshot_id,
                 replay=True,
             )
@@ -108,6 +138,8 @@ class PnLEngine:
         contract_multiplier: Decimal | None,
         calculation_key: str,
         calculated_at: datetime,
+        trading_day: date,
+        config_hash: str,
         margin_snapshot_id: str | None,
         replay: bool,
     ) -> PnLResult:
@@ -161,6 +193,8 @@ class PnLEngine:
             account_id=position.account_id,
             instrument_id=position.instrument_id,
             position_version=position.version,
+            trading_day=trading_day,
+            config_hash=config_hash,
             trade_id=realized_result.realized.trade_id
             if realized_result and realized_result.realized
             else None,
@@ -184,10 +218,12 @@ class PnLEngine:
             snapshot.calculation_key,
         )
         if existing_snapshot is None:
-            existing_snapshot = uow.pnl_snapshots.get_by_position_version(
+            existing_snapshot = uow.pnl_snapshots.get_by_accounting_identity(
                 snapshot.account_id,
                 snapshot.instrument_id,
                 snapshot.position_version,
+                snapshot.trading_day,
+                snapshot.config_hash,
             )
 
         if existing_snapshot is not None:
@@ -235,6 +271,10 @@ class PnLEngine:
                 account_id=position.account_id,
                 instrument_id=position.instrument_id,
             )
+
+        preflight_result = _preflight_position_version(uow, position)
+        if preflight_result is not None:
+            return preflight_result
 
         try:
             appended_snapshot = uow.pnl_snapshots.append_pnl_snapshot(snapshot)
@@ -286,11 +326,88 @@ def _realized_delta(result: PnLResult | None) -> Decimal:
     return result.realized.net_realized_pnl
 
 
+def _validate_l5_gate(
+    position: Position | None,
+    *,
+    trading_day: date | None,
+    config_hash: str | None,
+    mark_price: Decimal | None,
+    contract_multiplier: Decimal | None,
+) -> PnLResult | None:
+    if position is None:
+        return PnLResult(
+            status=PnLResultStatus.ERROR,
+            reason="missing_position",
+            account_id=None,
+            instrument_id=None,
+        )
+    if not position.account_id or not position.instrument_id:
+        return PnLResult(
+            status=PnLResultStatus.ERROR,
+            reason="missing_position_identity",
+            account_id=position.account_id or None,
+            instrument_id=position.instrument_id or None,
+        )
+    if trading_day is None:
+        return PnLResult(
+            status=PnLResultStatus.ERROR,
+            reason="trading_day is required",
+            account_id=position.account_id,
+            instrument_id=position.instrument_id,
+        )
+    if not config_hash:
+        return PnLResult(
+            status=PnLResultStatus.ERROR,
+            reason="config_hash is required",
+            account_id=position.account_id,
+            instrument_id=position.instrument_id,
+        )
+    if mark_price is not None and not isinstance(mark_price, Decimal):
+        return PnLResult(
+            status=PnLResultStatus.ERROR,
+            reason="mark_price must be Decimal",
+            account_id=position.account_id,
+            instrument_id=position.instrument_id,
+        )
+    if contract_multiplier is not None and not isinstance(contract_multiplier, Decimal):
+        return PnLResult(
+            status=PnLResultStatus.ERROR,
+            reason="contract_multiplier must be Decimal",
+            account_id=position.account_id,
+            instrument_id=position.instrument_id,
+        )
+    return None
+
+
+def _preflight_position_version(uow: UnitOfWork, position: Position) -> PnLResult | None:
+    live_position = uow.positions.get_by_account_instrument(
+        position.account_id,
+        position.instrument_id,
+    )
+    if live_position is None:
+        return PnLResult(
+            status=PnLResultStatus.ERROR,
+            reason="missing_position",
+            account_id=position.account_id,
+            instrument_id=position.instrument_id,
+        )
+    if live_position.version != position.version:
+        return PnLResult(
+            status=PnLResultStatus.ERROR,
+            reason="stale_position_version",
+            account_id=position.account_id,
+            instrument_id=position.instrument_id,
+        )
+    return None
+
+
 def _same_snapshot_canonical(left: PnLSnapshot, right: PnLSnapshot) -> bool:
     return (
         left.account_id,
         left.instrument_id,
         left.position_version,
+        left.trading_day,
+        left.config_hash,
         left.trade_id,
         left.margin_snapshot_id,
         left.calculation_key,
@@ -305,6 +422,8 @@ def _same_snapshot_canonical(left: PnLSnapshot, right: PnLSnapshot) -> bool:
         right.account_id,
         right.instrument_id,
         right.position_version,
+        right.trading_day,
+        right.config_hash,
         right.trade_id,
         right.margin_snapshot_id,
         right.calculation_key,
@@ -323,6 +442,8 @@ def _same_snapshot_position_version_facts(left: PnLSnapshot, right: PnLSnapshot)
         left.account_id,
         left.instrument_id,
         left.position_version,
+        left.trading_day,
+        left.config_hash,
         left.trade_id,
         left.margin_snapshot_id,
         left.price_basis,
@@ -336,6 +457,8 @@ def _same_snapshot_position_version_facts(left: PnLSnapshot, right: PnLSnapshot)
         right.account_id,
         right.instrument_id,
         right.position_version,
+        right.trading_day,
+        right.config_hash,
         right.trade_id,
         right.margin_snapshot_id,
         right.price_basis,

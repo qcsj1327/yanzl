@@ -391,6 +391,8 @@ def margin_snapshot_to_domain(snapshot: MarginSnapshotOrm) -> MarginSnapshot:
         account_id=snapshot.account_id,
         instrument_id=snapshot.instrument_id,
         position_version=snapshot.position_version,
+        trading_day=snapshot.trading_day,
+        config_hash=snapshot.config_hash,
         rule_id=snapshot.rule_id,
         rule_version=snapshot.rule_version,
         calculation_key=snapshot.calculation_key,
@@ -413,6 +415,8 @@ def pnl_snapshot_to_domain(snapshot: PnLSnapshotOrm) -> PnLSnapshot:
         account_id=snapshot.account_id,
         instrument_id=snapshot.instrument_id,
         position_version=snapshot.position_version,
+        trading_day=snapshot.trading_day,
+        config_hash=snapshot.config_hash,
         trade_id=snapshot.trade_id,
         margin_snapshot_id=snapshot.margin_snapshot_id,
         calculation_key=snapshot.calculation_key,
@@ -713,6 +717,8 @@ def _canonical_margin_snapshot_payload_from_domain(
         snapshot.account_id,
         snapshot.instrument_id,
         snapshot.position_version,
+        snapshot.trading_day,
+        snapshot.config_hash,
         snapshot.rule_id,
         snapshot.rule_version,
         snapshot.long_qty,
@@ -735,6 +741,8 @@ def _canonical_margin_snapshot_payload_from_orm(
         snapshot.account_id,
         snapshot.instrument_id,
         snapshot.position_version,
+        snapshot.trading_day,
+        snapshot.config_hash,
         snapshot.rule_id,
         snapshot.rule_version,
         snapshot.long_qty,
@@ -764,6 +772,8 @@ def _margin_position_version_payload_from_domain(snapshot: MarginSnapshot) -> tu
         snapshot.account_id,
         snapshot.instrument_id,
         snapshot.position_version,
+        snapshot.trading_day,
+        snapshot.config_hash,
         snapshot.rule_id,
         snapshot.rule_version,
         snapshot.long_qty,
@@ -783,6 +793,8 @@ def _margin_position_version_payload_from_orm(snapshot: MarginSnapshotOrm) -> tu
         snapshot.account_id,
         snapshot.instrument_id,
         snapshot.position_version,
+        snapshot.trading_day,
+        snapshot.config_hash,
         snapshot.rule_id,
         snapshot.rule_version,
         snapshot.long_qty,
@@ -811,6 +823,8 @@ def _canonical_pnl_snapshot_payload_from_domain(snapshot: PnLSnapshot) -> tuple[
         snapshot.account_id,
         snapshot.instrument_id,
         snapshot.position_version,
+        snapshot.trading_day,
+        snapshot.config_hash,
         snapshot.trade_id,
         snapshot.margin_snapshot_id,
         snapshot.calculation_key,
@@ -829,6 +843,8 @@ def _canonical_pnl_snapshot_payload_from_orm(snapshot: PnLSnapshotOrm) -> tuple[
         snapshot.account_id,
         snapshot.instrument_id,
         snapshot.position_version,
+        snapshot.trading_day,
+        snapshot.config_hash,
         snapshot.trade_id,
         snapshot.margin_snapshot_id,
         snapshot.calculation_key,
@@ -856,6 +872,8 @@ def _pnl_position_version_payload_from_domain(snapshot: PnLSnapshot) -> tuple[ob
         snapshot.account_id,
         snapshot.instrument_id,
         snapshot.position_version,
+        snapshot.trading_day,
+        snapshot.config_hash,
         snapshot.trade_id,
         snapshot.margin_snapshot_id,
         snapshot.price_basis.value,
@@ -873,6 +891,8 @@ def _pnl_position_version_payload_from_orm(snapshot: PnLSnapshotOrm) -> tuple[ob
         snapshot.account_id,
         snapshot.instrument_id,
         snapshot.position_version,
+        snapshot.trading_day,
+        snapshot.config_hash,
         snapshot.trade_id,
         snapshot.margin_snapshot_id,
         snapshot.price_basis,
@@ -2635,14 +2655,16 @@ class SQLAlchemyMarginSnapshotRepository:
         )
         if existing is not None:
             return self._existing_margin_snapshot_for_append(existing, snapshot)
-        existing_by_position_version = self._get_orm_by_position_version(
+        existing_by_accounting_identity = self._get_orm_by_accounting_identity(
             snapshot.account_id,
             snapshot.instrument_id,
             snapshot.position_version,
+            snapshot.trading_day,
+            snapshot.config_hash,
         )
-        if existing_by_position_version is not None:
-            return self._existing_margin_snapshot_for_position_version(
-                existing_by_position_version,
+        if existing_by_accounting_identity is not None:
+            return self._existing_margin_snapshot_for_accounting_identity(
+                existing_by_accounting_identity,
                 snapshot,
             )
 
@@ -2652,6 +2674,8 @@ class SQLAlchemyMarginSnapshotRepository:
                     account_id=snapshot.account_id,
                     instrument_id=snapshot.instrument_id,
                     position_version=snapshot.position_version,
+                    trading_day=snapshot.trading_day,
+                    config_hash=snapshot.config_hash,
                     rule_id=snapshot.rule_id,
                     rule_version=snapshot.rule_version,
                     calculation_key=snapshot.calculation_key,
@@ -2721,13 +2745,30 @@ class SQLAlchemyMarginSnapshotRepository:
         snapshot = self._get_orm_by_position_version(account_id, instrument_id, position_version)
         return margin_snapshot_to_domain(snapshot) if snapshot else None
 
+    def get_by_accounting_identity(
+        self,
+        account_id: str,
+        instrument_id: str,
+        position_version: int,
+        trading_day: date,
+        config_hash: str,
+    ) -> MarginSnapshot | None:
+        snapshot = self._get_orm_by_accounting_identity(
+            account_id,
+            instrument_id,
+            position_version,
+            trading_day,
+            config_hash,
+        )
+        return margin_snapshot_to_domain(snapshot) if snapshot else None
+
     def _get_orm_by_position_version(
         self,
         account_id: str,
         instrument_id: str,
         position_version: int,
     ) -> MarginSnapshotOrm | None:
-        return self._session.scalar(
+        snapshots = self._session.scalars(
             select(MarginSnapshotOrm)
             .where(
                 MarginSnapshotOrm.account_id == account_id,
@@ -2739,7 +2780,10 @@ class SQLAlchemyMarginSnapshotRepository:
                 MarginSnapshotOrm.created_at.desc(),
                 MarginSnapshotOrm.id.desc(),
             )
-        )
+        ).all()
+        if len(snapshots) != 1:
+            return None
+        return snapshots[0]
 
     def _get_orm_by_calculation_key(
         self,
@@ -2752,6 +2796,30 @@ class SQLAlchemyMarginSnapshotRepository:
                 MarginSnapshotOrm.account_id == account_id,
                 MarginSnapshotOrm.instrument_id == instrument_id,
                 MarginSnapshotOrm.calculation_key == calculation_key,
+            )
+        )
+
+    def _get_orm_by_accounting_identity(
+        self,
+        account_id: str,
+        instrument_id: str,
+        position_version: int,
+        trading_day: date,
+        config_hash: str,
+    ) -> MarginSnapshotOrm | None:
+        return self._session.scalar(
+            select(MarginSnapshotOrm)
+            .where(
+                MarginSnapshotOrm.account_id == account_id,
+                MarginSnapshotOrm.instrument_id == instrument_id,
+                MarginSnapshotOrm.position_version == position_version,
+                MarginSnapshotOrm.trading_day == trading_day,
+                MarginSnapshotOrm.config_hash == config_hash,
+            )
+            .order_by(
+                MarginSnapshotOrm.calculated_at.desc(),
+                MarginSnapshotOrm.created_at.desc(),
+                MarginSnapshotOrm.id.desc(),
             )
         )
 
@@ -2768,16 +2836,16 @@ class SQLAlchemyMarginSnapshotRepository:
             )
         return margin_snapshot_to_domain(existing)
 
-    def _existing_margin_snapshot_for_position_version(
+    def _existing_margin_snapshot_for_accounting_identity(
         self,
         existing: MarginSnapshotOrm,
         snapshot: MarginSnapshot,
     ) -> MarginSnapshot:
         if not _same_margin_position_version_payload(existing, snapshot):
             raise MarginSnapshotConflictError(
-                "position_version reused with different margin snapshot payload: "
+                "accounting identity reused with different margin snapshot payload: "
                 f"{snapshot.account_id}/{snapshot.instrument_id}/"
-                f"{snapshot.position_version}"
+                f"{snapshot.position_version}/{snapshot.trading_day}/{snapshot.config_hash}"
             )
         return margin_snapshot_to_domain(existing)
 
@@ -2794,14 +2862,16 @@ class SQLAlchemyPnLSnapshotRepository:
         )
         if existing is not None:
             return self._existing_pnl_snapshot_for_append(existing, snapshot)
-        existing_by_position_version = self._get_orm_by_position_version(
+        existing_by_accounting_identity = self._get_orm_by_accounting_identity(
             snapshot.account_id,
             snapshot.instrument_id,
             snapshot.position_version,
+            snapshot.trading_day,
+            snapshot.config_hash,
         )
-        if existing_by_position_version is not None:
-            return self._existing_pnl_snapshot_for_position_version(
-                existing_by_position_version,
+        if existing_by_accounting_identity is not None:
+            return self._existing_pnl_snapshot_for_accounting_identity(
+                existing_by_accounting_identity,
                 snapshot,
             )
 
@@ -2811,6 +2881,8 @@ class SQLAlchemyPnLSnapshotRepository:
                     account_id=snapshot.account_id,
                     instrument_id=snapshot.instrument_id,
                     position_version=snapshot.position_version,
+                    trading_day=snapshot.trading_day,
+                    config_hash=snapshot.config_hash,
                     trade_id=snapshot.trade_id,
                     margin_snapshot_id=snapshot.margin_snapshot_id,
                     calculation_key=snapshot.calculation_key,
@@ -2887,13 +2959,30 @@ class SQLAlchemyPnLSnapshotRepository:
         snapshot = self._get_orm_by_position_version(account_id, instrument_id, position_version)
         return pnl_snapshot_to_domain(snapshot) if snapshot else None
 
+    def get_by_accounting_identity(
+        self,
+        account_id: str,
+        instrument_id: str,
+        position_version: int,
+        trading_day: date,
+        config_hash: str,
+    ) -> PnLSnapshot | None:
+        snapshot = self._get_orm_by_accounting_identity(
+            account_id,
+            instrument_id,
+            position_version,
+            trading_day,
+            config_hash,
+        )
+        return pnl_snapshot_to_domain(snapshot) if snapshot else None
+
     def _get_orm_by_position_version(
         self,
         account_id: str,
         instrument_id: str,
         position_version: int,
     ) -> PnLSnapshotOrm | None:
-        return self._session.scalar(
+        snapshots = self._session.scalars(
             select(PnLSnapshotOrm)
             .where(
                 PnLSnapshotOrm.account_id == account_id,
@@ -2905,7 +2994,10 @@ class SQLAlchemyPnLSnapshotRepository:
                 PnLSnapshotOrm.created_at.desc(),
                 PnLSnapshotOrm.id.desc(),
             )
-        )
+        ).all()
+        if len(snapshots) != 1:
+            return None
+        return snapshots[0]
 
     def _get_orm_by_calculation_key(
         self,
@@ -2918,6 +3010,30 @@ class SQLAlchemyPnLSnapshotRepository:
                 PnLSnapshotOrm.account_id == account_id,
                 PnLSnapshotOrm.instrument_id == instrument_id,
                 PnLSnapshotOrm.calculation_key == calculation_key,
+            )
+        )
+
+    def _get_orm_by_accounting_identity(
+        self,
+        account_id: str,
+        instrument_id: str,
+        position_version: int,
+        trading_day: date,
+        config_hash: str,
+    ) -> PnLSnapshotOrm | None:
+        return self._session.scalar(
+            select(PnLSnapshotOrm)
+            .where(
+                PnLSnapshotOrm.account_id == account_id,
+                PnLSnapshotOrm.instrument_id == instrument_id,
+                PnLSnapshotOrm.position_version == position_version,
+                PnLSnapshotOrm.trading_day == trading_day,
+                PnLSnapshotOrm.config_hash == config_hash,
+            )
+            .order_by(
+                PnLSnapshotOrm.calculated_at.desc(),
+                PnLSnapshotOrm.created_at.desc(),
+                PnLSnapshotOrm.id.desc(),
             )
         )
 
@@ -2934,16 +3050,16 @@ class SQLAlchemyPnLSnapshotRepository:
             )
         return pnl_snapshot_to_domain(existing)
 
-    def _existing_pnl_snapshot_for_position_version(
+    def _existing_pnl_snapshot_for_accounting_identity(
         self,
         existing: PnLSnapshotOrm,
         snapshot: PnLSnapshot,
     ) -> PnLSnapshot:
         if not _same_pnl_position_version_payload(existing, snapshot):
             raise PnLSnapshotConflictError(
-                "position_version reused with different pnl snapshot payload: "
+                "accounting identity reused with different pnl snapshot payload: "
                 f"{snapshot.account_id}/{snapshot.instrument_id}/"
-                f"{snapshot.position_version}"
+                f"{snapshot.position_version}/{snapshot.trading_day}/{snapshot.config_hash}"
             )
         return pnl_snapshot_to_domain(existing)
 

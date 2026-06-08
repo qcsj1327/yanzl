@@ -23,6 +23,7 @@ from futures_mvp.db.models import (
     Base,
     ExecutionCommand,
     FeatureSnapshot,
+    MarginSnapshot,
     MarketBar,
     MarketTick,
     NormalizedExecutionReport,
@@ -300,6 +301,42 @@ def test_position_events_match_stage_c_idempotency_and_audit_contract() -> None:
     assert PositionEvent.__table__.columns["created_at"].nullable is False
 
 
+def test_margin_snapshots_match_stage_l5_accounting_identity_contract() -> None:
+    assert _unique_constraint_columns(
+        MarginSnapshot,
+        "uq_margin_snapshots_account_instrument_calculation",
+    ) == ("account_id", "instrument_id", "calculation_key")
+    for column_name in [
+        "id",
+        "account_id",
+        "instrument_id",
+        "position_version",
+        "trading_day",
+        "config_hash",
+        "rule_id",
+        "rule_version",
+        "calculation_key",
+        "long_qty",
+        "short_qty",
+        "price",
+        "contract_multiplier",
+        "initial_margin",
+        "maintenance_margin",
+        "margin_used",
+        "available_cash",
+        "equity",
+        "calculated_at",
+        "created_at",
+    ]:
+        assert column_name in MarginSnapshot.__table__.columns
+
+    assert MarginSnapshot.__table__.columns["trading_day"].nullable is False
+    assert MarginSnapshot.__table__.columns["config_hash"].nullable is False
+    assert {
+        "ix_margin_snapshots_l5_accounting_identity",
+    }.issubset({index.name for index in MarginSnapshot.__table__.indexes})
+
+
 def test_pnl_snapshots_match_stage_e_idempotency_contract() -> None:
     assert _unique_constraint_columns(
         PnLSnapshot,
@@ -310,6 +347,8 @@ def test_pnl_snapshots_match_stage_e_idempotency_contract() -> None:
         "account_id",
         "instrument_id",
         "position_version",
+        "trading_day",
+        "config_hash",
         "trade_id",
         "margin_snapshot_id",
         "calculation_key",
@@ -327,7 +366,12 @@ def test_pnl_snapshots_match_stage_e_idempotency_contract() -> None:
 
     assert isinstance(PnLSnapshot.__table__.columns["mark_price"].type, Numeric)
     assert isinstance(PnLSnapshot.__table__.columns["realized_pnl"].type, Numeric)
+    assert PnLSnapshot.__table__.columns["trading_day"].nullable is False
+    assert PnLSnapshot.__table__.columns["config_hash"].nullable is False
     assert PnLSnapshot.__table__.columns["created_at"].nullable is False
+    assert {
+        "ix_pnl_snapshots_l5_accounting_identity",
+    }.issubset({index.name for index in PnLSnapshot.__table__.indexes})
 
 
 def test_settlement_snapshots_match_stage_f_account_day_contract() -> None:

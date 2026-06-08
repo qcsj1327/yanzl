@@ -237,6 +237,15 @@ class MarginSnapshotRepository(Protocol):
         position_version: int,
     ) -> MarginSnapshot | None: ...
 
+    def get_by_accounting_identity(
+        self,
+        account_id: str,
+        instrument_id: str,
+        position_version: int,
+        trading_day: date,
+        config_hash: str,
+    ) -> MarginSnapshot | None: ...
+
 
 @runtime_checkable
 class PnLSnapshotRepository(Protocol):
@@ -258,6 +267,15 @@ class PnLSnapshotRepository(Protocol):
         account_id: str,
         instrument_id: str,
         position_version: int,
+    ) -> PnLSnapshot | None: ...
+
+    def get_by_accounting_identity(
+        self,
+        account_id: str,
+        instrument_id: str,
+        position_version: int,
+        trading_day: date,
+        config_hash: str,
     ) -> PnLSnapshot | None: ...
 
 

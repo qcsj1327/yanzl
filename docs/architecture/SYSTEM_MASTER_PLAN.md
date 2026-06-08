@@ -86,10 +86,10 @@
   - Stage L.4 已实现 `typed Trade fact -> PositionManager.apply_trade(...) -> Position projection / PositionEvent` handoff。
   - Stage L.4 未新增 schema，未创建第二套 position ledger。
   - Stage L.4 不更新 Margin / PnL / Settlement / AccountSnapshot，不进入 Broker / Runtime。
-- Stage L.5 Position-to-Accounting Contract Freeze 已完成。
+- Stage L.5 Position-to-Accounting Implementation 已完成。
   - 当前基线：`stage-l4-trade-to-position-handoff / 6c26cbd`。
-  - Stage L.5 只冻结 `Trade-applied Position / PositionEvent -> Accounting input snapshot -> MarginEngine / PnLEngine -> MarginSnapshot / PnLSnapshot -> SettlementEngine later` 连接契约。
-  - Stage L.5 不写代码、不改 schema、不改 `src` / `tests`；不进入 Broker / Runtime / live。
+  - Stage L.5 已实现 `Trade-applied Position / PositionEvent -> Accounting input snapshot -> MarginEngine / PnLEngine -> MarginSnapshot / PnLSnapshot -> SettlementEngine later` 最小闭环。
+  - Stage L.5 新增 migration `0015_stage_l5_position_to_accounting.py`，只扩展 `margin_snapshots` / `pnl_snapshots`；不进入 Broker / Runtime / live。
   - Stage M 仍保留 Runtime / Infrastructure，不占用。
 
 当前尚未实现为业务能力的部分：
@@ -353,8 +353,8 @@ Stage D 当前实现说明：
 - Stage D 允许更新 `positions.margin_used`，但必须和 `MarginSnapshot` 在同一 UoW / transaction。固定顺序为：先计算 `MarginRequirement` / `MarginSnapshot`，再 append `MarginSnapshot`，最后用 `expected_version=position.version` 更新 `positions.margin_used`。任一步失败则整个 transaction rollback。
 - 不允许只更新 `positions.margin_used` 而没有 snapshot；不允许只写 snapshot 但声称 live `margin_used` 已更新；更新 `positions.margin_used` 时必须使用 margin-only repository method，不得复用会写 qty / avg price 的通用 position update；不得修改 qty、avg price、realized/unrealized PnL 或 settlement fields。
 - Stage D 需要 `MarginSnapshotRepository` 和 `margin_snapshots` table；本阶段不建 `margin_rules` table，`MarginRule` 由 application layer 注入，`MarginSnapshot` 记录 `rule_id | None` 和 `rule_version | None`。
-- `MarginSnapshot` canonical payload 字段包括 `account_id`、`instrument_id`、`position_version`、`rule_id`、`rule_version`、`long_qty`、`short_qty`、`price`、`contract_multiplier`、`initial_margin`、`maintenance_margin`、`margin_used`、`available_cash`、`equity`、`calculation_key`。`calculated_at` 持久化但不参与 canonical equality；`raw_payload` 不参与 canonical。
-- Replay 使用同一 calculator，以 Position projection + MarginRule + AccountContext + typed price input 重算。同一 `account_id + instrument_id + position_version` 的 existing snapshot 已是该 position version 的 margin fact；同一 `calculation_key` canonical same 时 no-op / duplicate snapshot accepted，canonical different 时返回 `CONFLICT` / divergence；`calculation_key` 不同但同一 position version 经济事实一致时 no-op，经济事实不一致时返回 `CONFLICT` / divergence，不得追加第二条 snapshot 或更新 `positions.margin_used`。Replay 不更新 Position qty/avg。
+- `MarginSnapshot` canonical payload 字段包括 `account_id`、`instrument_id`、`position_version`、`trading_day`、`config_hash`、`rule_id`、`rule_version`、`long_qty`、`short_qty`、`price`、`contract_multiplier`、`initial_margin`、`maintenance_margin`、`margin_used`、`available_cash`、`equity`、`calculation_key`。`calculated_at` 持久化但不参与 canonical equality；`raw_payload` 不参与 canonical。
+- Replay 使用同一 calculator，以 Position projection + MarginRule + AccountContext + typed price input 重算。Stage L.5 后，同一 `account_id + instrument_id + position_version + trading_day + config_hash` 的 existing snapshot 是该 accounting identity 的 margin fact；同一 `calculation_key` canonical same 时 no-op / duplicate snapshot accepted，canonical different 时返回 `CONFLICT` / divergence；`calculation_key` 不同但同一 accounting identity 经济事实一致时 no-op，经济事实不一致时返回 `CONFLICT` / divergence，不得追加第二条 snapshot 或更新 `positions.margin_used`。Replay 不更新 Position qty/avg。
 
 ### Stage E: PnL Engine
 
@@ -378,8 +378,8 @@ Stage E 当前实现说明：
 - Fee policy：`fee_amount` 为 Decimal 时 `net_realized_pnl = gross_realized_pnl - fee_amount`；`Decimal("0")` 表示明确零手续费；`fee_amount is None` 时 calculator 可返回 `CALCULATED` 和 `reason="fee_unknown"` 以保留 gross 诊断信息，但 PnLEngine 持久化 projection 必须返回 `REJECTED_MISSING_FEE`，不 append snapshot，不更新 position PnL。
 - Unrealized PnL 使用 typed mark price：long = `(mark_price - long_avg_price) * long_qty * contract_multiplier`；short = `(short_avg_price - mark_price) * short_qty * contract_multiplier`；`long_qty = long_today_qty + long_yesterday_qty`，`short_qty = short_today_qty + short_yesterday_qty`。
 - Stage E 可更新 `positions.realized_pnl` / `positions.unrealized_pnl`，但必须先 append `PnLSnapshot`，再用 pnl-only repository method 更新 position PnL fields，并且二者处于同一 UoW / transaction。不得更新 qty、avg price、`margin_used` 或 settlement fields；snapshot append 失败不得更新 position，position update 失败必须 rollback。
-- Stage E 已新增 `PnLSnapshotRepository` 和 `pnl_snapshots` table；`pnl_snapshots` canonical payload 使用 deterministic `calculation_key`，不使用 `calculated_at`；`raw_payload` 不允许进入 PnL facts。同一 `account_id + instrument_id + position_version` 不得写入第二条不同 PnL fact；除 `calculation_key` 外经济事实一致时 no-op，经济事实不一致时 conflict。
-- Replay 使用同一 calculator 和 deterministic `calculation_key`。Same canonical no-op，different canonical 返回 `CONFLICT` / divergence；即使 `calculation_key` 不同，同一 position version 的经济事实一致也必须 no-op，经济事实不一致必须 conflict；replay 不得静默覆盖 position PnL fields。Replay divergence 判定必须读取 repository / UoW 内真实 live Position row；调用方传入的 Position 只作为 calculator input。若 live position PnL 与 snapshot divergence，除非当前 transaction 正在更新它，否则必须返回 `CONFLICT`。
+- Stage E 已新增 `PnLSnapshotRepository` 和 `pnl_snapshots` table；`pnl_snapshots` canonical payload 使用 deterministic `calculation_key`，不使用 `calculated_at`；`raw_payload` 不允许进入 PnL facts。Stage L.5 后，同一 `account_id + instrument_id + position_version + trading_day + config_hash` 不得写入第二条不同 PnL fact；除 `calculation_key` 外经济事实一致时 no-op，经济事实不一致时 conflict。
+- Replay 使用同一 calculator 和 deterministic `calculation_key`。Same canonical no-op，different canonical 返回 `CONFLICT` / divergence；即使 `calculation_key` 不同，同一 accounting identity 的经济事实一致也必须 no-op，经济事实不一致必须 conflict；replay 不得静默覆盖 position PnL fields。Replay divergence 判定必须读取 repository / UoW 内真实 live Position row；调用方传入的 Position 只作为 calculator input。若 live position PnL 与 snapshot divergence，除非当前 transaction 正在更新它，否则必须返回 `CONFLICT`。
 - PnL 不使用 `margin_used` 参与公式，不触发 Margin recompute，MarginEngine 不调用 PnLEngine。Stage E 不实现 settlement snapshots、settlement price finalization、daily PnL carry、today -> yesterday roll 或 account equity mutation。
 
 ### Stage F: Settlement Engine
@@ -697,16 +697,16 @@ Stage L.4 explicit non-goals：
 - trade correction / cancel flows，除非另开范围。
 - cross-account netting。
 
-### Stage L.5: Position-to-Accounting Contract Freeze
+### Stage L.5: Position-to-Accounting Implementation
 
-- Goal：冻结 Trade-applied Position / PositionEvent 到 Margin / PnL / Settlement / AccountSnapshot 会计链的连接契约。
+- Goal：实现 Trade-applied Position / PositionEvent 到 Margin / PnL / Settlement / AccountSnapshot 会计链连接契约的最小闭环。
 - Baseline：`stage-l4-trade-to-position-handoff / 6c26cbd`；Strategy -> OMS OrderState、OMS State -> Trade Fact、Trade -> Position 均已闭环。
 - Inputs：typed Position / PositionEvent after Trade application、typed Trade facts if needed for realized PnL、typed MarketDataSnapshot / settlement price / last price input、typed account config / margin config / pnl config、TradingCalendar / trading_day。
 - Outputs：Accounting input snapshot、MarginSnapshot、PnLSnapshot、later SettlementSnapshot / AccountSnapshot through Settlement / Accounting service。
-- Allowed changes：只改文档；冻结 source-of-truth、ownership、gate、idempotency、replay、repository/schema 和 boundary。
-- Forbidden changes：不写代码；不改 schema；不改 `src` / `tests`；不修改 PositionManager；不实现 Runtime / Broker / live。
+- Allowed changes：migration `0015_stage_l5_position_to_accounting.py`、`MarginSnapshot` / `PnLSnapshot` domain、snapshot repositories、Margin/PnL gates、Settlement matching、focused tests/docs。
+- Forbidden changes：不接 Broker / Runtime / Kafka / Celery / FastAPI；不修改 orders / order_events / trades / positions schema；不修改 PositionManager；不改 OMS / Trade ledger；不让 Margin/PnL 成为 Position quantity source。
 - Required future tests：margin binds to position_version、pnl binds to position_version、settlement rejects margin/pnl mismatch、duplicate same accounting fact no-op、different canonical conflict、replay deterministic、missing price rejected、stale position version rejected、raw_payload excluded、no Position mutation by Margin/PnL、no OMS/Trade mutation by Accounting。
-- Acceptance criteria：会计链只从 typed Position / PositionEvent / Trade / typed price / typed config 形成 accounting facts；MarginSnapshot / PnLSnapshot 绑定 position_version 和 deterministic calculation identity；Settlement 不再按 instrument-only fallback 匹配；Stage M 仍保留 Runtime / Infrastructure。
+- Acceptance criteria：会计链只从 typed Position / PositionEvent / Trade / typed price / typed config 形成 accounting facts；MarginSnapshot / PnLSnapshot 以 first-class `trading_day` / `config_hash` 绑定 position_version 和 deterministic calculation identity；Settlement 不再按 instrument-only fallback 匹配；Stage M 仍保留 Runtime / Infrastructure。
 - Suggested tag：`stage-l5-position-to-accounting-contract-freeze`。
 
 Stage L.5 source-of-truth：
@@ -730,15 +730,15 @@ Stage L.5 required gate：
 
 Position -> Margin contract：
 
-- `MarginSnapshot` must bind to `account_id`、`instrument_id`、`position_version`、`trading_day`、deterministic `calculation_key` / config hash。
-- Same account + instrument + position_version + config + typed price input -> same margin fact。
+- `MarginSnapshot` binds to `account_id`、`instrument_id`、`position_version`、first-class `trading_day`、first-class `config_hash` and deterministic `calculation_key`。
+- Same account + instrument + position_version + trading_day + config_hash + typed price input -> same margin fact。
 - Duplicate same canonical -> no-op / existing snapshot。
 - Same identity + different canonical -> conflict。
-- Stage L.5 does not allow direct Position qty / avg mutation by Margin. If an existing Stage D margin projection updates `positions.margin_used`, it must remain margin-only, snapshot-backed, and transactional.
+- Stage L.5 does not allow direct Position qty / avg mutation by Margin. Existing Stage D margin projection may update cached `positions.margin_used` only as a snapshot-backed derived cache and never as position quantity source-of-truth.
 
 Position / Trade -> PnL contract：
 
-- `PnLSnapshot` must bind to `account_id`、`instrument_id`、`position_version`、`trading_day`、deterministic `calculation_key` / config hash。
+- `PnLSnapshot` binds to `account_id`、`instrument_id`、`position_version`、first-class `trading_day`、first-class `config_hash` and deterministic `calculation_key`。
 - Realized PnL source is typed Trade / PositionEvent close data only。
 - Unrealized PnL source is typed Position plus typed market / settlement price。
 - No raw report, broker state, OMS state, execution report, or raw payload may drive PnL。
@@ -752,7 +752,7 @@ Margin / PnL -> Settlement contract：
 
 Stage L.5 idempotency / replay：
 
-- Same position_version + same config + same typed price input -> duplicate / no-op。
+- Same position_version + same trading_day + same config_hash + same typed price input -> duplicate / no-op。
 - Same identity + different canonical -> conflict。
 - Replay ordered PositionEvents / Positions deterministically。
 - Replay must not call Broker / Runtime。
@@ -761,10 +761,9 @@ Stage L.5 idempotency / replay：
 Stage L.5 repository / schema decision：
 
 - Current MarginSnapshotRepository、PnLSnapshotRepository、SettlementSnapshotRepository、AccountSnapshotRepository and related tables already exist。
-- Existing schemas are partially sufficient：margin and PnL facts already carry `account_id`、`instrument_id`、`position_version` and deterministic `calculation_key` lineage, and settlement snapshots already reference margin / PnL snapshot ids。
-- Existing schemas are not sufficient for the full Stage L.5 binding contract because `margin_snapshots` and `pnl_snapshots` do not persist first-class `trading_day`; config lineage is only partly represented by `rule_id` / `rule_version` or encoded `calculation_key` and is not a uniform `config_hash` column。
-- Future implementation requires migration `0015_stage_l5_position_to_accounting.py` unless implementation explicitly narrows the contract to encode `trading_day` and config hash inside deterministic `calculation_key` and proves that is acceptable in review。
-- If migration is used, it must extend existing accounting snapshot tables only, preferably `margin_snapshots` and `pnl_snapshots` with `trading_day` and config hash / config lineage fields plus indexes needed for exact settlement matching。
+- Migration `0015_stage_l5_position_to_accounting.py` extends only `margin_snapshots` and `pnl_snapshots` with NOT NULL `trading_day` and NOT NULL `config_hash` plus L.5 accounting identity indexes。
+- Existing `calculation_key` uniqueness remains. Repository append checks same calculation key canonical no-op/conflict and strict accounting identity `account_id + instrument_id + position_version + trading_day + config_hash` no-op/conflict。
+- Legacy `get_by_position_version(...)` no longer drives L.5 writes and must not be used to choose among multiple trading_day / config_hash contexts。
 - Do not create a second accounting ledger.
 
 Stage L.5 explicit non-goals：

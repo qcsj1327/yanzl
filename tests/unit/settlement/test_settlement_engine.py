@@ -41,12 +41,15 @@ def _pnl_snapshot(
     snapshot_id: str = "1",
     account_id: str = "acct-1",
     position_version: int = 1,
+    trading_day: date = date(2026, 6, 4),
 ) -> PnLSnapshot:
     return PnLSnapshot(
         id=snapshot_id,
         account_id=account_id,
         instrument_id="rb2610",
         position_version=position_version,
+        trading_day=trading_day,
+        config_hash="pnl-config-v1",
         margin_snapshot_id="1",
         calculation_key="pnl-key",
         price_basis=PnLPriceBasis.SETTLEMENT_PRICE,
@@ -64,12 +67,15 @@ def _margin_snapshot(
     snapshot_id: str = "1",
     account_id: str = "acct-1",
     position_version: int = 1,
+    trading_day: date = date(2026, 6, 4),
 ) -> MarginSnapshot:
     return MarginSnapshot(
         id=snapshot_id,
         account_id=account_id,
         instrument_id="rb2610",
         position_version=position_version,
+        trading_day=trading_day,
+        config_hash="margin-config-v1",
         calculation_key="margin-key",
         long_qty=Decimal("5"),
         short_qty=Decimal("5"),
@@ -278,9 +284,31 @@ def test_settlement_calculator_conflicts_on_pnl_position_version_mismatch() -> N
     assert result.snapshot is None
 
 
+def test_settlement_calculator_conflicts_on_pnl_trading_day_mismatch() -> None:
+    result = SettlementCalculator().build_plan(
+        _context(pnl_snapshots=(_pnl_snapshot(trading_day=date(2026, 6, 5)),))
+    )
+
+    assert not isinstance(result, SettlementPlan)
+    assert result.status == SettlementResultStatus.CONFLICT
+    assert result.reason == "pnl_snapshot_identity_mismatch"
+    assert result.snapshot is None
+
+
 def test_settlement_calculator_conflicts_on_margin_position_version_mismatch() -> None:
     result = SettlementCalculator().build_plan(
         _context(margin_snapshots=(_margin_snapshot(position_version=0),))
+    )
+
+    assert not isinstance(result, SettlementPlan)
+    assert result.status == SettlementResultStatus.CONFLICT
+    assert result.reason == "margin_snapshot_identity_mismatch"
+    assert result.snapshot is None
+
+
+def test_settlement_calculator_conflicts_on_margin_trading_day_mismatch() -> None:
+    result = SettlementCalculator().build_plan(
+        _context(margin_snapshots=(_margin_snapshot(trading_day=date(2026, 6, 5)),))
     )
 
     assert not isinstance(result, SettlementPlan)
@@ -312,6 +340,8 @@ def test_settlement_calculator_conflicts_when_extra_same_instrument_fact_mismatc
         _context(margin_snapshots=(_margin_snapshot(account_id="acct-2"),)),
         _context(pnl_snapshots=(_pnl_snapshot(position_version=0),)),
         _context(margin_snapshots=(_margin_snapshot(position_version=0),)),
+        _context(pnl_snapshots=(_pnl_snapshot(trading_day=date(2026, 6, 5)),)),
+        _context(margin_snapshots=(_margin_snapshot(trading_day=date(2026, 6, 5)),)),
     ],
 )
 def test_settlement_engine_identity_conflict_has_no_persistence(

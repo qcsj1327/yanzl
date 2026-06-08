@@ -1975,6 +1975,8 @@ class MarginSnapshot(DomainModel):
     account_id: str
     instrument_id: str
     position_version: int
+    trading_day: date
+    config_hash: str
     rule_id: str | None = None
     rule_version: str | None = None
     calculation_key: str
@@ -2010,6 +2012,13 @@ class MarginSnapshot(DomainModel):
     def _calculation_key_required(cls, value: str) -> str:
         if not value:
             raise ValueError("calculation_key is required")
+        return value
+
+    @field_validator("config_hash")
+    @classmethod
+    def _config_hash_required(cls, value: str) -> str:
+        if not value:
+            raise ValueError("config_hash is required")
         return value
 
 
@@ -2124,6 +2133,8 @@ class PnLSnapshot(DomainModel):
     account_id: str
     instrument_id: str
     position_version: int
+    trading_day: date
+    config_hash: str
     trade_id: str | None = None
     margin_snapshot_id: str | None = None
     calculation_key: str
@@ -2161,6 +2172,13 @@ class PnLSnapshot(DomainModel):
     def _calculation_key_required(cls, value: str) -> str:
         if not value:
             raise ValueError("calculation_key is required")
+        return value
+
+    @field_validator("config_hash")
+    @classmethod
+    def _pnl_config_hash_required(cls, value: str) -> str:
+        if not value:
+            raise ValueError("config_hash is required")
         return value
 
 

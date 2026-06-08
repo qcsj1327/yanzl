@@ -24,7 +24,7 @@
 
 ## Stage L.5 Margin / PnL To Settlement Contract
 
-Stage L.5 freezes the accounting-chain handoff into Settlement. It does not implement Runtime, Broker, live feeds, external account sync, or calendar automation.
+Stage L.5 implements the minimum accounting-chain handoff into Settlement. It does not implement Runtime, Broker, live feeds, external account sync, or calendar automation.
 
 Settlement may consume `MarginSnapshot` + `PnLSnapshot` only when the following lineage matches exactly for each settled instrument / position lineage：
 
@@ -58,7 +58,7 @@ Settlement must not recompute Stage D Margin or Stage E PnL. If settlement-price
 
 Stage L.5 idempotency / replay：
 
-- same position_version + same config + same typed price input -> duplicate / no-op upstream accounting facts。
+- same position_version + same trading_day + same config_hash + same typed price input -> duplicate / no-op upstream accounting facts。
 - same identity + different canonical -> conflict。
 - ordered PositionEvents / Positions replay deterministic。
 - replay must not call Broker / Runtime。
@@ -67,8 +67,7 @@ Stage L.5 idempotency / replay：
 Repository / schema decision：
 
 - Current Margin / PnL / Settlement repositories already exist。
-- Current snapshot tables are partially sufficient：they carry account / instrument / position_version / calculation identity, and settlement references margin / PnL snapshot ids。
-- Current `margin_snapshots` and `pnl_snapshots` do not persist first-class `trading_day`; config lineage is not uniformly represented as `config_hash`。
-- Future implementation requires `0015_stage_l5_position_to_accounting.py` unless it explicitly encodes `trading_day` and config hash inside deterministic `calculation_key` and passes review。
-- Any migration must extend existing accounting snapshot ledgers only; do not create parallel accounting tables。
+- Migration `0015_stage_l5_position_to_accounting.py` extends only `margin_snapshots` and `pnl_snapshots` with NOT NULL `trading_day` and NOT NULL `config_hash`。
+- Settlement matching now requires `MarginSnapshot.trading_day == SettlementContext.trading_day` and `PnLSnapshot.trading_day == SettlementContext.trading_day` in addition to account / instrument / position_version。
+- Existing accounting snapshot ledgers are reused; no parallel accounting tables are introduced。
 - Do not create a second accounting ledger。

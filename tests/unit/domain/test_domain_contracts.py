@@ -782,6 +782,8 @@ def test_margin_requirement_snapshot_and_result_contracts() -> None:
         account_id="acct-1",
         instrument_id="rb2610",
         position_version=1,
+        trading_day=date(2026, 1, 1),
+        config_hash="margin-config-v1",
         rule_id="rule-1",
         rule_version="v1",
         calculation_key="acct-1:rb2610:1:v1",
@@ -805,7 +807,28 @@ def test_margin_requirement_snapshot_and_result_contracts() -> None:
     assert result.requirement == requirement
     assert result.snapshot == snapshot
     assert "calculation_key" in MarginSnapshot.model_fields
+    assert "trading_day" in MarginSnapshot.model_fields
+    assert "config_hash" in MarginSnapshot.model_fields
     assert "raw_payload" not in MarginSnapshot.model_fields
+    with pytest.raises(ValueError):
+        MarginSnapshot(
+            account_id="acct-1",
+            instrument_id="rb2610",
+            position_version=1,
+            trading_day=date(2026, 1, 1),
+            config_hash="",
+            calculation_key="acct-1:rb2610:1:v1",
+            long_qty=Decimal("2"),
+            short_qty=Decimal("1"),
+            price=Decimal("3500"),
+            contract_multiplier=Decimal("10"),
+            initial_margin=Decimal("150"),
+            maintenance_margin=Decimal("120"),
+            margin_used=Decimal("150"),
+            available_cash=Decimal("1000"),
+            equity=Decimal("2000"),
+            calculated_at=datetime.now(UTC),
+        )
 
 
 def test_pnl_domain_contracts_and_decimal_validation() -> None:
@@ -849,6 +872,8 @@ def test_pnl_domain_contracts_and_decimal_validation() -> None:
         account_id="acct-1",
         instrument_id="rb2610",
         position_version=1,
+        trading_day=date(2026, 1, 1),
+        config_hash="pnl-config-v1",
         trade_id="trade-1",
         margin_snapshot_id="margin-1",
         calculation_key="acct-1:rb2610:1:pnl",
@@ -874,6 +899,8 @@ def test_pnl_domain_contracts_and_decimal_validation() -> None:
     assert result.realized.fee_amount is None
     assert result.realized.net_realized_pnl is None
     assert "raw_payload" not in CloseTradeContext.model_fields
+    assert "trading_day" in PnLSnapshot.model_fields
+    assert "config_hash" in PnLSnapshot.model_fields
     assert "raw_payload" not in PnLSnapshot.model_fields
     with pytest.raises(ValueError):
         CloseTradeContext(
@@ -889,6 +916,8 @@ def test_pnl_domain_contracts_and_decimal_validation() -> None:
             account_id="acct-1",
             instrument_id="rb2610",
             position_version=1,
+            trading_day=date(2026, 1, 1),
+            config_hash="pnl-config-v1",
             calculation_key="acct-1:rb2610:1:pnl",
             price_basis=PnLPriceBasis.MANUAL,
             mark_price=105.0,
@@ -903,7 +932,25 @@ def test_pnl_domain_contracts_and_decimal_validation() -> None:
             account_id="acct-1",
             instrument_id="rb2610",
             position_version=1,
+            trading_day=date(2026, 1, 1),
+            config_hash="pnl-config-v1",
             calculation_key="",
+            price_basis=PnLPriceBasis.MANUAL,
+            mark_price=Decimal("105"),
+            contract_multiplier=Decimal("10"),
+            realized_pnl=Decimal("0"),
+            unrealized_pnl=Decimal("0"),
+            total_pnl=Decimal("0"),
+            calculated_at=datetime.now(UTC),
+        )
+    with pytest.raises(ValueError):
+        PnLSnapshot(
+            account_id="acct-1",
+            instrument_id="rb2610",
+            position_version=1,
+            trading_day=date(2026, 1, 1),
+            config_hash="",
+            calculation_key="acct-1:rb2610:1:pnl",
             price_basis=PnLPriceBasis.MANUAL,
             mark_price=Decimal("105"),
             contract_multiplier=Decimal("10"),

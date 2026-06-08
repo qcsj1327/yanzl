@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from futures_mvp.domain.enums import MarginResultStatus
@@ -36,6 +36,8 @@ class MarginEngine:
         *,
         calculation_key: str,
         calculated_at: datetime,
+        trading_day: date | None = None,
+        config_hash: str | None = None,
         latest_price: Decimal | None = None,
         settlement_price: Decimal | None = None,
     ) -> MarginResult:
@@ -46,6 +48,18 @@ class MarginEngine:
                 account_id=position.account_id if position else account.account_id,
                 instrument_id=position.instrument_id if position else None,
             )
+        gate_result = _validate_l5_gate(
+            position,
+            trading_day=trading_day,
+            config_hash=config_hash,
+            latest_price=latest_price,
+            settlement_price=settlement_price,
+            account_id=account.account_id,
+        )
+        if gate_result is not None:
+            return gate_result
+        assert trading_day is not None
+        assert config_hash is not None
         with self._uow_factory() as uow:
             return self._calculate_and_persist(
                 uow,
@@ -54,6 +68,8 @@ class MarginEngine:
                 account,
                 calculation_key=calculation_key,
                 calculated_at=calculated_at,
+                trading_day=trading_day,
+                config_hash=config_hash,
                 latest_price=latest_price,
                 settlement_price=settlement_price,
                 replay=False,
@@ -67,6 +83,8 @@ class MarginEngine:
         *,
         calculation_key: str,
         calculated_at: datetime,
+        trading_day: date | None = None,
+        config_hash: str | None = None,
         latest_price: Decimal | None = None,
         settlement_price: Decimal | None = None,
     ) -> MarginResult:
@@ -77,6 +95,18 @@ class MarginEngine:
                 account_id=position.account_id if position else account.account_id,
                 instrument_id=position.instrument_id if position else None,
             )
+        gate_result = _validate_l5_gate(
+            position,
+            trading_day=trading_day,
+            config_hash=config_hash,
+            latest_price=latest_price,
+            settlement_price=settlement_price,
+            account_id=account.account_id,
+        )
+        if gate_result is not None:
+            return gate_result
+        assert trading_day is not None
+        assert config_hash is not None
         with self._uow_factory() as uow:
             return self._calculate_and_persist(
                 uow,
@@ -85,6 +115,8 @@ class MarginEngine:
                 account,
                 calculation_key=calculation_key,
                 calculated_at=calculated_at,
+                trading_day=trading_day,
+                config_hash=config_hash,
                 latest_price=latest_price,
                 settlement_price=settlement_price,
                 replay=True,
@@ -99,6 +131,8 @@ class MarginEngine:
         *,
         calculation_key: str,
         calculated_at: datetime,
+        trading_day: date,
+        config_hash: str,
         latest_price: Decimal | None,
         settlement_price: Decimal | None,
         replay: bool,
@@ -128,6 +162,8 @@ class MarginEngine:
             calculated.requirement.total_maintenance_margin,
             calculation_key=calculation_key,
             calculated_at=calculated_at,
+            trading_day=trading_day,
+            config_hash=config_hash,
             latest_price=latest_price,
             settlement_price=settlement_price,
         )
@@ -139,10 +175,12 @@ class MarginEngine:
                 instrument_id=position.instrument_id,
             )
 
-        existing_snapshot = uow.margin_snapshots.get_by_position_version(
+        existing_snapshot = uow.margin_snapshots.get_by_accounting_identity(
             snapshot.account_id,
             snapshot.instrument_id,
             snapshot.position_version,
+            snapshot.trading_day,
+            snapshot.config_hash,
         )
         if existing_snapshot is not None:
             if not _same_snapshot_position_version_facts(existing_snapshot, snapshot):
@@ -165,6 +203,10 @@ class MarginEngine:
                 account_id=position.account_id,
                 instrument_id=position.instrument_id,
             )
+
+        preflight_result = _preflight_position_version(uow, position)
+        if preflight_result is not None:
+            return preflight_result
 
         try:
             appended_snapshot = uow.margin_snapshots.append_margin_snapshot(snapshot)
@@ -212,6 +254,8 @@ def _build_snapshot(
     *,
     calculation_key: str,
     calculated_at: datetime,
+    trading_day: date,
+    config_hash: str,
     latest_price: Decimal | None,
     settlement_price: Decimal | None,
 ) -> MarginSnapshot | None:
@@ -227,6 +271,8 @@ def _build_snapshot(
         account_id=position.account_id,
         instrument_id=position.instrument_id,
         position_version=position.version,
+        trading_day=trading_day,
+        config_hash=config_hash,
         rule_id=rule.rule_id,
         rule_version=rule.rule_version,
         calculation_key=calculation_key,
@@ -243,11 +289,89 @@ def _build_snapshot(
     )
 
 
+def _validate_l5_gate(
+    position: Position | None,
+    *,
+    trading_day: date | None,
+    config_hash: str | None,
+    latest_price: Decimal | None,
+    settlement_price: Decimal | None,
+    account_id: str,
+) -> MarginResult | None:
+    if position is None:
+        return MarginResult(
+            status=MarginResultStatus.ERROR,
+            reason="missing_position",
+            account_id=account_id,
+            instrument_id=None,
+        )
+    if not position.account_id or not position.instrument_id:
+        return MarginResult(
+            status=MarginResultStatus.ERROR,
+            reason="missing_position_identity",
+            account_id=position.account_id or account_id,
+            instrument_id=position.instrument_id or None,
+        )
+    if trading_day is None:
+        return MarginResult(
+            status=MarginResultStatus.ERROR,
+            reason="trading_day is required",
+            account_id=position.account_id,
+            instrument_id=position.instrument_id,
+        )
+    if not config_hash:
+        return MarginResult(
+            status=MarginResultStatus.ERROR,
+            reason="config_hash is required",
+            account_id=position.account_id,
+            instrument_id=position.instrument_id,
+        )
+    if latest_price is not None and not isinstance(latest_price, Decimal):
+        return MarginResult(
+            status=MarginResultStatus.ERROR,
+            reason="latest_price must be Decimal",
+            account_id=position.account_id,
+            instrument_id=position.instrument_id,
+        )
+    if settlement_price is not None and not isinstance(settlement_price, Decimal):
+        return MarginResult(
+            status=MarginResultStatus.ERROR,
+            reason="settlement_price must be Decimal",
+            account_id=position.account_id,
+            instrument_id=position.instrument_id,
+        )
+    return None
+
+
+def _preflight_position_version(uow: UnitOfWork, position: Position) -> MarginResult | None:
+    live_position = uow.positions.get_by_account_instrument(
+        position.account_id,
+        position.instrument_id,
+    )
+    if live_position is None:
+        return MarginResult(
+            status=MarginResultStatus.ERROR,
+            reason="missing_position",
+            account_id=position.account_id,
+            instrument_id=position.instrument_id,
+        )
+    if live_position.version != position.version:
+        return MarginResult(
+            status=MarginResultStatus.ERROR,
+            reason="stale_position_version",
+            account_id=position.account_id,
+            instrument_id=position.instrument_id,
+        )
+    return None
+
+
 def _same_snapshot_position_version_facts(left: MarginSnapshot, right: MarginSnapshot) -> bool:
     return (
         left.account_id,
         left.instrument_id,
         left.position_version,
+        left.trading_day,
+        left.config_hash,
         left.rule_id,
         left.rule_version,
         left.long_qty,
@@ -263,6 +387,8 @@ def _same_snapshot_position_version_facts(left: MarginSnapshot, right: MarginSna
         right.account_id,
         right.instrument_id,
         right.position_version,
+        right.trading_day,
+        right.config_hash,
         right.rule_id,
         right.rule_version,
         right.long_qty,

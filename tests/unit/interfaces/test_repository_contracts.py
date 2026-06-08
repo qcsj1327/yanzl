@@ -135,6 +135,8 @@ def _margin_snapshot() -> MarginSnapshot:
         account_id="account-1",
         instrument_id="rb2601",
         position_version=1,
+        trading_day=date(2026, 1, 1),
+        config_hash="margin-config-v1",
         rule_id="rule-1",
         rule_version="v1",
         calculation_key="account-1:rb2601:1:v1",
@@ -156,6 +158,8 @@ def _pnl_snapshot() -> PnLSnapshot:
         account_id="account-1",
         instrument_id="rb2601",
         position_version=1,
+        trading_day=date(2026, 1, 1),
+        config_hash="pnl-config-v1",
         trade_id="trade-1",
         margin_snapshot_id="margin-1",
         calculation_key="account-1:rb2601:1:pnl",
@@ -504,11 +508,17 @@ class FakePositionEventRepository:
 
 class FakeMarginSnapshotRepository:
     def __init__(self) -> None:
-        self.snapshots: dict[tuple[str, str, int], MarginSnapshot] = {}
+        self.snapshots: dict[tuple[str, str, int, date, str], MarginSnapshot] = {}
 
     def append_margin_snapshot(self, snapshot: MarginSnapshot) -> MarginSnapshot:
         self.snapshots[
-            (snapshot.account_id, snapshot.instrument_id, snapshot.position_version)
+            (
+                snapshot.account_id,
+                snapshot.instrument_id,
+                snapshot.position_version,
+                snapshot.trading_day,
+                snapshot.config_hash,
+            )
         ] = snapshot
         return snapshot
 
@@ -533,7 +543,28 @@ class FakeMarginSnapshotRepository:
         instrument_id: str,
         position_version: int,
     ) -> MarginSnapshot | None:
-        return self.snapshots.get((account_id, instrument_id, position_version))
+        return next(
+            (
+                snapshot
+                for snapshot in self.snapshots.values()
+                if snapshot.account_id == account_id
+                and snapshot.instrument_id == instrument_id
+                and snapshot.position_version == position_version
+            ),
+            None,
+        )
+
+    def get_by_accounting_identity(
+        self,
+        account_id: str,
+        instrument_id: str,
+        position_version: int,
+        trading_day: date,
+        config_hash: str,
+    ) -> MarginSnapshot | None:
+        return self.snapshots.get(
+            (account_id, instrument_id, position_version, trading_day, config_hash)
+        )
 
 
 class FakePnLSnapshotRepository:
@@ -582,6 +613,27 @@ class FakePnLSnapshotRepository:
                 if snapshot.account_id == account_id
                 and snapshot.instrument_id == instrument_id
                 and snapshot.position_version == position_version
+            ),
+            None,
+        )
+
+    def get_by_accounting_identity(
+        self,
+        account_id: str,
+        instrument_id: str,
+        position_version: int,
+        trading_day: date,
+        config_hash: str,
+    ) -> PnLSnapshot | None:
+        return next(
+            (
+                snapshot
+                for snapshot in self.snapshots.values()
+                if snapshot.account_id == account_id
+                and snapshot.instrument_id == instrument_id
+                and snapshot.position_version == position_version
+                and snapshot.trading_day == trading_day
+                and snapshot.config_hash == config_hash
             ),
             None,
         )
@@ -1006,9 +1058,29 @@ def test_repository_protocols_can_be_implemented_by_fakes() -> None:
     assert position_event_repo.get_by_trade_key("account-1", "SHFE", "trade-1") == position_event
     assert margin_snapshot_repo.get_latest("account-1", "rb2601") == margin_snapshot
     assert margin_snapshot_repo.get_by_position_version("account-1", "rb2601", 1) == margin_snapshot
+    assert (
+        margin_snapshot_repo.get_by_accounting_identity(
+            "account-1",
+            "rb2601",
+            1,
+            date(2026, 1, 1),
+            "margin-config-v1",
+        )
+        == margin_snapshot
+    )
     assert pnl_snapshot_repo.get_latest("account-1", "rb2601") == pnl_snapshot
     assert (
         pnl_snapshot_repo.get_by_calculation_key("account-1", "rb2601", "account-1:rb2601:1:pnl")
+        == pnl_snapshot
+    )
+    assert (
+        pnl_snapshot_repo.get_by_accounting_identity(
+            "account-1",
+            "rb2601",
+            1,
+            date(2026, 1, 1),
+            "pnl-config-v1",
+        )
         == pnl_snapshot
     )
     assert account_snapshot_repo.get_latest("account-1") == account_snapshot

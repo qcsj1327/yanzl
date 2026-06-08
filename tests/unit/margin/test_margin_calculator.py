@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -6,6 +6,9 @@ from futures_mvp.domain.enums import MarginPriceBasis, MarginResultStatus
 from futures_mvp.domain.models import AccountContext, MarginRule, MarginSnapshot, Position
 from futures_mvp.modules.margin.calculator import MarginCalculator, resolve_margin_prices
 from futures_mvp.modules.margin.engine import MarginEngine
+
+TRADING_DAY = date(2026, 1, 1)
+CONFIG_HASH = "margin-config-v1"
 
 
 def _account(available_cash: Decimal = Decimal("100000")) -> AccountContext:
@@ -204,6 +207,8 @@ def test_engine_rejected_calculator_result_does_not_persist_or_update() -> None:
         _account(),
         calculation_key="acct-1:rb2610:3:v1",
         calculated_at=datetime(2026, 1, 1, 9, tzinfo=UTC),
+        trading_day=TRADING_DAY,
+        config_hash=CONFIG_HASH,
     )
 
     assert result.status == MarginResultStatus.REJECTED_MISSING_PRICE
@@ -222,12 +227,87 @@ def test_engine_identity_mismatch_does_not_persist_or_update() -> None:
         _account(),
         calculation_key="acct-1:rb2610:3:v1",
         calculated_at=datetime(2026, 1, 1, 9, tzinfo=UTC),
+        trading_day=TRADING_DAY,
+        config_hash=CONFIG_HASH,
     )
 
     assert result.status == MarginResultStatus.ERROR
     assert result.reason == "margin_identity_mismatch: instrument_id"
     assert uow.margin_snapshots.snapshots == []
     assert uow.positions.updated == []
+    assert uow.committed is False
+
+
+def test_engine_missing_trading_day_or_config_hash_rejects_before_persistence() -> None:
+    missing_day_uow = FakeUnitOfWork()
+    missing_config_uow = FakeUnitOfWork()
+
+    missing_day = MarginEngine(lambda: missing_day_uow).calculate_margin(
+        _position(),
+        _rule(),
+        _account(),
+        calculation_key="acct-1:rb2610:3:v1",
+        calculated_at=datetime(2026, 1, 1, 9, tzinfo=UTC),
+        config_hash=CONFIG_HASH,
+    )
+    missing_config = MarginEngine(lambda: missing_config_uow).calculate_margin(
+        _position(),
+        _rule(),
+        _account(),
+        calculation_key="acct-1:rb2610:3:v1",
+        calculated_at=datetime(2026, 1, 1, 9, tzinfo=UTC),
+        trading_day=TRADING_DAY,
+        config_hash="",
+    )
+
+    assert missing_day.status == MarginResultStatus.ERROR
+    assert missing_day.reason == "trading_day is required"
+    assert missing_day_uow.margin_snapshots.snapshots == []
+    assert missing_config.status == MarginResultStatus.ERROR
+    assert missing_config.reason == "config_hash is required"
+    assert missing_config_uow.margin_snapshots.snapshots == []
+
+
+def test_engine_missing_position_rejects_before_uow() -> None:
+    uow = FakeUnitOfWork()
+    engine = MarginEngine(lambda: uow)
+
+    result = engine.calculate_margin(
+        None,
+        _rule(),
+        _account(),
+        calculation_key="acct-1:rb2610:3:v1",
+        calculated_at=datetime(2026, 1, 1, 9, tzinfo=UTC),
+        trading_day=TRADING_DAY,
+        config_hash=CONFIG_HASH,
+    )
+
+    assert result.status == MarginResultStatus.ERROR
+    assert result.reason == "missing_position"
+    assert uow.entered is False
+    assert uow.margin_snapshots.snapshots == []
+    assert uow.positions.margin_updates == []
+    assert uow.committed is False
+
+
+def test_engine_stale_position_version_rejects_before_persistence() -> None:
+    uow = FakeUnitOfWork(live_position=_position().model_copy(update={"version": 4}))
+    engine = MarginEngine(lambda: uow)
+
+    result = engine.calculate_margin(
+        _position(),
+        _rule(),
+        _account(),
+        calculation_key="acct-1:rb2610:3:v1",
+        calculated_at=datetime(2026, 1, 1, 9, tzinfo=UTC),
+        trading_day=TRADING_DAY,
+        config_hash=CONFIG_HASH,
+    )
+
+    assert result.status == MarginResultStatus.ERROR
+    assert result.reason == "stale_position_version"
+    assert uow.margin_snapshots.snapshots == []
+    assert uow.positions.margin_updates == []
     assert uow.committed is False
 
 
@@ -278,14 +358,41 @@ class FakeMarginSnapshotRepository:
         del account_id, instrument_id, position_version
         return None
 
+    def get_by_accounting_identity(
+        self,
+        account_id: str,
+        instrument_id: str,
+        position_version: int,
+        trading_day: date,
+        config_hash: str,
+    ) -> MarginSnapshot | None:
+        return next(
+            (
+                snapshot
+                for snapshot in self.snapshots
+                if snapshot.account_id == account_id
+                and snapshot.instrument_id == instrument_id
+                and snapshot.position_version == position_version
+                and snapshot.trading_day == trading_day
+                and snapshot.config_hash == config_hash
+            ),
+            None,
+        )
+
 
 class FakePositionRepository:
-    def __init__(self) -> None:
+    def __init__(self, live_position: Position | None = None) -> None:
+        self.live_position = live_position
         self.updated: list[Position] = []
         self.margin_updates: list[tuple[str, str, Decimal, int | None]] = []
 
     def get_by_account_instrument(self, account_id: str, instrument_id: str) -> Position | None:
-        del account_id, instrument_id
+        if (
+            self.live_position is not None
+            and self.live_position.account_id == account_id
+            and self.live_position.instrument_id == instrument_id
+        ):
+            return self.live_position
         return None
 
     def create_or_get_position(self, account_id: str, instrument_id: str) -> Position:
@@ -324,12 +431,14 @@ class FakePositionRepository:
 
 
 class FakeUnitOfWork:
-    def __init__(self) -> None:
+    def __init__(self, live_position: Position | None = None) -> None:
         self.margin_snapshots = FakeMarginSnapshotRepository()
-        self.positions = FakePositionRepository()
+        self.positions = FakePositionRepository(live_position or _position())
         self.committed = False
+        self.entered = False
 
     def __enter__(self) -> "FakeUnitOfWork":
+        self.entered = True
         return self
 
     def __exit__(

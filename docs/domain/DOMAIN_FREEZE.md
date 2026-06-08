@@ -487,6 +487,8 @@ Insufficient cash 返回 `REJECTED_INSUFFICIENT_CASH` typed result，不抛业�
 | `account_id` | `str` | required | 账户 ID。 |
 | `instrument_id` | `str` | required | 合约 ID。 |
 | `position_version` | `int` | required | 输入 Position version。 |
+| `trading_day` | `date` | required | 会计事实所属交易日。 |
+| `config_hash` | `str` | required | margin config canonical hash；不得为空。 |
 | `rule_id` | `str \| None` | `None` | 应用的规则身份。 |
 | `rule_version` | `str \| None` | `None` | 应用的规则版本。 |
 | `calculation_key` | `str` | required | deterministic calculation identity；不得用随机 UUID 或当前时间生成。 |
@@ -501,7 +503,7 @@ Insufficient cash 返回 `REJECTED_INSUFFICIENT_CASH` typed result，不抛业�
 | `equity` | `Decimal` | required | 计算时账户权益。 |
 | `calculated_at` | `datetime` | required | 本地计算时间；持久化但不参与 canonical equality。 |
 
-`MarginSnapshot` canonical payload 字段包括 `account_id`、`instrument_id`、`position_version`、`rule_id`、`rule_version`、`long_qty`、`short_qty`、`price`、`contract_multiplier`、`initial_margin`、`maintenance_margin`、`margin_used`、`available_cash`、`equity`、`calculation_key`。`calculated_at` 不参与 canonical equality；`raw_payload` 不参与 canonical。Same canonical 时 no-op / duplicate snapshot accepted；different canonical 时返回 `CONFLICT` / divergence；不得静默覆盖历史 snapshot。同一 `account_id + instrument_id + position_version` 不得写入第二条不同 Margin fact；除 `calculation_key` 外经济事实一致时返回 existing，经济事实不一致时 conflict。
+`MarginSnapshot` canonical payload 字段包括 `account_id`、`instrument_id`、`position_version`、`trading_day`、`config_hash`、`rule_id`、`rule_version`、`long_qty`、`short_qty`、`price`、`contract_multiplier`、`initial_margin`、`maintenance_margin`、`margin_used`、`available_cash`、`equity`、`calculation_key`。`calculated_at` 不参与 canonical equality；`raw_payload` 不参与 canonical。Same canonical 时 no-op / duplicate snapshot accepted；different canonical 时返回 `CONFLICT` / divergence；不得静默覆盖历史 snapshot。同一 `account_id + instrument_id + position_version + trading_day + config_hash` 不得写入第二条不同 Margin fact；除 `calculation_key` 外经济事实一致时返回 existing，经济事实不一致时 conflict。
 
 #### MarginResult
 
@@ -570,7 +572,7 @@ Stage D 可更新 `positions.margin_used`，但必须满足：
 
 #### Margin replay
 
-Margin replay 使用同一 calculator 重算。输入为 Position projection + MarginRule + AccountContext + typed price input。同一 `account_id + instrument_id + position_version` 的 existing snapshot 已是该 position version 的 margin fact；同一 `calculation_key` canonical same 时 no-op / duplicate snapshot accepted，canonical different 时返回 `CONFLICT` / divergence；`calculation_key` 不同但同一 position version 经济事实一致时 no-op，经济事实不一致时 conflict，不得追加第二条 snapshot 或更新 `positions.margin_used`。Replay 不更新 Position qty/avg。
+Margin replay 使用同一 calculator 重算。输入为 Position projection + MarginRule + AccountContext + typed price input。Stage L.5 后，同一 `account_id + instrument_id + position_version + trading_day + config_hash` 的 existing snapshot 已是该 accounting identity 的 margin fact；同一 `calculation_key` canonical same 时 no-op / duplicate snapshot accepted，canonical different 时返回 `CONFLICT` / divergence；`calculation_key` 不同但同一 accounting identity 经济事实一致时 no-op，经济事实不一致时 conflict，不得追加第二条 snapshot 或更新 `positions.margin_used`。Replay 不更新 Position qty/avg。
 
 #### PnL / Settlement / Risk boundary
 
@@ -687,6 +689,8 @@ Unrealized PnL calculation：
 | `account_id` | `str` | required | 账户身份。 |
 | `instrument_id` | `str` | required | 合约身份。 |
 | `position_version` | `int` | required | 输入 Position / snapshot version。 |
+| `trading_day` | `date` | required | 会计事实所属交易日。 |
+| `config_hash` | `str` | required | PnL config canonical hash；不得为空。 |
 | `trade_id` | `str \| None` | `None` | realized close trade identity；unrealized-only snapshot 可为空。 |
 | `margin_snapshot_id` | `str \| None` | `None` | audit correlation only。 |
 | `calculation_key` | `str` | required | deterministic calculation identity；不得用随机 UUID 或当前时间生成。 |
@@ -700,7 +704,7 @@ Unrealized PnL calculation：
 | `calculated_at` | `datetime` | required | 本地计算时间；持久化但不参与 canonical equality。 |
 | `created_at` | `datetime` | required | DB 创建时间。 |
 
-`PnLSnapshot` canonical payload 字段包括 `account_id`、`instrument_id`、`position_version`、`trade_id`、`margin_snapshot_id`、`calculation_key`、`price_basis`、`mark_price`、`contract_multiplier`、`realized_pnl`、`unrealized_pnl`、`total_pnl`、`fee_amount`。`calculated_at` 不参与 canonical equality；`raw_payload` 不允许进入 PnL facts。Same canonical 时 no-op / duplicate accepted；different canonical 时返回 `CONFLICT` / divergence；不得静默覆盖历史 snapshot。同一 `account_id + instrument_id + position_version` 的 existing snapshot 已是该 position version 的 PnL fact；除 `calculation_key` 外经济事实一致时 duplicate no-op，经济事实不一致时返回 conflict/divergence，不得追加第二条 PnL fact。
+`PnLSnapshot` canonical payload 字段包括 `account_id`、`instrument_id`、`position_version`、`trading_day`、`config_hash`、`trade_id`、`margin_snapshot_id`、`calculation_key`、`price_basis`、`mark_price`、`contract_multiplier`、`realized_pnl`、`unrealized_pnl`、`total_pnl`、`fee_amount`。`calculated_at` 不参与 canonical equality；`raw_payload` 不允许进入 PnL facts。Same canonical 时 no-op / duplicate accepted；different canonical 时返回 `CONFLICT` / divergence；不得静默覆盖历史 snapshot。同一 `account_id + instrument_id + position_version + trading_day + config_hash` 的 existing snapshot 已是该 accounting identity 的 PnL fact；除 `calculation_key` 外经济事实一致时 duplicate no-op，经济事实不一致时返回 conflict/divergence，不得追加第二条 PnL fact。
 
 #### PnLResult
 
@@ -731,7 +735,7 @@ Stage E 可更新 `positions.realized_pnl` / `positions.unrealized_pnl`，但必
 
 #### PnL replay
 
-PnL replay 使用同一 calculator 重算，且必须使用 deterministic `calculation_key`。Same canonical 时 no-op；different canonical 时返回 `CONFLICT` / divergence；即使 `calculation_key` 不同，同一 position version 的经济事实一致也必须 no-op，经济事实不一致必须 conflict。Replay 不得静默覆盖 position PnL fields。Replay divergence 判定必须读取 repository / UoW 内真实 live Position row；调用方传入的 Position 只作为 calculator input，不得替代 live row。若 live position PnL fields 与 snapshot divergence，除非当前 transaction 正在更新它，否则必须返回 `CONFLICT`。
+PnL replay 使用同一 calculator 重算，且必须使用 deterministic `calculation_key`。Same canonical 时 no-op；different canonical 时返回 `CONFLICT` / divergence；Stage L.5 后，即使 `calculation_key` 不同，同一 `account_id + instrument_id + position_version + trading_day + config_hash` accounting identity 的经济事实一致也必须 no-op，经济事实不一致必须 conflict。Replay 不得静默覆盖 position PnL fields。Replay divergence 判定必须读取 repository / UoW 内真实 live Position row；调用方传入的 Position 只作为 calculator input，不得替代 live row。若 live position PnL fields 与 snapshot divergence，除非当前 transaction 正在更新它，否则必须返回 `CONFLICT`。
 
 #### Margin / Settlement / Risk boundary
 
@@ -3451,11 +3455,11 @@ Stage L.4 accounting boundary：
 - no AccountSnapshot update。
 - no Runtime / Kafka / FastAPI / Celery。
 
-## Stage L.5 Position-to-Accounting Contract Freeze
+## Stage L.5 Position-to-Accounting Implementation
 
-Stage L.5 freezes the accounting-chain handoff from Trade-applied Position / PositionEvent to Margin / PnL / Settlement / AccountSnapshot. It follows Stage L.4 and stays before Stage M Runtime / Infrastructure.
+Stage L.5 implements the minimum accounting-chain handoff from Trade-applied Position / PositionEvent to Margin / PnL / Settlement / AccountSnapshot. It follows Stage L.4 and stays before Stage M Runtime / Infrastructure.
 
-Stage L.5 is docs-only. It does not change Domain models, schema, `src`, or tests.
+Stage L.5 adds migration `0015_stage_l5_position_to_accounting.py`, extends `MarginSnapshot` / `PnLSnapshot` with first-class `trading_day` and `config_hash`, and keeps Stage M Runtime / Infrastructure out of scope.
 
 Source-of-truth path：
 
@@ -3488,15 +3492,15 @@ Stage L.5 required gate：
 
 Position -> Margin contract：
 
-- `MarginSnapshot` must bind to `account_id`、`instrument_id`、`position_version`、`trading_day` and deterministic `calculation_key` / config hash。
-- Same account + instrument + position_version + config + typed price input creates the same margin fact。
+- `MarginSnapshot` binds to `account_id`、`instrument_id`、`position_version`、first-class `trading_day`、first-class `config_hash` and deterministic `calculation_key`。
+- Same account + instrument + position_version + trading_day + config_hash + typed price input creates the same margin fact。
 - Duplicate same canonical returns no-op / existing snapshot。
 - Same identity + different canonical returns conflict。
 - Margin must not mutate Position qty / avg price. Existing Stage D `positions.margin_used` projection, if used, must remain margin-only, snapshot-backed and transactional。
 
 Position / Trade -> PnL contract：
 
-- `PnLSnapshot` must bind to `account_id`、`instrument_id`、`position_version`、`trading_day` and deterministic `calculation_key` / config hash。
+- `PnLSnapshot` binds to `account_id`、`instrument_id`、`position_version`、first-class `trading_day`、first-class `config_hash` and deterministic `calculation_key`。
 - Realized PnL source is typed Trade / PositionEvent close data only。
 - Unrealized PnL source is typed Position plus typed market / settlement price。
 - PnL must not consume raw report, broker state, OMS state, execution report or raw_payload facts。
@@ -3510,7 +3514,7 @@ Margin / PnL -> Settlement contract：
 
 Stage L.5 idempotency / replay：
 
-- Same position_version + same config + same typed price input -> duplicate / no-op。
+- Same position_version + same trading_day + same config_hash + same typed price input -> duplicate / no-op。
 - Same identity + different canonical -> conflict。
 - Replay ordered PositionEvents / Positions deterministically。
 - Replay must not call Broker / Runtime。
@@ -3519,10 +3523,9 @@ Stage L.5 idempotency / replay：
 Stage L.5 repository / schema decision：
 
 - Current Margin / PnL / Settlement repositories already exist。
-- Current schemas are partially sufficient：existing accounting facts carry account / instrument / position_version and deterministic calculation identity, and settlement references the accounting snapshots it finalizes。
-- Current schemas are not sufficient for the full Stage L.5 binding contract because `margin_snapshots` and `pnl_snapshots` do not persist first-class `trading_day`; config lineage is not uniformly represented as a `config_hash` column。
-- Future implementation requires `0015_stage_l5_position_to_accounting.py` unless the implementation explicitly narrows the binding to encode `trading_day` and config hash inside deterministic `calculation_key` and passes acceptance review。
-- Any migration must extend existing accounting snapshot tables only, preferably `margin_snapshots` and `pnl_snapshots` with `trading_day` and config hash / config lineage fields plus indexes needed for exact settlement matching。
+- Migration `0015_stage_l5_position_to_accounting.py` extends only `margin_snapshots` and `pnl_snapshots` with NOT NULL `trading_day` and NOT NULL `config_hash` plus L.5 accounting identity indexes。
+- Existing `calculation_key` uniqueness remains. Repository append checks same calculation key canonical no-op/conflict and strict accounting identity `account_id + instrument_id + position_version + trading_day + config_hash` no-op/conflict。
+- Legacy `get_by_position_version(...)` no longer drives L.5 writes and must not be used to choose among multiple trading_day / config_hash contexts。
 - Do not create a second accounting ledger。
 
 Stage L.5 explicit non-goals：
@@ -3699,7 +3702,7 @@ Stage C `UnitOfWork` 需要暴露 `positions: PositionRepository` 和 `position_
 
 Stage D 冻结 `MarginSnapshotRepository`：
 
-- `append_margin_snapshot(snapshot: MarginSnapshot) -> MarginSnapshot`：追加 margin audit snapshot；同一 `account_id + instrument_id + position_version` 已存在时，除 `calculation_key` 外经济事实一致返回 existing，经济事实不一致抛 `MarginSnapshotConflictError`。
+- `append_margin_snapshot(snapshot: MarginSnapshot) -> MarginSnapshot`：追加 margin audit snapshot；Stage L.5 后，同一 `account_id + instrument_id + position_version + trading_day + config_hash` 已存在时，除 `calculation_key` 外经济事实一致返回 existing，经济事实不一致抛 `MarginSnapshotConflictError`。
 - `get_latest(account_id: str, instrument_id: str) -> MarginSnapshot | None`：查询单合约最新 margin snapshot。
 - `list_by_account(account_id: str) -> list[MarginSnapshot]`：列出账户 margin snapshots。
 - `get_by_position_version(account_id: str, instrument_id: str, position_version: int) -> MarginSnapshot | None`：按 position version 查询 snapshot。
@@ -3718,7 +3721,7 @@ Repository behavior：
 
 - Same canonical payload 时返回 existing / no-op。
 - Different canonical payload 时抛 `PnLSnapshotConflictError`。
-- 同一 `account_id + instrument_id + position_version` 不得写入第二条不同 PnL fact；除 `calculation_key` 外经济事实一致时返回 existing，经济事实不一致时抛 `PnLSnapshotConflictError`。
+- Stage L.5 后，同一 `account_id + instrument_id + position_version + trading_day + config_hash` 不得写入第二条不同 PnL fact；除 `calculation_key` 外经济事实一致时返回 existing，经济事实不一致时抛 `PnLSnapshotConflictError`。
 - 不裸露 `IntegrityError`。
 
 Stage E `UnitOfWork` 需要暴露 `pnl_snapshots: PnLSnapshotRepository`。首次写入某次 PnL projection 时，`PnLSnapshot` append 与 `positions.realized_pnl` / `positions.unrealized_pnl` update 必须在同一 UoW 内完成。Position PnL update 必须通过 pnl-only repository method，不得复用会写 qty / avg price / margin / settlement fields 的通用 update。
@@ -4125,7 +4128,7 @@ Stage D 已新增 `margin_snapshots` 表作为 margin audit / replay ledger。�
 
 Migration 范围只新增 `margin_snapshots` table，不新增 pnl table，不新增 settlement table，不新增 `margin_events`，不改变 `orders` / `order_events` / `trades` 事实语义。
 
-`margin_snapshots` canonical payload 字段为 `account_id`、`instrument_id`、`position_version`、`rule_id`、`rule_version`、`long_qty`、`short_qty`、`price`、`contract_multiplier`、`initial_margin`、`maintenance_margin`、`margin_used`、`available_cash`、`equity`、`calculation_key`。`calculated_at` 不参与 canonical equality；`raw_payload` 不参与 canonical；same canonical no-op / duplicate accepted；different canonical 返回 `CONFLICT` / divergence，不静默覆盖历史 snapshot。同一 `account_id + instrument_id + position_version` 不得写入第二条不同 Margin fact；除 `calculation_key` 外经济事实一致时返回 existing，经济事实不一致时 conflict。
+`margin_snapshots` canonical payload 字段为 `account_id`、`instrument_id`、`position_version`、`trading_day`、`config_hash`、`rule_id`、`rule_version`、`long_qty`、`short_qty`、`price`、`contract_multiplier`、`initial_margin`、`maintenance_margin`、`margin_used`、`available_cash`、`equity`、`calculation_key`。`calculated_at` 不参与 canonical equality；`raw_payload` 不参与 canonical；same canonical no-op / duplicate accepted；different canonical 返回 `CONFLICT` / divergence，不静默覆盖历史 snapshot。同一 `account_id + instrument_id + position_version + trading_day + config_hash` 不得写入第二条不同 Margin fact；除 `calculation_key` 外经济事实一致时返回 existing，经济事实不一致时 conflict。
 
 ### pnl_snapshots
 
@@ -4162,7 +4165,7 @@ Stage E 已新增 `pnl_snapshots` 表作为 PnL audit / replay ledger。本阶�
 
 Migration 范围只新增 `pnl_snapshots` table，不新增 settlement table，不新增 broker reconciliation table，不新增 risk table，不改变 `orders` / `order_events` / `trades` 事实语义。
 
-`pnl_snapshots` canonical payload 字段为 `account_id`、`instrument_id`、`position_version`、`trade_id`、`margin_snapshot_id`、`calculation_key`、`price_basis`、`mark_price`、`contract_multiplier`、`realized_pnl`、`unrealized_pnl`、`total_pnl`、`fee_amount`。`calculated_at` 不参与 canonical equality；`raw_payload` 不允许进入 PnL facts；same canonical no-op / duplicate accepted；different canonical 返回 `CONFLICT` / divergence，不静默覆盖历史 snapshot。同一 `account_id + instrument_id + position_version` 不得写入第二条不同 PnL fact；除 `calculation_key` 外经济事实一致时返回 existing，经济事实不一致时 conflict。
+`pnl_snapshots` canonical payload 字段为 `account_id`、`instrument_id`、`position_version`、`trading_day`、`config_hash`、`trade_id`、`margin_snapshot_id`、`calculation_key`、`price_basis`、`mark_price`、`contract_multiplier`、`realized_pnl`、`unrealized_pnl`、`total_pnl`、`fee_amount`。`calculated_at` 不参与 canonical equality；`raw_payload` 不允许进入 PnL facts；same canonical no-op / duplicate accepted；different canonical 返回 `CONFLICT` / divergence，不静默覆盖历史 snapshot。同一 `account_id + instrument_id + position_version + trading_day + config_hash` 不得写入第二条不同 PnL fact；除 `calculation_key` 外经济事实一致时返回 existing，经济事实不一致时 conflict。
 
 ### account_snapshots
 

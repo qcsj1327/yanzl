@@ -177,7 +177,7 @@ Future implementation must cover：
 
 ## Stage L.5 Accounting Handoff
 
-Stage L.5 freezes how Trade-applied Position / PositionEvent becomes accounting input. It does not change `PositionManager` and does not implement Margin, PnL, Settlement, Broker, Runtime, or live workflows.
+Stage L.5 implements the minimum handoff for how Trade-applied Position / PositionEvent becomes accounting input. It does not change `PositionManager`, does not connect Broker / Runtime / live workflows, and does not make Margin or PnL a Position quantity source。
 
 Source-of-truth flow：
 
@@ -236,15 +236,15 @@ Reject：
 
 Position -> Margin contract：
 
-- `MarginSnapshot` must bind to `account_id`、`instrument_id`、`position_version`、`trading_day` and deterministic `calculation_key` / config hash。
+- `MarginSnapshot` binds to `account_id`、`instrument_id`、`position_version`、first-class `trading_day`、first-class `config_hash` and deterministic `calculation_key`。
 - same account + instrument + position_version + config + typed price input -> same margin fact。
 - duplicate same canonical -> no-op。
 - same identity + different canonical -> conflict。
-- no direct Position qty / avg mutation by Margin。
+- no direct Position qty / avg mutation by Margin；cached `positions.margin_used` is snapshot-backed derived cache only。
 
 Position / Trade -> PnL contract：
 
-- `PnLSnapshot` must bind to `account_id`、`instrument_id`、`position_version`、`trading_day` and deterministic `calculation_key` / config hash。
+- `PnLSnapshot` binds to `account_id`、`instrument_id`、`position_version`、first-class `trading_day`、first-class `config_hash` and deterministic `calculation_key`。
 - realized PnL source is typed Trade / PositionEvent close data only。
 - unrealized PnL source is typed Position plus typed market / settlement price。
 - no raw report / broker state / OMS state / execution report input。
@@ -252,14 +252,14 @@ Position / Trade -> PnL contract：
 Repository / schema decision：
 
 - Existing Margin / PnL / Settlement repositories already exist。
-- Existing schema is partially sufficient for position accounting lineage through `account_id`、`instrument_id`、`position_version` and `calculation_key`。
-- Existing `margin_snapshots` and `pnl_snapshots` do not persist first-class `trading_day`; config lineage is not uniformly represented as `config_hash`。
-- Future implementation requires `0015_stage_l5_position_to_accounting.py` unless it explicitly encodes `trading_day` and config hash in deterministic `calculation_key` and passes review。
+- Migration `0015_stage_l5_position_to_accounting.py` extends only `margin_snapshots` and `pnl_snapshots` with NOT NULL `trading_day` and NOT NULL `config_hash`。
+- L.5 accounting identity is `account_id + instrument_id + position_version + trading_day + config_hash`。
+- Existing `calculation_key` uniqueness remains for canonical duplicate / conflict detection。
 - Do not create a second accounting ledger。
 
 Stage L.5 replay：
 
-- same position_version + same config + same typed price input -> duplicate / no-op。
+- same position_version + same trading_day + same config_hash + same typed price input -> duplicate / no-op。
 - same identity + different canonical -> conflict。
 - ordered PositionEvents / Positions replay deterministic。
 - replay must not call Broker / Runtime。

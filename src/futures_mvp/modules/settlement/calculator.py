@@ -240,6 +240,7 @@ def _matching_pnl_snapshot(
             if snapshot.account_id == context.account_id
             and snapshot.instrument_id == position.instrument_id
             and snapshot.position_version == position.version
+            and snapshot.trading_day == context.trading_day
         ),
         None,
     )
@@ -256,6 +257,7 @@ def _matching_margin_snapshot(
             if snapshot.account_id == context.account_id
             and snapshot.instrument_id == position.instrument_id
             and snapshot.position_version == position.version
+            and snapshot.trading_day == context.trading_day
         ),
         None,
     )
@@ -270,6 +272,7 @@ def _has_pnl_snapshot_identity_mismatch(
         and (
             snapshot.account_id != context.account_id
             or snapshot.position_version != position.version
+            or snapshot.trading_day != context.trading_day
         )
         for snapshot in context.pnl_snapshots
     )
@@ -284,6 +287,7 @@ def _has_margin_snapshot_identity_mismatch(
         and (
             snapshot.account_id != context.account_id
             or snapshot.position_version != position.version
+            or snapshot.trading_day != context.trading_day
         )
         for snapshot in context.margin_snapshots
     )

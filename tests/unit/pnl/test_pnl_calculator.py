@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -6,6 +6,9 @@ from futures_mvp.domain.enums import Direction, Offset, PnLPriceBasis, PnLResult
 from futures_mvp.domain.models import CloseTradeContext, PnLSnapshot, Position, Trade
 from futures_mvp.modules.pnl.calculator import calculate_realized_pnl, calculate_unrealized_pnl
 from futures_mvp.modules.pnl.engine import PnLEngine
+
+TRADING_DAY = date(2026, 1, 1)
+CONFIG_HASH = "pnl-config-v1"
 
 
 def _trade(
@@ -168,6 +171,8 @@ def test_engine_rejected_result_does_not_persist_or_update() -> None:
         contract_multiplier=Decimal("10"),
         calculation_key="acct-1:rb2610:3:pnl",
         calculated_at=datetime(2026, 1, 1, 9, tzinfo=UTC),
+        trading_day=TRADING_DAY,
+        config_hash=CONFIG_HASH,
     )
 
     assert result.status == PnLResultStatus.REJECTED_MISSING_PRICE
@@ -189,6 +194,8 @@ def test_engine_calculated_result_persists_snapshot_and_updates_pnl_only() -> No
         contract_multiplier=Decimal("10"),
         calculation_key="acct-1:rb2610:3:pnl",
         calculated_at=datetime(2026, 1, 1, 9, tzinfo=UTC),
+        trading_day=TRADING_DAY,
+        config_hash=CONFIG_HASH,
     )
 
     assert result.status == PnLResultStatus.CALCULATED
@@ -212,6 +219,8 @@ def test_engine_duplicate_same_canonical_is_noop_without_position_update() -> No
         contract_multiplier=Decimal("10"),
         calculation_key="acct-1:rb2610:3:pnl",
         calculated_at=datetime(2026, 1, 1, 9, tzinfo=UTC),
+        trading_day=TRADING_DAY,
+        config_hash=CONFIG_HASH,
     )
     assert first.snapshot is not None
     uow.positions.pnl_updates.clear()
@@ -224,6 +233,8 @@ def test_engine_duplicate_same_canonical_is_noop_without_position_update() -> No
         contract_multiplier=Decimal("10"),
         calculation_key="acct-1:rb2610:3:pnl",
         calculated_at=datetime(2026, 1, 1, 9, tzinfo=UTC),
+        trading_day=TRADING_DAY,
+        config_hash=CONFIG_HASH,
     )
 
     assert duplicate.status == PnLResultStatus.CALCULATED
@@ -243,6 +254,8 @@ def test_engine_duplicate_different_canonical_conflicts_without_position_update(
         contract_multiplier=Decimal("10"),
         calculation_key="acct-1:rb2610:3:pnl",
         calculated_at=datetime(2026, 1, 1, 9, tzinfo=UTC),
+        trading_day=TRADING_DAY,
+        config_hash=CONFIG_HASH,
     )
     assert first.snapshot is not None
     uow.positions.pnl_updates.clear()
@@ -254,6 +267,8 @@ def test_engine_duplicate_different_canonical_conflicts_without_position_update(
         contract_multiplier=Decimal("10"),
         calculation_key="acct-1:rb2610:3:pnl",
         calculated_at=datetime(2026, 1, 1, 9, tzinfo=UTC),
+        trading_day=TRADING_DAY,
+        config_hash=CONFIG_HASH,
     )
 
     assert duplicate.status == PnLResultStatus.CONFLICT
@@ -275,6 +290,8 @@ def test_engine_rejects_fee_unknown_for_persistent_projection() -> None:
         contract_multiplier=Decimal("10"),
         calculation_key="acct-1:rb2610:3:pnl",
         calculated_at=datetime(2026, 1, 1, 9, tzinfo=UTC),
+        trading_day=TRADING_DAY,
+        config_hash=CONFIG_HASH,
     )
 
     assert result.status == PnLResultStatus.REJECTED_MISSING_FEE
@@ -285,6 +302,83 @@ def test_engine_rejects_fee_unknown_for_persistent_projection() -> None:
     assert result.snapshot is None
     assert uow.pnl_snapshots.snapshots == []
     assert uow.positions.pnl_updates == []
+
+
+def test_engine_missing_trading_day_or_config_hash_rejects_before_persistence() -> None:
+    missing_day_uow = FakeUnitOfWork()
+    missing_config_uow = FakeUnitOfWork()
+
+    missing_day = PnLEngine(lambda: missing_day_uow).calculate_pnl(
+        _position(),
+        price_basis=PnLPriceBasis.MANUAL,
+        mark_price=Decimal("110"),
+        contract_multiplier=Decimal("10"),
+        calculation_key="acct-1:rb2610:3:pnl",
+        calculated_at=datetime(2026, 1, 1, 9, tzinfo=UTC),
+        config_hash=CONFIG_HASH,
+    )
+    missing_config = PnLEngine(lambda: missing_config_uow).calculate_pnl(
+        _position(),
+        price_basis=PnLPriceBasis.MANUAL,
+        mark_price=Decimal("110"),
+        contract_multiplier=Decimal("10"),
+        calculation_key="acct-1:rb2610:3:pnl",
+        calculated_at=datetime(2026, 1, 1, 9, tzinfo=UTC),
+        trading_day=TRADING_DAY,
+        config_hash="",
+    )
+
+    assert missing_day.status == PnLResultStatus.ERROR
+    assert missing_day.reason == "trading_day is required"
+    assert missing_day_uow.pnl_snapshots.snapshots == []
+    assert missing_config.status == PnLResultStatus.ERROR
+    assert missing_config.reason == "config_hash is required"
+    assert missing_config_uow.pnl_snapshots.snapshots == []
+
+
+def test_engine_missing_position_rejects_before_uow() -> None:
+    uow = FakeUnitOfWork()
+    engine = PnLEngine(lambda: uow)
+
+    result = engine.calculate_pnl(
+        None,
+        price_basis=PnLPriceBasis.MANUAL,
+        mark_price=Decimal("110"),
+        contract_multiplier=Decimal("10"),
+        calculation_key="acct-1:rb2610:3:pnl",
+        calculated_at=datetime(2026, 1, 1, 9, tzinfo=UTC),
+        trading_day=TRADING_DAY,
+        config_hash=CONFIG_HASH,
+    )
+
+    assert result.status == PnLResultStatus.ERROR
+    assert result.reason == "missing_position"
+    assert uow.entered is False
+    assert uow.pnl_snapshots.snapshots == []
+    assert uow.positions.pnl_updates == []
+    assert uow.committed is False
+
+
+def test_engine_stale_position_version_rejects_before_persistence() -> None:
+    uow = FakeUnitOfWork(live_position=_position().model_copy(update={"version": 4}))
+    engine = PnLEngine(lambda: uow)
+
+    result = engine.calculate_pnl(
+        _position(),
+        price_basis=PnLPriceBasis.MANUAL,
+        mark_price=Decimal("110"),
+        contract_multiplier=Decimal("10"),
+        calculation_key="acct-1:rb2610:3:pnl",
+        calculated_at=datetime(2026, 1, 1, 9, tzinfo=UTC),
+        trading_day=TRADING_DAY,
+        config_hash=CONFIG_HASH,
+    )
+
+    assert result.status == PnLResultStatus.ERROR
+    assert result.reason == "stale_position_version"
+    assert uow.pnl_snapshots.snapshots == []
+    assert uow.positions.pnl_updates == []
+    assert uow.committed is False
 
 
 def test_pnl_module_boundaries() -> None:
@@ -364,10 +458,41 @@ class FakePnLSnapshotRepository:
             None,
         )
 
+    def get_by_accounting_identity(
+        self,
+        account_id: str,
+        instrument_id: str,
+        position_version: int,
+        trading_day: date,
+        config_hash: str,
+    ) -> PnLSnapshot | None:
+        return next(
+            (
+                snapshot
+                for snapshot in self.snapshots
+                if snapshot.account_id == account_id
+                and snapshot.instrument_id == instrument_id
+                and snapshot.position_version == position_version
+                and snapshot.trading_day == trading_day
+                and snapshot.config_hash == config_hash
+            ),
+            None,
+        )
+
 
 class FakePositionRepository:
-    def __init__(self) -> None:
+    def __init__(self, live_position: Position | None = None) -> None:
+        self.live_position = live_position
         self.pnl_updates: list[tuple[str, str, Decimal, Decimal, int | None]] = []
+
+    def get_by_account_instrument(self, account_id: str, instrument_id: str) -> Position | None:
+        if (
+            self.live_position is not None
+            and self.live_position.account_id == account_id
+            and self.live_position.instrument_id == instrument_id
+        ):
+            return self.live_position
+        return None
 
     def update_pnl(
         self,
@@ -392,12 +517,14 @@ class FakePositionRepository:
 
 
 class FakeUnitOfWork:
-    def __init__(self) -> None:
+    def __init__(self, live_position: Position | None = None) -> None:
         self.pnl_snapshots = FakePnLSnapshotRepository()
-        self.positions = FakePositionRepository()
+        self.positions = FakePositionRepository(live_position or _position())
         self.committed = False
+        self.entered = False
 
     def __enter__(self) -> "FakeUnitOfWork":
+        self.entered = True
         return self
 
     def __exit__(
