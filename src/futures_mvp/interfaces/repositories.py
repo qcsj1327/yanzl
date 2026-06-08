@@ -8,6 +8,7 @@ from futures_mvp.domain.errors import FuturesMvpError
 from futures_mvp.domain.models import (
     AccountSnapshot,
     Bar,
+    ExecutionCommand,
     FeatureSnapshot,
     MarginSnapshot,
     OrderEvent,
@@ -92,6 +93,10 @@ class TradingRiskResultConflictError(RepositoryError):
 
 class OrderIntentConflictError(RepositoryError):
     """Raised when an order intent identity is reused with different facts."""
+
+
+class ExecutionCommandConflictError(RepositoryError):
+    """Raised when an execution command identity is reused with different facts."""
 
 
 @runtime_checkable
@@ -418,6 +423,22 @@ class OrderIntentRepository(Protocol):
 
 
 @runtime_checkable
+class ExecutionCommandRepository(Protocol):
+    def append_execution_command(self, command: ExecutionCommand) -> ExecutionCommand: ...
+
+    def get_by_command_id(self, command_id: str) -> ExecutionCommand | None: ...
+
+    def list_by_order_id(self, order_id: str) -> list[ExecutionCommand]: ...
+
+    def list_by_target(
+        self,
+        execution_target: str,
+        start_ts: datetime | None = None,
+        end_ts: datetime | None = None,
+    ) -> list[ExecutionCommand]: ...
+
+
+@runtime_checkable
 class UnitOfWork(Protocol):
     orders: OrderRepository
     order_events: OrderEventRepository
@@ -435,6 +456,7 @@ class UnitOfWork(Protocol):
     signal_events: SignalEventRepository
     trading_risk_results: TradingRiskResultRepository
     order_intents: OrderIntentRepository
+    execution_commands: ExecutionCommandRepository
 
     def commit(self) -> None: ...
 
@@ -516,6 +538,24 @@ class TradingWorkflowUnitOfWork(Protocol):
     def rollback(self) -> None: ...
 
     def __enter__(self) -> "TradingWorkflowUnitOfWork": ...
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> bool | None: ...
+
+
+@runtime_checkable
+class ExecutionGatewayUnitOfWork(Protocol):
+    execution_commands: ExecutionCommandRepository
+
+    def commit(self) -> None: ...
+
+    def rollback(self) -> None: ...
+
+    def __enter__(self) -> "ExecutionGatewayUnitOfWork": ...
 
     def __exit__(
         self,

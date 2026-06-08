@@ -8,6 +8,8 @@
 - `Stage A`
 - `Stage B Contract`
 - `Stage B`
+- `Stage K Contract`
+- `Stage K`
 - `Phase 4.2+`
 - `Later Phase`
 
@@ -15,6 +17,8 @@
 `Stage A` 表示 ApplicationExecutionOrchestrator 已实现并用单元测试覆盖。
 `Stage B Contract` 表示 Fill / Trade Domain Migration 契约已冻结，不表示代码、schema 或 repository 已实现。
 `Stage B` 表示 Fill / Trade Domain Migration 已实现并用 domain、execution mapper 和 DB integration 测试覆盖。
+`Stage K Contract` 表示 Execution Gateway Contract Freeze 已完成。
+`Stage K` 表示 Execution Gateway Core 已实现并用 command、repository、adapter boundary 和 replay 测试覆盖。
 
 ## Contract Done
 
@@ -175,6 +179,39 @@
 | schema round trip | `trades` 字段、fee、`source_exchange_report_id`、`trading_day`、`raw_payload` 可持久化往返。 | Stage B |
 | unique constraint | 保留 `UNIQUE(account_id, exchange, exchange_trade_id)`。 | Stage B |
 | no Position mutation | Stage B 不更新 Position / Margin / PnL / Settlement。 | Stage B |
+
+## Stage K Execution Gateway Contract
+
+| 场景 | 预期 | 状态 |
+|---|---|---|
+| source-of-truth | Execution Gateway 只消费 OMS Order / `OrderState`、OMS `order_id`、`client_order_id`、OMS Order 复制的 instrument/order fields、typed execution config 和 session/calendar context。 | Stage K Contract |
+| forbidden inputs | 不消费 `FeatureSnapshot`、`SignalDecision`、direct `OrderIntent`、`RiskEngine`、`raw_payload`、Broker state、未 normalized `ExchangeReport` 或 Accounting tables。 | Stage K Contract |
+| output boundary | 只输出 `ExecutionCommand` / `ExecutionCommandResult`；`ExecutionReport` 后续 normalized。 | Stage K Contract |
+| no direct mutation | 不直接 mutate OMS，不 mutate Accounting，不调用 Strategy / Risk，不把 Broker state 当事实。 | Stage K Contract |
+| `ExecutionCommand` fields | 字段覆盖 `command_id`、OMS/order identity、instrument identity、order economic fields、`command_type`、`execution_target`、`command_payload_hash`、`created_at`。 | Stage K Contract |
+| `command_type` values | `SUBMIT_ORDER`；`CANCEL_ORDER` future / deferred。 | Stage K Contract |
+| `execution_target` values | 冻结 `MOCK` / `PAPER` / `SIM` / `LIVE`，Stage K only supports `MOCK`；`PAPER` / `SIM` / `LIVE` typed rejected / deferred。 | Stage K |
+| deterministic command id | `command_id` deterministic from `order_id + command_type + execution_target`，不用 UUID / timestamp / DB id。 | Stage K Contract |
+| canonical payload | canonical 包含 OMS/order/instrument/economic fields、`command_type`、`execution_target`；排除 `raw_payload`、timestamps、broker response、DB id。 | Stage K Contract |
+| duplicate same canonical | same `command_id` + same canonical 返回 duplicate / no-op。 | Stage K |
+| duplicate different canonical | same `command_id` + different canonical 返回 conflict / error。 | Stage K |
+| single submit per target | 同一 OMS order 不得为同一 target 生成多个 submit commands。 | Stage K |
+| unsupported target | unsupported `execution_target` typed reject。 | Stage K |
+| OMS order not executable | 不可执行 OMS order typed reject，不 dispatch adapter。 | Stage K |
+| repository contract | `ExecutionCommandRepository` methods 覆盖 append/get/list by order/list by target。 | Stage K |
+| repository uniqueness | `execution_commands` table 有 `UNIQUE(command_id)` 和 `order_id` / `client_order_id` / `execution_target` / `created_at` indexes。 | Stage K |
+| adapter protocol | `ExecutionAdapter.submit(command) -> ExecutionCommandResult`，返回 typed result，不返回 raw broker response 作为事实。 | Stage K |
+| mock adapter | Stage K 已实现 deterministic `MockExecutionAdapter`，不得需要网络。 | Stage K |
+| no real broker imports | 不 import Broker / CTP / SimNow / real adapter。 | Stage K |
+| `ExecutionCommandResult` fields | 覆盖 `command_id`、`order_id`、`status`、`reason`、`adapter_order_ref`、`submitted_at`、diagnostic-only `raw_payload`。 | Stage K Contract |
+| result status values | 覆盖 `ACCEPTED_BY_ADAPTER` / `REJECTED_BY_ADAPTER` / `DUPLICATE` / `CONFLICT` / `ERROR`。 | Stage K Contract |
+| adapter acceptance semantics | adapter accepted 不表示 exchange accepted；broker/exchange reports 后续 normalized to OMS `OrderEvent`。 | Stage K Contract |
+| OMS relation | Execution Gateway 不直接改 OMS；future result/report 必须经 normalized `OrderEvent` -> `OMS.apply_order_event`。 | Stage K Contract |
+| replay deterministic | same OMS order + same target -> same `ExecutionCommand`。 | Stage K |
+| replay dry-run | replay 默认 dry-run，不调用 adapter / broker，不 mutate OMS / Accounting。 | Stage K |
+| explicit replay submit flag | replay 只有 `dry_run=False` 且 `allow_submit=True` 才调用 adapter。 | Stage K |
+| no Accounting mutation | Stage K 不更新 Trade / Position / Margin / PnL / Settlement。 | Stage K |
+| no OMS mutation | Stage K 不调用 `OMS.apply_order_event`，不生成 `OrderEvent`。 | Stage K |
 
 ## Later Phase
 

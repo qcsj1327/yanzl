@@ -621,6 +621,38 @@ class OrderIntent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class ExecutionCommand(Base):
+    __tablename__ = "execution_commands"
+    __table_args__ = (
+        UniqueConstraint("command_id", name="uq_execution_commands_command_id"),
+        Index("ix_execution_commands_order_id", "order_id"),
+        Index("ix_execution_commands_client_order_id", "client_order_id"),
+        Index("ix_execution_commands_execution_target", "execution_target"),
+        Index("ix_execution_commands_created_at", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    command_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    order_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    client_order_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    account_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(64), nullable=False)
+    instrument_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    trade_instrument_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    exchange: Mapped[str] = mapped_column(String(32), nullable=False)
+    side: Mapped[str] = mapped_column(String(16), nullable=False)
+    offset: Mapped[str] = mapped_column(String(32), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    price: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    order_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    tif: Mapped[str] = mapped_column(String(16), nullable=False)
+    command_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    execution_target: Mapped[str] = mapped_column(String(32), nullable=False)
+    command_payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    raw_payload: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class RiskEvent(Base):
     __tablename__ = "risk_events"
 

@@ -1,10 +1,10 @@
 # 执行文档
 
-Phase 4.0 Exchange / Execution Contract Gate 已冻结执行契约。Phase 4.1 已实现 DTO、MappingContext、MappingResult、MappingError 和 pure ExchangeReport mapper；Execution Command/Report Runtime Layer 已实现本地 in-memory report surface、EMS command boundary、ConfigurableMockFuturesExchange skeleton 和 mapper wrapper。Stage A 已实现 ApplicationExecutionOrchestrator，负责 OMS pre-event、EMS command、report collection、handler mapping、MappingResult routing 和 `MAPPED_ORDER_EVENT` -> OMS apply。不连接真实交易接口。
+Phase 4.0 Exchange / Execution Contract Gate 已冻结执行契约。Phase 4.1 已实现 DTO、MappingContext、MappingResult、MappingError 和 pure ExchangeReport mapper；Execution Command/Report Runtime Layer 已实现本地 in-memory report surface、EMS command boundary、ConfigurableMockFuturesExchange skeleton 和 mapper wrapper。Stage A 已实现 ApplicationExecutionOrchestrator，负责 OMS pre-event、EMS command、report collection、handler mapping、MappingResult routing 和 `MAPPED_ORDER_EVENT` -> OMS apply。Stage K 已实现 Execution Gateway Core：OMS Order / `OrderState` -> deterministic `ExecutionCommand` -> typed `ExecutionCommandResult`。Stage K only supports `MOCK` target，不连接真实交易接口。
 
 ## 文档入口
 
-- `EXECUTION_CONTRACT.md`：EMS、MockFuturesExchange command port、exchange report、OrderEvent 映射和执行回报语义。
+- `EXECUTION_CONTRACT.md`：EMS、MockFuturesExchange command port、exchange report、OrderEvent 映射、Execution Gateway command 和执行回报语义。
 - `EXECUTION_TEST_MATRIX.md`：Execution 契约测试矩阵和后续阶段范围。
 
 Execution 只维护上述两份主文档。后续新增执行设计优先合并进这两份文档，不为 submit、cancel、fill、reject 等单独新增文档。
@@ -15,6 +15,11 @@ Execution 只维护上述两份主文档。后续新增执行设计优先合并�
 - Phase 4.1 已实现 DTO、typed result 和 pure mapper。
 - Execution runtime layer 已实现 `ExchangeCommandPort`、本地 `ExecutionReportSink`、EMS command boundary、ConfigurableMockFuturesExchange 和 `ExecutionReportHandler`。
 - ApplicationExecutionOrchestrator 已实现 submit / cancel 应用编排；它只通过 `OMSService.apply_order_event(...)` 推进订单状态。
+- Stage K 已实现 Execution Gateway Core：`ExecutionGatewayService`、`ExecutionCommandRepository`、`execution_commands` migration、`ExecutionAdapter` Protocol 和 deterministic `MockExecutionAdapter`。
+- Stage K only supports `MOCK` target；`PAPER` / `SIM` / `LIVE` typed rejected / deferred。
+- Execution Gateway 只能消费 OMS Order / `OrderState`、OMS order identity、OMS Order 复制的下单字段、typed execution config 和 trading session / calendar context。
+- Execution Gateway 输出 `ExecutionCommand` / `ExecutionCommandResult`，不直接修改 OMS / Accounting，不调用 Strategy / Risk，不提交真实 Broker。
+- `ACCEPTED_BY_ADAPTER` 只表示 adapter accepted，不表示 exchange accepted，不表示 fill，不生成 Trade。
 - 当前 `MockFuturesExchange` Protocol 只承载 submit / cancel command port，方法返回 `None`；report surface 通过独立 `ExecutionReportSink` 承载。
 - `ExecutionReportSink` 是当前 local / in-memory report surface，不是 Kafka / Redis / Celery，也不是生产事件总线；后续 runtime/infra event bus 必须另开 adapter。
 - Phase 4 可实现的 MockFuturesExchange 不包含 settlement 方法；每日结算属于后续 Settlement 阶段。

@@ -233,6 +233,35 @@ class OMSBridgeResultStatus(StrEnum):
     ERROR = "ERROR"
 
 
+class ExecutionTarget(StrEnum):
+    MOCK = "MOCK"
+    PAPER = "PAPER"
+    SIM = "SIM"
+    LIVE = "LIVE"
+
+
+class ExecutionCommandType(StrEnum):
+    SUBMIT_ORDER = "SUBMIT_ORDER"
+    CANCEL_ORDER = "CANCEL_ORDER"
+
+
+class ExecutionCommandResultStatus(StrEnum):
+    ACCEPTED_BY_ADAPTER = "ACCEPTED_BY_ADAPTER"
+    REJECTED_BY_ADAPTER = "REJECTED_BY_ADAPTER"
+    DUPLICATE = "DUPLICATE"
+    CONFLICT = "CONFLICT"
+    ERROR = "ERROR"
+
+
+class ExecutionGatewayResultStatus(StrEnum):
+    COMMAND_CREATED = "COMMAND_CREATED"
+    DUPLICATE = "DUPLICATE"
+    REJECTED_UNSUPPORTED_TARGET = "REJECTED_UNSUPPORTED_TARGET"
+    REJECTED_INVALID_ORDER = "REJECTED_INVALID_ORDER"
+    CONFLICT = "CONFLICT"
+    ERROR = "ERROR"
+
+
 class BarTimeframe(StrEnum):
     M1 = "M1"
     M5 = "M5"

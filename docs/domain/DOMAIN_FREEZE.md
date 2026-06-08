@@ -14,6 +14,7 @@
 - `alembic/versions/0001_initial_schema.py`
 - `alembic/versions/0002_oms_repository_support.py`
 - `alembic/versions/0011_stage_j_trading_workflow_core.py`
+- `alembic/versions/0012_stage_k_execution_gateway_core.py`
 
 `DOMAIN_FREEZE.md` 不得遗漏当前 Domain 契约中已经存在的字段。新增字段、删除字段、字段重命名或字段语义变化，必须通过 domain migration，并同步更新本文档。
 
@@ -2378,6 +2379,299 @@ Stage J.2 不实现：
 - Portfolio optimization。
 - Runtime scheduling。
 
+## Stage K Execution Gateway Core Contract
+
+Stage K 已实现 Execution Gateway Core：OMS Order / `OrderState` -> deterministic `ExecutionCommand` -> typed `ExecutionCommandResult`。Stage K 不修改 OMS / OMS Bridge / Trading Workflow / Strategy / Risk / Broker / Runtime，不生成 `ExecutionReport` / `OrderEvent`，不生成 Fill / Trade，不修改 Accounting。
+
+Stage K Core only supports `MOCK` target。`PAPER` / `SIM` / `LIVE` typed rejected / deferred。真实 broker、CTP、SimNow、fill matching、trade generation 和 accounting update 全部 deferred。
+
+### Execution Gateway source-of-truth
+
+Execution Gateway 只能消费：
+
+- OMS Order / `OrderState`。
+- OMS `order_id`。
+- `client_order_id`。
+- 从 OMS Order 复制的 instrument identity。
+- 从 OMS Order 复制的 `side` / `offset` / `quantity` / `price` / `order_type` / `tif`。
+- typed execution config。
+- trading session / calendar context。
+
+Execution Gateway 禁止消费：
+
+- `FeatureSnapshot`。
+- `SignalDecision`。
+- `OrderIntent` directly，除非只通过 OMS Order metadata lineage 追溯。
+- `RiskEngine`。
+- `raw_payload`。
+- Broker state as source-of-truth。
+- `ExchangeReport` as source-of-truth before normalized。
+- Accounting tables。
+
+### Execution Gateway output
+
+Stage K freeze 新增 / 冻结：
+
+- `ExecutionCommand`
+- `ExecutionCommandResult`
+- `ExecutionReport` normalized later
+
+Execution Gateway 输出：
+
+- `ExecutionCommand`
+- `ExecutionCommandResult`
+
+Execution Gateway 禁止：
+
+- mutate OMS state directly，除非后续通过 `OMSService.apply_order_event(...)` path。
+- mutate Accounting。
+- call Strategy / Risk。
+- read Broker state as fact。
+- submit to real Broker in Stage K contract。
+
+### ExecutionCommand contract
+
+`ExecutionCommand` 字段冻结：
+
+| 字段 | 类型 | 语义 |
+|---|---|---|
+| `command_id` | `str` | deterministic command identity。 |
+| `order_id` | `str` | OMS order identity。 |
+| `client_order_id` | `str` | OMS client order id。 |
+| `account_id` | `str` | 账户 ID。 |
+| `instrument_id` | `str` | OMS Order 复制的合约 identity。 |
+| `trade_instrument_id` | `str` | OMS Order 复制的交易合约 identity。 |
+| `exchange` | `str` | 交易所。 |
+| `side` | `str` | 买卖方向。 |
+| `offset` | `str` | 开平方向。 |
+| `quantity` | `Decimal` | 委托数量。 |
+| `price` | `Decimal` | 委托价格。 |
+| `order_type` | `str` | 订单类型。 |
+| `tif` | `str` | time-in-force。 |
+| `command_type` | `ExecutionCommandType` | submit / cancel command type。 |
+| `execution_target` | `ExecutionTarget` | execution adapter target。 |
+| `command_payload_hash` | `str` | deterministic canonical payload hash。 |
+| `created_at` | `datetime` | 本地创建时间；不参与 canonical equality。 |
+
+`ExecutionCommandType` 冻结为：
+
+- `SUBMIT_ORDER`
+- `CANCEL_ORDER`：future / deferred，除非另开实现范围。
+
+`ExecutionTarget` 冻结为：
+
+- `MOCK`
+- `PAPER`
+- `SIM`
+- `LIVE`
+
+Stage K implementation only allows `MOCK`。`PAPER` / `SIM` / `LIVE` typed rejected / deferred。
+
+### Deterministic command_id
+
+`command_id` rule：
+
+- deterministic from `order_id + command_type + execution_target`。
+- no UUID。
+- no timestamp。
+- no DB id。
+- same order + same target -> same `command_id`。
+
+`command_id` 不得包含 `command_payload_hash` 自身，不得包含 `created_at` / `received_at`，不得包含 adapter / broker response。
+
+### ExecutionCommand canonical payload
+
+`ExecutionCommand` canonical includes：
+
+- `order_id`
+- `client_order_id`
+- `account_id`
+- instrument identity
+- `side`
+- `offset`
+- `quantity`
+- `price`
+- `order_type`
+- `tif`
+- `command_type`
+- `execution_target`
+
+`ExecutionCommand` canonical excludes：
+
+- `raw_payload`
+- `created_at`
+- `received_at`
+- broker response
+- DB id
+
+### Execution idempotency
+
+Same `command_id` + same canonical：
+
+- duplicate / no-op。
+
+Same `command_id` + different canonical：
+
+- conflict / error。
+
+Same OMS order must not generate multiple submit commands for same target。
+
+### Execution Gateway service boundary
+
+Future `ExecutionGatewayService`：
+
+- receives OMS Order / `OrderState`。
+- validates order is eligible for execution。
+- builds `ExecutionCommand`。
+- persists command if repository chosen。
+- dispatches only to allowed execution adapter。
+
+Eligibility 必须基于 OMS Order / `OrderState` 和 typed execution config。不得用 Strategy / Risk / Broker / Accounting 事实补资格判断。
+
+### Repository / migration contract
+
+Stage K 已实现：
+
+- `ExecutionCommandRepository`
+- `execution_commands` table
+
+原因：
+
+- `ExecutionCommand` 是 broker 前的事实 / audit boundary。
+- 同一 OMS order + target 的 submit idempotency 必须可持久化检查。
+- Replay 需要读取 command ledger 判断 duplicate / conflict。
+
+Repository methods：
+
+- `append_execution_command(command)`
+- `get_by_command_id(command_id)`
+- `list_by_order_id(order_id)`
+- `list_by_target(execution_target, start_ts, end_ts)`
+
+Unique：
+
+- `command_id`
+
+Indexes：
+
+- `order_id`
+- `client_order_id`
+- `execution_target`
+- `created_at`
+
+Stage K 已通过 `0012_stage_k_execution_gateway_core` migration 创建 `execution_commands` table。不得在 Stage K 添加 trades、fills、broker tables、execution reports、exchange tables 或 order events。
+
+### Execution adapter boundary
+
+Protocol：
+
+- `ExecutionAdapter.submit(command) -> ExecutionCommandResult`
+
+Adapter must return typed result, not raw broker response。
+
+Stage K Core：
+
+- implements deterministic `MockExecutionAdapter`。
+- must not implement CTP / SimNow / real broker。
+- must not require network。
+
+### ExecutionCommandResult contract
+
+`ExecutionCommandResult` 字段冻结：
+
+| 字段 | 类型 | 语义 |
+|---|---|---|
+| `command_id` | `str` | 对应 `ExecutionCommand.command_id`。 |
+| `order_id` | `str` | 对应 OMS order。 |
+| `status` | `ExecutionCommandResultStatus` | adapter command result status。 |
+| `reason` | `str \| None` | typed reason / diagnostic summary。 |
+| `adapter_order_ref` | `str \| None` | adapter 返回的本地/模拟引用；不是 exchange acceptance fact。 |
+| `submitted_at` | `datetime \| None` | adapter submit time；不参与 command canonical。 |
+| `raw_payload` | `dict[str, Any]` | diagnostic only，不承载 source-of-truth。 |
+
+`ExecutionCommandResultStatus` 冻结为：
+
+- `ACCEPTED_BY_ADAPTER`
+- `REJECTED_BY_ADAPTER`
+- `DUPLICATE`
+- `CONFLICT`
+- `ERROR`
+
+Rules：
+
+- Adapter accepted does not mean exchange accepted。
+- Broker / exchange reports are later normalized to OMS `OrderEvent`。
+- `raw_payload` diagnostic only。
+
+### OMS relation
+
+Execution Gateway must not mutate OMS directly in contract freeze。
+
+Future flow：
+
+```text
+ExecutionCommandResult / ExecutionReport
+-> normalized OrderEvent
+-> OMS.apply_order_event
+```
+
+Stage K does not implement normalized broker reports unless separately scoped。
+
+### Execution replay
+
+Execution replay：
+
+- same OMS order + same target -> same `ExecutionCommand`。
+- same canonical -> duplicate / no-op。
+- different canonical -> conflict / error。
+- dry-run default。
+- replay must not submit to broker / adapter unless explicit live flag。
+- replay does not mutate OMS / Accounting。
+
+### Stage K boundary split
+
+- OMS：owns order state。
+- Execution Gateway：owns command creation / adapter dispatch。
+- Broker：not in Stage K。
+- Accounting：not involved。
+- Risk：already upstream。
+- Strategy：not involved。
+
+### Stage K implementation tests
+
+Stage K tests cover：
+
+- deterministic `command_id`。
+- canonical excludes raw / timestamps。
+- duplicate same canonical。
+- duplicate different canonical conflict。
+- unsupported `execution_target` reject。
+- OMS order not executable reject。
+- mock adapter submit result。
+- replay dry-run no adapter call。
+- explicit replay submit flag。
+- repository round trip。
+- schema contract。
+- no Broker / CTP / SimNow imports。
+- no Accounting mutation。
+- no OMS direct state mutation。
+
+### Stage K explicit non-goals
+
+Stage K does not implement：
+
+- real Broker adapter。
+- CTP。
+- SimNow。
+- live trading。
+- exchange connectivity。
+- fill matching。
+- trade generation。
+- accounting update。
+- broker reconciliation。
+- runtime scheduler。
+- Kafka / FastAPI / Celery。
+
 ### feature_snapshots
 
 Stage H 已新增 `feature_snapshots` 表作为 FeatureSnapshot derived facts ledger。
@@ -2483,6 +2777,14 @@ Stage G 不实现：
 - `OMSBridgeService.build_order_request(context: OMSBridgeContext) -> OrderRequest`：Stage J.2 bridge mapping；只消费 `OrderIntent` lineage 和 typed account/order config。
 - `OMSBridgeService.create_order(context: OMSBridgeContext) -> OMSBridgeResult`：Stage J.2 bridge boundary；通过 `OMSOrderCreator` Protocol 调用 `OMSService.create_order`，不得调用 Execution / Broker，不得 rerun Risk。
 - `replay_oms_bridge(contexts: Iterable[OMSBridgeContext], *, dry_run: bool = True, allow_live_oms: bool = False) -> list[OMSBridgeReplayPreview] | list[OMSBridgeResult]`：Stage J.2 replay boundary；默认 dry-run，不调用 OMS / Execution / Broker / Accounting。
+- `ExecutionGatewayService.build_command(order: OrderState, *, execution_target: ExecutionTarget, command_type: ExecutionCommandType, symbol: str, trade_instrument_id: str, tif: str) -> ExecutionCommand`：Stage K gateway command builder；只消费 OMS Order / typed execution config identity。
+- `ExecutionGatewayService.submit(order: OrderState, *, symbol: str, trade_instrument_id: str, tif: str, execution_target: ExecutionTarget = MOCK, command_type: ExecutionCommandType = SUBMIT_ORDER, dry_run: bool = False) -> ExecutionGatewayResult`：Stage K submit boundary；先 append `ExecutionCommand`，再 dispatch 到 allowed adapter only when new command and not dry-run；不得直接 mutate OMS / Accounting。
+- `ExecutionCommandRepository.append_execution_command(command: ExecutionCommand) -> ExecutionCommand`：按 `command_id` 幂等 append；same canonical duplicate no-op，different canonical conflict。
+- `ExecutionCommandRepository.get_by_command_id(command_id: str) -> ExecutionCommand | None`：按 command identity 查询。
+- `ExecutionCommandRepository.list_by_order_id(order_id: str) -> list[ExecutionCommand]`：按 OMS order 查询 commands。
+- `ExecutionCommandRepository.list_by_target(execution_target: ExecutionTarget, start_ts: datetime, end_ts: datetime) -> list[ExecutionCommand]`：按 target 和时间范围查询 commands。
+- `ExecutionAdapter.submit(command: ExecutionCommand) -> ExecutionCommandResult`：Stage K execution adapter Protocol；返回 typed result，不返回 raw broker response 作为事实。
+- `replay_execution_gateway(service: ExecutionGatewayService, orders: Iterable[OrderState], *, execution_target: ExecutionTarget = MOCK, symbol: str, trade_instrument_id: str, tif: str, dry_run: bool = True, allow_submit: bool = False) -> list[ExecutionGatewayResult]`：Stage K replay boundary；默认 dry-run，不提交 adapter / broker，不修改 OMS / Accounting。
 - `OMS.create_order(request: OrderRequest, *, client_order_id: str) -> OrderState`：创建或幂等返回 OMS 订单。
 - `OMS.apply_risk_result(order_id: str, risk_result: RiskResult, *, external_event_id: str, occurred_at: datetime | None = None) -> OrderEventApplicationResult`：消费外部 `RiskResult` 推进风控状态，不计算风控。
 - `OMS.apply_order_event(event: OrderEvent) -> OrderEventApplicationResult`：订单状态变化通过 OMS 事件处理。
@@ -3201,6 +3503,43 @@ Stage J 已新增 `order_intents` 表作为 `OrderIntent` persisted facts ledger
 - `trading_day` 索引
 
 Canonical payload 字段为 `signal_id`、`risk_result_id`、strategy identity、instrument identity、`side`、`offset`、`quantity`、`price`、`order_type`、`tif`、`expected_margin`、`expected_notional` 和 `intent_reason`。`intent_id` 是该 canonical payload 的 deterministic identity；`raw_payload`、`created_at`、`received_at` 和 DB id 不参与 canonical equality。
+
+### execution_commands
+
+Stage K 已新增 `execution_commands` table 作为 `ExecutionCommand` persisted facts / audit ledger。`execution_commands` 不写 `orders` / `order_events`，不替代 OMS `OrderState`，不表达 exchange acceptance / fill / trade。
+
+字段：
+
+- `id`
+- `command_id`
+- `order_id`
+- `client_order_id`
+- `account_id`
+- `instrument_id`
+- `trade_instrument_id`
+- `exchange`
+- `side`
+- `offset`
+- `quantity`
+- `price`
+- `order_type`
+- `tif`
+- `command_type`
+- `execution_target`
+- `command_payload_hash`
+- `created_at`
+
+约束和索引：
+
+- `UNIQUE(command_id)`
+- `order_id` 索引
+- `client_order_id` 索引
+- `execution_target` 索引
+- `created_at` 索引
+
+Canonical payload 字段为 `order_id`、`client_order_id`、`account_id`、instrument identity、`side`、`offset`、`quantity`、`price`、`order_type`、`tif`、`command_type` 和 `execution_target`。`command_id` 必须 deterministic from `order_id + command_type + execution_target`；`command_payload_hash` 是 canonical payload hash。`raw_payload`、`created_at`、`received_at`、broker response 和 DB id 不参与 canonical equality。
+
+Idempotency：same `command_id` + same canonical -> duplicate / no-op；same `command_id` + different canonical -> conflict / error。同一 OMS order 不得为同一 target 生成多个 submit commands。
 
 ### risk_events
 

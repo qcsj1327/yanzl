@@ -1,8 +1,8 @@
 # Execution 终态契约
 
-本文档是 Phase 4 Execution 的冻结契约。它描述终态 Execution 架构，同时明确 Current facts、Phase 4.1 implementation target、Phase 4.2+ target 和 Later Phase 的落地区分。除非另开契约迁移，后续实现必须以本文档和 `EXECUTION_TEST_MATRIX.md` 为准。
+本文档是 Execution 的冻结契约。它描述终态 Execution 架构，同时明确 Current facts、Phase 4.1 implementation target、Stage K Execution Gateway contract、Phase 4.2+ target 和 Later Phase 的落地区分。除非另开契约迁移，后续实现必须以本文档和 `EXECUTION_TEST_MATRIX.md` 为准。
 
-Phase 4.0 只冻结契约。Phase 4.1 按本文档落地 DTO、enum、MappingContext、MappingResult、MappingError 和 pure mapper。EMS skeleton、MockFuturesExchange skeleton、report surface、Application Execution Orchestrator 和 UNKNOWN_REPORT 应用仍不属于当前实现事实。
+Phase 4.0 只冻结契约。Phase 4.1 按本文档落地 DTO、enum、MappingContext、MappingResult、MappingError 和 pure mapper。Execution Runtime 和 Stage A ApplicationExecutionOrchestrator 已作为后续阶段实现。Stage K 在 `stage-j2-oms-bridge-core / ee4aace` 后实现 OMS Order -> Execution Gateway command boundary；它只支持 `MOCK` target，不实现真实 Broker、CTP、SimNow、Paper、Sim 或 Live。
 
 ## Final-state Architecture
 
@@ -111,12 +111,275 @@ OMS 是订单状态唯一事实入口：
 - 当前不修改 OMS / Risk / DB / schema / Domain 字段事实。
 - 当前 Phase 4 Execution Contract / pure mapper 阶段不接真实交易接口、CTP、SimNow 或 broker adapter；这些属于后续 Adapter 阶段。
 - 当前不进入 Position / Margin / PnL / Settlement。
+- 当前 `stage-j2-oms-bridge-core / ee4aace` 已实现 `OrderIntent -> OMSService.create_order` bridge；OMS 已能创建订单记录。
+- 当前 Execution / Broker / Paper / Sim / Live 未进入。
+- 当前 Stage K 已实现 Execution Gateway Core：`ExecutionCommand`、deterministic `command_id`、canonical payload/hash、`ExecutionCommandRepository`、SQLAlchemy repository、UoW integration、`execution_commands` migration、`ExecutionAdapter` Protocol、deterministic `MockExecutionAdapter`、`ExecutionGatewayService`、dry-run replay 和 tests。
+- 当前 Stage K only supports `MOCK` target；`PAPER` / `SIM` / `LIVE` typed rejected / deferred。
+- 当前 Stage K 不修改 OMS / OMS Bridge / Trading Workflow / Strategy / Risk / Broker / Runtime，不生成 `ExecutionReport` / `OrderEvent`，不生成 Fill / Trade，不修改 Accounting。
 
 `MockFuturesExchange.run_daily_settlement(trading_day)` 的移除是 intentional interface migration：
 
 - 当前 Phase 4 MockFuturesExchange Protocol 不包含 settlement 方法。
 - Future Settlement Protocol 必须在后续 Settlement 阶段另行定义。
 - 即使 `interfaces/engines.py` 中存在 `SettlementEngine`，它也是全局后续阶段接口，不属于 Phase 4 execution surface。
+
+## Stage K Execution Gateway Core
+
+Stage K implements the Execution Gateway boundary between OMS orders and execution adapters. Execution Gateway owns command creation / adapter dispatch; OMS owns order state; Broker is not in Stage K; Accounting is not involved; Risk is already upstream; Strategy is not involved.
+
+### Source Of Truth
+
+Execution Gateway may consume only：
+
+- OMS Order / `OrderState`。
+- OMS `order_id`。
+- `client_order_id`。
+- instrument identity copied from OMS Order。
+- `side` / `offset` / `quantity` / `price` / `order_type` / `tif` copied from OMS Order。
+- typed execution config。
+- trading session / calendar context。
+
+Execution Gateway must not consume：
+
+- `FeatureSnapshot`。
+- `SignalDecision`。
+- `OrderIntent` directly，except lineage via OMS Order metadata。
+- `RiskEngine`。
+- `raw_payload`。
+- Broker state as source-of-truth。
+- `ExchangeReport` as source-of-truth before normalized。
+- Accounting tables。
+
+### Outputs And Effects
+
+Stage K implements / freezes：
+
+- `ExecutionCommand`
+- `ExecutionCommandResult`
+- `ExecutionReport` normalized later
+
+Execution Gateway outputs only：
+
+- `ExecutionCommand`
+- `ExecutionCommandResult`
+
+Execution Gateway must not：
+
+- mutate OMS state directly; future report handling must go through `OMSService.apply_order_event(...)` path。
+- mutate Accounting。
+- call Strategy / Risk。
+- read Broker state as fact。
+- submit to real Broker in Stage K contract。
+
+### ExecutionCommand
+
+Fields：
+
+- `command_id`
+- `order_id`
+- `client_order_id`
+- `account_id`
+- `instrument_id`
+- `trade_instrument_id`
+- `exchange`
+- `side`
+- `offset`
+- `quantity`
+- `price`
+- `order_type`
+- `tif`
+- `command_type`
+- `execution_target`
+- `command_payload_hash`
+- `created_at`
+
+`command_type`：
+
+- `SUBMIT_ORDER`
+- `CANCEL_ORDER` future / deferred if not implemented now
+
+`execution_target`：
+
+- `MOCK`
+- `PAPER`
+- `SIM`
+- `LIVE`
+
+Stage K Core only supports `MOCK` target. `PAPER` / `SIM` / `LIVE` are typed rejected / deferred unless separately scoped.
+
+### Deterministic Identity And Canonical Payload
+
+`command_id` must be deterministic from `order_id + command_type + execution_target`：
+
+- no UUID。
+- no timestamp。
+- no DB id。
+- same order + same target -> same `command_id`。
+
+`ExecutionCommand` canonical includes：
+
+- `order_id`
+- `client_order_id`
+- `account_id`
+- instrument identity
+- `side`
+- `offset`
+- `quantity`
+- `price`
+- `order_type`
+- `tif`
+- `command_type`
+- `execution_target`
+
+Canonical excludes：
+
+- `raw_payload`
+- `created_at`
+- `received_at`
+- broker response
+- DB id
+
+### Idempotency And Replay
+
+same `command_id` + same canonical：
+
+- duplicate / no-op。
+
+same `command_id` + different canonical：
+
+- conflict / error。
+
+Same OMS order must not generate multiple submit commands for same target。
+
+Execution replay：
+
+- same OMS order + same target -> same `ExecutionCommand`。
+- same canonical -> duplicate / no-op。
+- different canonical -> conflict / error。
+- dry-run default。
+- must not submit to broker / adapter unless explicit live flag。
+- does not mutate OMS / Accounting。
+
+### Service And Repository Boundary
+
+Implemented `ExecutionGatewayService`：
+
+- receives OMS Order / `OrderState`。
+- validates order is eligible for execution。
+- builds `ExecutionCommand`。
+- persists command if repository chosen。
+- dispatches only to allowed execution adapter。
+
+Stage K implements persistence：
+
+- `ExecutionCommandRepository`。
+- `execution_commands` table。
+- reason：commands are facts / audit boundary before broker。
+
+Repository methods：
+
+- `append_execution_command(command)`
+- `get_by_command_id(command_id)`
+- `list_by_order_id(order_id)`
+- `list_by_target(execution_target, start_ts, end_ts)`
+
+Unique：
+
+- `command_id`
+
+Indexes：
+
+- `order_id`
+- `client_order_id`
+- `execution_target`
+- `created_at`
+
+Stage K creates schema through `0012_stage_k_execution_gateway_core`. It does not add trades, fills, broker tables, execution reports, exchange tables or order events.
+
+### Adapter Boundary
+
+Protocol：
+
+- `ExecutionAdapter.submit(command) -> ExecutionCommandResult`
+
+Adapter must return typed result, not raw broker response。
+
+Stage K Core implements deterministic `MockExecutionAdapter`. It must not implement CTP / SimNow / real broker and must not require network.
+
+### ExecutionCommandResult
+
+Fields：
+
+- `command_id`
+- `order_id`
+- `status`
+- `reason`
+- `adapter_order_ref | None`
+- `submitted_at | None`
+- `raw_payload` diagnostic only
+
+`status`：
+
+- `ACCEPTED_BY_ADAPTER`
+- `REJECTED_BY_ADAPTER`
+- `DUPLICATE`
+- `CONFLICT`
+- `ERROR`
+
+Rules：
+
+- Adapter accepted does not mean exchange accepted。
+- Broker / exchange reports are later normalized to OMS `OrderEvent`。
+- `raw_payload` diagnostic only。
+
+### OMS Relation
+
+Execution Gateway must not mutate OMS directly in Stage K。
+
+Future flow：
+
+```text
+ExecutionCommandResult / ExecutionReport
+-> normalized OrderEvent
+-> OMS.apply_order_event
+```
+
+Stage K does not implement normalized broker reports unless separately scoped。
+
+### Stage K Tests
+
+Stage K tests cover：
+
+- deterministic `command_id`。
+- canonical excludes raw / timestamps。
+- duplicate same canonical。
+- duplicate different canonical conflict。
+- unsupported `execution_target` reject。
+- OMS order not executable reject。
+- mock adapter submit result。
+- replay dry-run no adapter call。
+- explicit replay submit flag。
+- repository round trip。
+- schema contract。
+- no Broker / CTP / SimNow imports。
+- no Accounting mutation。
+- no OMS direct state mutation。
+
+### Stage K Explicit Non-goals
+
+Stage K does not implement：
+
+- real Broker adapter。
+- CTP。
+- SimNow。
+- live trading。
+- exchange connectivity。
+- fill matching。
+- trade generation。
+- accounting update。
+- broker reconciliation。
+- runtime scheduler。
+- Kafka / FastAPI / Celery。
 
 ## Phase 4.1 Implementation Target
 

@@ -21,6 +21,7 @@ from sqlalchemy import (
 
 from futures_mvp.db.models import (
     Base,
+    ExecutionCommand,
     FeatureSnapshot,
     MarketBar,
     MarketTick,
@@ -77,6 +78,7 @@ def test_required_tables_are_declared() -> None:
         "signal_events",
         "risk_results",
         "order_intents",
+        "execution_commands",
         "risk_events",
     }.issubset(Base.metadata.tables)
 
@@ -123,6 +125,47 @@ def test_trades_have_stage_b_typed_fact_fields() -> None:
         "raw_payload",
     ]:
         assert column_name in Trade.__table__.columns
+
+
+def test_execution_commands_match_stage_k_idempotency_contract() -> None:
+    assert _unique_constraint_columns(
+        ExecutionCommand,
+        "uq_execution_commands_command_id",
+    ) == ("command_id",)
+    for column_name in [
+        "command_id",
+        "order_id",
+        "client_order_id",
+        "account_id",
+        "symbol",
+        "instrument_id",
+        "trade_instrument_id",
+        "exchange",
+        "side",
+        "offset",
+        "quantity",
+        "price",
+        "order_type",
+        "tif",
+        "command_type",
+        "execution_target",
+        "command_payload_hash",
+        "raw_payload",
+        "created_at",
+    ]:
+        assert column_name in ExecutionCommand.__table__.columns
+
+    assert isinstance(ExecutionCommand.__table__.columns["quantity"].type, Numeric)
+    assert isinstance(ExecutionCommand.__table__.columns["price"].type, Numeric)
+    assert "ix_execution_commands_order_id" in {
+        index.name for index in ExecutionCommand.__table__.indexes
+    }
+    assert "ix_execution_commands_client_order_id" in {
+        index.name for index in ExecutionCommand.__table__.indexes
+    }
+    assert "ix_execution_commands_execution_target" in {
+        index.name for index in ExecutionCommand.__table__.indexes
+    }
 
 
 def test_positions_are_single_row_per_account_and_instrument() -> None:

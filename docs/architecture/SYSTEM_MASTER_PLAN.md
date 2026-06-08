@@ -53,6 +53,19 @@
   - 当前基线：`stage-i-strategy-signal-lifecycle-core / 780acbd`。
   - 已实现 `StrategyConfig` canonicalization / hash、`StrategyContext`、deterministic `signal_id`、`SignalCandidate`、`SignalDecision`、`TriggerResult`、signal lifecycle、canonical payload、Signal repository protocols、SQLAlchemy repositories、UoW integration、`signal_candidates` / `signal_events` migration、`StrategyService` / `SignalLifecycleService`、deterministic strategy replay 和 tests。
   - Stage I 未实现 Order creation、Risk check、OMS integration、Execution integration、Broker adapter、runtime scheduling、paper / sim / live、portfolio optimization、ML model serving、cross-instrument strategy 或 Accounting mutation。
+- Trading Workflow Core 已完成。
+  - 当前基线：`stage-j-trading-workflow-core / 2558e55`。
+  - 已实现 `SignalDecision -> TradingRiskResult -> OrderIntent` persistence、deterministic canonical/idempotency/replay、repository/UoW 和 tests。
+  - Stage J 未调用 OMS / Execution / Broker，不写 `orders` / `order_events`。
+- OMS Bridge Core 已完成。
+  - 当前基线：`stage-j2-oms-bridge-core / ee4aace`。
+  - 已实现 `OrderIntent -> OMSService.create_order` bridge；OMS 已能创建订单记录。
+  - Stage J.2 未进入 Execution / Broker / Paper / Sim / Live，不新增 schema。
+- Execution Gateway Core 已完成。
+  - 当前基线：`stage-k-execution-gateway-core`。
+  - 已实现 `ExecutionCommand`、deterministic `command_id`、canonical payload/hash、`ExecutionCommandRepository`、SQLAlchemy repository、UoW integration、`execution_commands` migration、`ExecutionAdapter` Protocol、deterministic `MockExecutionAdapter`、`ExecutionGatewayService`、dry-run replay 和 tests。
+  - Stage K only supports `MOCK` target；`PAPER` / `SIM` / `LIVE` typed rejected / deferred。
+  - Stage K 不实现 Broker / Exchange / Fill / Trade / Accounting mutation / OMS mutation / ExecutionReport / OrderEvent。
 
 当前尚未实现为业务能力的部分：
 
@@ -140,21 +153,21 @@
 8. `OrderIntentBuilder` 生成 deterministic `OrderIntent` 和 `intent_id`。
 9. Stage J 持久化 `OrderIntent`；`OrderIntent` 不是 Order，不承载 OMS state。
 10. Stage J.2 OMS bridge adapter 可在显式调用时把 `OrderIntent` 转入 OMS 创建订单。
-11. Application Execution Orchestrator 对可提交订单发起 submit。
-11. Orchestrator 先通过 OMS 事件让订单进入 `SUBMITTING`，再调用 EMS command port。
-12. EMS 调用 Mock / paper / SimNow / live broker adapter 的 command port。
-13. Execution / Broker adapter 产生 typed `ExchangeReport`。
-14. ExecutionReportHandler 调用 pure mapper，得到 typed `MappingResult`。
-15. 对 `MAPPED_ORDER_EVENT`，Orchestrator 将 `OrderEvent` 交回 `OMSService.apply_order_event(...)`。
-16. OMS 根据状态机、幂等、乱序、终态保护和 UNKNOWN 规则应用或拒绝事件。
-17. 当回报包含真实成交事实时，必须先经 Fill / Trade domain migration 形成 typed `Fill` / `Trade`。
-18. Trade ledger 去重后作为 Position Manager 的唯一输入事实。
-19. Position Manager 更新 live `positions`，处理开仓、平今、平昨和 today/yesterday bucket，并写入 `position_events` 作为 applied-trade audit。
-20. Margin Engine 基于 Position、instrument rules、account context 计算保证金。
-21. PnL Engine 基于 Trade、Position、last price、settlement price 计算 realized / unrealized PnL。
-22. Settlement Engine 在交易日边界执行结算、settlement price finalization、Margin fact finalization、PnL fact finalization 和 today -> yesterday roll。
-23. Recovery / Replay Framework 可按 source-of-truth 重放 order events、execution reports、trades、positions、market events、settlement snapshots。
-24. Monitoring / Audit 记录 metrics、structured logs、control actions、replay divergence、deployment gate 和 incident response。
+11. Stage K Execution Gateway 消费 OMS Order / OrderState，生成 deterministic `ExecutionCommand`。
+12. Stage K Core 可持久化 `ExecutionCommand`，并只 dispatch 到允许的 execution adapter；contract freeze 不提交真实 broker。
+13. Future Execution Adapter 返回 typed `ExecutionCommandResult`；adapter accepted 不表示 exchange accepted。
+14. Future broker / exchange report 必须先 normalized 为 typed `ExecutionReport` / `ExchangeReport`，再进入 mapper。
+15. ExecutionReportHandler 调用 pure mapper，得到 typed `MappingResult`。
+16. 对 `MAPPED_ORDER_EVENT`，Orchestrator 将 `OrderEvent` 交回 `OMSService.apply_order_event(...)`。
+17. OMS 根据状态机、幂等、乱序、终态保护和 UNKNOWN 规则应用或拒绝事件。
+18. 当回报包含真实成交事实时，必须先经 Fill / Trade domain migration 形成 typed `Fill` / `Trade`。
+19. Trade ledger 去重后作为 Position Manager 的唯一输入事实。
+20. Position Manager 更新 live `positions`，处理开仓、平今、平昨和 today/yesterday bucket，并写入 `position_events` 作为 applied-trade audit。
+21. Margin Engine 基于 Position、instrument rules、account context 计算保证金。
+22. PnL Engine 基于 Trade、Position、last price、settlement price 计算 realized / unrealized PnL。
+23. Settlement Engine 在交易日边界执行结算、settlement price finalization、Margin fact finalization、PnL fact finalization 和 today -> yesterday roll。
+24. Recovery / Replay Framework 可按 source-of-truth 重放 order events、execution commands、execution reports、trades、positions、market events、settlement snapshots。
+25. Monitoring / Audit 记录 metrics、structured logs、control actions、replay divergence、deployment gate 和 incident response。
 
 关键边界：
 
@@ -489,18 +502,49 @@ Stage F contract freeze：
 - Acceptance criteria：Bridge 可 deterministic 将 valid `OrderIntent` 映射为 OMS `OrderRequest` 并通过 `OMSOrderCreator` 调用 `create_order`；duplicate same OMS payload no-op；conflict/error typed 返回；dry-run replay 默认不调用 OMS；Execution / Broker / Runtime / Accounting / Risk recalculation 全部出界。
 - Suggested tag：`stage-j2-oms-bridge-core`。
 
-### Stage K: Recovery / Replay Framework
+### Stage K: Execution Gateway Core
 
-- Goal：统一订单、执行、成交、持仓、行情、结算的重放与对账。
-- Inputs：order_events、exchange reports、trades、positions、market events、settlement snapshots、UNKNOWN 语义。
+- Goal：实现 OMS Order -> ExecutionCommand 的 Execution Gateway Core；本阶段只支持 `MOCK` target，不实现 Broker / Paper / Sim / Live。
+- Baseline：`stage-j2-oms-bridge-core / ee4aace`；OMS Bridge 已能将 `OrderIntent` 转为 OMS `create_order` 并创建订单记录。
+- Implemented changes：`ExecutionCommand`、`ExecutionCommandResult`、`ExecutionGatewayResult`、`ExecutionTarget` / `ExecutionCommandType` / result status enums、deterministic `command_id`、canonical payload/hash、`ExecutionCommandRepository` Protocol、SQLAlchemy repository、UoW integration、`0012_stage_k_execution_gateway_core` migration、`ExecutionAdapter` Protocol、deterministic `MockExecutionAdapter`、`ExecutionGatewayService`、dry-run `replay_execution_gateway`、unit/integration/boundary tests 和 docs update。
+- Source-of-truth inputs：OMS Order / `OrderState`、OMS `order_id`、`client_order_id`、从 OMS Order 复制的 instrument identity、`side` / `offset` / `quantity` / `price` / `order_type` / `tif`、typed execution config、trading session / calendar context。
+- Forbidden inputs：不得消费 `FeatureSnapshot`、不得消费 `SignalDecision`、不得直接消费 `OrderIntent`（只允许通过 OMS Order metadata lineage 追溯）、不得调用 `RiskEngine`、不得消费 `raw_payload`、不得把 Broker state 当 source-of-truth、不得把未 normalized 的 `ExchangeReport` 当 source-of-truth、不得读取 Accounting tables。
+- Outputs：`ExecutionCommand`、`ExecutionCommandResult`；`ExecutionReport` 只作为后续 normalized broker/exchange report 契约。
+- Forbidden effects：不得直接 mutate OMS state，除非后续通过 `OMS.apply_order_event` path；不得 mutate Accounting；不得调用 Strategy / Risk；不得读取 Broker state 当事实；Stage K contract 不提交真实 Broker。
+- `ExecutionCommand` fields：`command_id`、`order_id`、`client_order_id`、`account_id`、`instrument_id`、`trade_instrument_id`、`exchange`、`side`、`offset`、`quantity`、`price`、`order_type`、`tif`、`command_type`、`execution_target`、`command_payload_hash`、`created_at`。
+- `command_type`：`SUBMIT_ORDER`；`CANCEL_ORDER` 为 future / deferred，除非单独实现。
+- `execution_target`：冻结为 `MOCK`、`PAPER`、`SIM`、`LIVE`。Stage K Core only supports `MOCK`; `PAPER` / `SIM` / `LIVE` typed rejected / deferred。
+- Deterministic identity：`command_id` 必须 deterministic from `order_id + command_type + execution_target`；不得使用 UUID、timestamp 或 DB id。同一 order + same target 必须得到同一 `command_id`。
+- Canonical payload：必须包含 `order_id`、`client_order_id`、`account_id`、instrument identity、`side`、`offset`、`quantity`、`price`、`order_type`、`tif`、`command_type`、`execution_target`；必须排除 `raw_payload`、`created_at`、`received_at`、broker response 和 DB id。
+- Idempotency：same `command_id` + same canonical -> duplicate / no-op；same `command_id` + different canonical -> conflict / error。同一 OMS order 不得为同一 target 生成多个 submit commands。
+- Service boundary：已实现 `ExecutionGatewayService` 接收 OMS Order / `OrderState` 和 typed execution config，验证订单可执行，构造 `ExecutionCommand`，持久化 command，并只在新命令且非 dry-run 时 dispatch 到允许 execution adapter。
+- Repository：已实现 `ExecutionCommandRepository` 和 `execution_commands` table，因为 command 是 broker 前的事实 / audit boundary。
+- Repository methods：`append_execution_command(command)`、`get_by_command_id(command_id)`、`list_by_order_id(order_id)`、`list_by_target(execution_target, start_ts, end_ts)`。
+- Repository uniqueness / indexes：`UNIQUE(command_id)`；索引 `order_id`、`client_order_id`、`execution_target`、`created_at`。
+- Adapter boundary：已冻结 `ExecutionAdapter.submit(command) -> ExecutionCommandResult`。Adapter 必须返回 typed result，不得返回 raw broker response 作为事实。
+- Stage K Core adapter scope：已实现 deterministic `MockExecutionAdapter`；不得实现 CTP / SimNow / real broker，不得要求网络。
+- `ExecutionCommandResult` fields：`command_id`、`order_id`、`status`、`reason`、`adapter_order_ref | None`、`submitted_at | None`、diagnostic-only `raw_payload`。
+- `ExecutionCommandResult.status`：`ACCEPTED_BY_ADAPTER`、`REJECTED_BY_ADAPTER`、`DUPLICATE`、`CONFLICT`、`ERROR`。
+- OMS relation：Execution Gateway 不直接修改 OMS；后续 `ExecutionReport` 必须先 normalized 为 `OrderEvent`，再由 `OMSService.apply_order_event(...)` 应用。
+- Replay：same OMS order + same target -> same `ExecutionCommand`；same canonical -> duplicate / no-op；different canonical -> conflict / error；默认 dry-run；除非显式 live flag，不得 submit adapter / broker；replay 不 mutate OMS / Accounting。
+- Boundaries：OMS owns order state；Execution Gateway owns command creation / adapter dispatch；Broker 不在 Stage K；Accounting 不参与；Risk 已 upstream 完成；Strategy 不参与。
+- Tests：覆盖 deterministic `command_id`、canonical excludes raw/timestamps、duplicate same canonical、duplicate different canonical conflict、unsupported `execution_target` reject、unsupported `CANCEL_ORDER` reject、OMS order not executable reject、mock adapter submit result、replay dry-run no adapter call、explicit replay submit flag、repository round trip、schema contract、no Broker/CTP/SimNow imports、no Accounting mutation、no OMS direct state mutation。
+- Explicit non-goals：real Broker adapter、CTP、SimNow、live trading、exchange connectivity、fill matching、trade generation、accounting update、broker reconciliation、runtime scheduler、Kafka / FastAPI / Celery。
+- Acceptance criteria：Execution Gateway contract 可从 eligible OMS Order deterministic 生成 `ExecutionCommand`，可通过 repository 幂等持久化，adapter result 仅为 typed diagnostic/dispatch result，且不越过 OMS / Accounting / Broker / Strategy / Risk 边界。
+- Suggested tag：`stage-k-execution-gateway-contract-freeze`。
+
+### Stage L: Recovery / Replay Framework
+
+- Goal：统一订单、执行命令、执行回报、成交、持仓、行情、结算的重放与对账。
+- Inputs：order_events、execution_commands、exchange reports、trades、positions、market events、settlement snapshots、UNKNOWN 语义。
 - Outputs：replay runner、divergence reports、reconciliation events、recovery workflow。
 - Allowed changes：replay services、fixtures、regression tests。
-- Forbidden changes：不静默覆盖事实；不手工 SQL 改 OMS 状态；不通过 raw_payload 补账。
-- Required tests：order replay、trade replay、position replay、market replay、settlement replay、divergence detection、duplicate event idempotency。
-- Acceptance criteria：replay 与 source-of-truth 一致；分歧被 typed report 捕获。
-- Suggested tag：`stage-k-recovery-replay-framework`。
+- Forbidden changes：不静默覆盖事实；不手工 SQL 改 OMS 状态；不通过 raw_payload 补账；replay 默认不得 submit broker / adapter。
+- Required tests：order replay、execution command replay、trade replay、position replay、market replay、settlement replay、divergence detection、duplicate event idempotency。
+- Acceptance criteria：replay 与 source-of-truth 一致；分歧被 typed report 捕获；dry-run replay 不触发外部提交。
+- Suggested tag：`stage-l-recovery-replay-framework`。
 
-### Stage L: Runtime / Infrastructure
+### Stage M: Runtime / Infrastructure
 
 - Goal：通过 port/adapter 引入 runtime/control plane/event bus/task system。
 - Inputs：stable orchestrator、replay framework、accounting source-of-truth。
@@ -509,9 +553,9 @@ Stage F contract freeze：
 - Forbidden changes：不让 FastAPI/Celery/Kafka/Redis/KMS 污染 Domain、OMS、Risk、mapper；Redis/Kafka payload 不做 source-of-truth。
 - Required tests：API command boundary、consumer idempotency、retry/dead-letter、config version, health/readiness, secret redaction。
 - Acceptance criteria：runtime retry 幂等；core 可在无 runtime adapter 下继续测试。
-- Suggested tag：`stage-l-runtime-infrastructure`。
+- Suggested tag：`stage-m-runtime-infrastructure`。
 
-### Stage M: Broker / Adapter Layer
+### Stage N: Broker / Adapter Layer
 
 - Goal：接入 CTP / SimNow / broker adapter。
 - Inputs：runtime ports、replay/reconciliation、orchestrator、Trading Workflow Core、Fill/Trade migration。
@@ -520,9 +564,9 @@ Stage F contract freeze：
 - Forbidden changes：adapter 不调用 OMS/Risk/DB，不改 mapper 语义，不用 raw broker message 补事实。
 - Required tests：connect/login/logout、heartbeat、submit/cancel, pre-send failure, post-send uncertain, reconnect, query order/trade/account/position, SimNow dry-run。
 - Acceptance criteria：SimNow 可对账；live command port 默认不启用；query reconciliation 进入 replay/recovery。
-- Suggested tag：`stage-m-broker-adapter-layer`。
+- Suggested tag：`stage-n-broker-adapter-layer`。
 
-### Stage N: Operations / Safety / Production Readiness
+### Stage O: Operations / Safety / Production Readiness
 
 - Goal：建立生产门禁、安全控制、监控、审计、runbook 和 DR。
 - Inputs：runtime、broker adapter、replay framework、accounting source-of-truth。
@@ -531,18 +575,18 @@ Stage F contract freeze：
 - Forbidden changes：ops 不直接改业务事实；kill switch 不塞进 OMS 状态机；secret 不进入业务事件。
 - Required tests：kill switch gate、audit event、health/readiness、deployment preflight、incident replay、secret redaction。
 - Acceptance criteria：safety gates 可审计；UNKNOWN/recovery/position mismatch 有 runbook 和 typed workflow。
-- Suggested tag：`stage-n-operations-safety-readiness`。
+- Suggested tag：`stage-o-operations-safety-readiness`。
 
-### Stage O: Paper / Sim / Live Rollout
+### Stage P: Paper / Sim / Live Rollout
 
 - Goal：按 local -> paper -> sim -> live 递进验收。
-- Inputs：Stage A-N 验收结果、runtime config、broker config、runbook、preflight checklist。
+- Inputs：Stage A-O 验收结果、runtime config、broker config、runbook、preflight checklist。
 - Outputs：paper trading run、SimNow run、live preflight、controlled live enablement。
 - Allowed changes：rollout config、environment gates、runbook updates、preflight automation。
 - Forbidden changes：不跳级 live；不绕过 paper/sim；不以手工配置暗示环境；不在 live 前启用真实 submit/cancel。
 - Required tests：paper trading tests、simulation tests、live read-only preflight、dry-run command validation、rollback drill。
 - Acceptance criteria：paper/sim 通过后才可 live；live preflight 全绿且 kill switch 默认安全。
-- Suggested tag：`stage-o-paper-sim-live-rollout`。
+- Suggested tag：`stage-p-paper-sim-live-rollout`。
 
 ## 7. Stage Dependency Graph
 
@@ -559,15 +603,16 @@ Stage G -> Stage H
 Stage C + Stage G + Stage H -> Stage I
 ```
 
-Trading Workflow / Recovery / Runtime / Broker / Production 主线：
+Trading Workflow / Execution Gateway / Recovery / Runtime / Broker / Production 主线：
 
 ```text
 Stage I + Stage C + Stage D + Stage F -> Stage J
-Stage A + Stage B + Stage C + Stage F + Stage G + Stage H + Stage I + Stage J -> Stage K
+Stage J.2 -> Stage K
 Stage K -> Stage L
-Stage K + Stage L -> Stage M
+Stage L -> Stage M
 Stage M -> Stage N
 Stage N -> Stage O
+Stage O -> Stage P
 ```
 
 依赖说明：
@@ -575,12 +620,14 @@ Stage N -> Stage O
 - Market Data / Feature Snapshot 是 Strategy / Signal Lifecycle 的前置，并应作为并行主线提前规划；Stage H 只冻结 FeatureSnapshot，不进入 Strategy / Signal。
 - Stage I 实现 Strategy / Signal Lifecycle Core，但不实现 Order creation、Risk check、OMS integration 或 Execution integration。
 - Stage J 实现 Trading Workflow Core，只到 SignalDecision -> TradingRiskResult -> OrderIntent persistence；不改 OMS state machine，不接 Execution，不进入 Broker/Runtime。
+- Stage J.2 实现 OMS Bridge Core，只到 `OrderIntent -> OMS.create_order`；不接 Execution / Broker。
+- Stage K 实现 Execution Gateway command boundary，只消费 OMS Order / `OrderState` 和 typed execution config，只输出 `ExecutionCommand` / `ExecutionCommandResult`，只支持 `MOCK` target，不提交真实 broker。
 - Risk Context / Portfolio Risk Upgrade 依赖 Position、Margin、Accounting、Market Data、FeatureSnapshot、Strategy / Signal，不应提前硬接 broker state 或 raw payload。
-- Recovery / Replay 依赖订单、成交、持仓、结算、行情、Strategy / Signal 和 Trading Workflow 语义。
-- Broker / Adapter 必须在 Recovery / Replay 和 Runtime 边界稳定后进入。
+- Recovery / Replay 依赖订单、执行命令、成交、持仓、结算、行情、Strategy / Signal 和 Trading Workflow 语义。
+- Broker / Adapter 必须在 Execution Gateway、Recovery / Replay 和 Runtime 边界稳定后进入。
 - Operations / Safety / Production Readiness 是 Paper / Sim / Live Rollout 的硬前置。
 - Broker / Adapter 完成后不得直接进入 rollout。
-- Stage O 必须依赖 Stage N 的 readiness、kill switch、monitoring、audit、deployment gate、runbook 和 DR 验收。
+- Stage P 必须依赖 Stage O 的 readiness、kill switch、monitoring、audit、deployment gate、runbook 和 DR 验收。
 - Paper / Sim / Live 不允许跳级。
 
 不可跳级规则：
@@ -592,10 +639,12 @@ Stage N -> Stage O
 - 没有 Stage H，不冻结 Strategy 所需 FeatureSnapshot。
 - 没有 Stage I，不把 Strategy / Signal Lifecycle 写成已完成。
 - 没有 Stage J，不把 SignalDecision 接入 Risk -> OrderIntent -> OMS workflow。
-- 没有 Stage K，不接 broker query reconciliation。
-- 没有 Stage L/M/N，不进入 sim/live。
-- 没有 Stage N，不进入 Stage O。
-- Stage O 只能按 paper -> sim -> live 递进。
+- 没有 Stage J.2，不把 `OrderIntent` 转入 OMS Order。
+- 没有 Stage K，不生成 ExecutionCommand，不接 adapter dispatch。
+- 没有 Stage L，不接 broker query reconciliation。
+- 没有 Stage M/N/O，不进入 sim/live。
+- 没有 Stage O，不进入 Stage P。
+- Stage P 只能按 paper -> sim -> live 递进。
 
 ## 8. Contract Amendment Policy
 
@@ -728,13 +777,14 @@ FastAPI、Celery、Kafka、Redis、async runtime、cloud、KMS 是后续 Runtime
 采用顺序：
 
 1. Stage A 先稳定 application execution boundary。
-2. Stage K 稳定 recovery / replay 后，Stage L 引入 event envelope、task boundary、control plane、config/secrets provider。
-3. Kafka 只传输 typed events，不替代 DB source-of-truth。
-4. Celery 只调度任务，不承载领域判断。
-5. Redis 只做 cache/lock/pubsub/临时状态，不做事实来源。
-6. FastAPI 只做 control plane，不直接写业务事实。
-7. KMS / secrets provider 只服务 secret retrieval，不把 secret 写进业务模型、事件、raw payload、logs 或 metrics。
-8. Cloud deployment 必须在 Operations gates 和 live preflight 之后进入。
+2. Stage K 已先冻结并实现 Execution Gateway command boundary，确保 OMS Order -> ExecutionCommand 的 source-of-truth、idempotency 和 dry-run replay 稳定。
+3. Stage L 稳定 recovery / replay 后，Stage M 引入 event envelope、task boundary、control plane、config/secrets provider。
+4. Kafka 只传输 typed events，不替代 DB source-of-truth。
+5. Celery 只调度任务，不承载领域判断。
+6. Redis 只做 cache/lock/pubsub/临时状态，不做事实来源。
+7. FastAPI 只做 control plane，不直接写业务事实。
+8. KMS / secrets provider 只服务 secret retrieval，不把 secret 写进业务模型、事件、raw payload、logs 或 metrics。
+9. Cloud deployment 必须在 Operations gates 和 live preflight 之后进入。
 
 ## 11. Risk Register
 
@@ -757,17 +807,18 @@ FastAPI、Celery、Kafka、Redis、async runtime、cloud、KMS 是后续 Runtime
 下一步不是进入 Broker / Runtime，而是先做：
 
 ```text
-Stage J.2 OMS bridge acceptance review / Stage K planning
+Stage K Execution Gateway acceptance review / Stage L planning
 ```
 
-Stage J.2 acceptance review 前必须确认：
+Stage K acceptance review 前必须确认：
 
 - Stage J `TradingWorkflowService` 只生成并持久化 `TradingRiskResult` / `OrderIntent`。
 - Stage J replay 不调用 OMS / Execution / Accounting。
 - Stage J 没有写 `orders` / `order_events`。
 - Stage J.2 OMS Bridge Core 已实现 `OrderIntent -> OMS.create_order` bridge，V1 不新增 bridge table / migration。
 
-Stage J acceptance review 通过后：
+Stage K acceptance review 通过后：
 
-- 可进入 Stage J.2 acceptance review，随后规划 Stage K: Recovery / Replay Framework。
+- 可进入 Stage L: Recovery / Replay Framework planning。
+- Stage L replay 必须继续保持 dry-run 默认，不得 submit adapter / broker。
 - 不应直接跳到 broker adapter 或 runtime infrastructure。

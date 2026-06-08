@@ -14,6 +14,10 @@ from futures_mvp.domain.enums import (
     Direction,
     EventApplicationStatus,
     EventSource,
+    ExecutionCommandResultStatus,
+    ExecutionCommandType,
+    ExecutionGatewayResultStatus,
+    ExecutionTarget,
     FeatureQualityStatus,
     FeatureResultStatus,
     MarginPriceBasis,
@@ -1211,6 +1215,88 @@ class OMSBridgeResult(DomainModel):
     def _valid_oms_bridge_result(self) -> "OMSBridgeResult":
         if self.status is OMSBridgeResultStatus.CREATED and self.order_id is None:
             raise ValueError("CREATED OMSBridgeResult requires order_id")
+        return self
+
+
+class ExecutionCommand(DomainModel):
+    command_id: str
+    order_id: str
+    client_order_id: str
+    account_id: str
+    symbol: str
+    instrument_id: str
+    trade_instrument_id: str
+    exchange: str
+    side: Direction
+    offset: Offset
+    quantity: Decimal
+    price: Decimal
+    order_type: OrderType
+    tif: str
+    command_type: ExecutionCommandType
+    execution_target: ExecutionTarget
+    command_payload_hash: str
+    created_at: datetime
+    raw_payload: dict[str, Any] | None = None
+
+    @field_validator(
+        "command_id",
+        "order_id",
+        "client_order_id",
+        "account_id",
+        "symbol",
+        "instrument_id",
+        "trade_instrument_id",
+        "exchange",
+        "tif",
+        "command_payload_hash",
+    )
+    @classmethod
+    def _required_identity(cls, value: str, info: Any) -> str:
+        return require_non_empty_string(value, field_name=info.field_name)
+
+    @field_validator("quantity", "price", mode="before")
+    @classmethod
+    def _decimal_required(cls, value: Any) -> Decimal:
+        return require_decimal(value)
+
+    @model_validator(mode="after")
+    def _valid_execution_command(self) -> "ExecutionCommand":
+        require_positive_decimal(self.quantity, field_name="quantity")
+        require_positive_decimal(self.price, field_name="price")
+        if self.command_type is ExecutionCommandType.CANCEL_ORDER:
+            raise ValueError("CANCEL_ORDER is reserved for a later execution stage")
+        return self
+
+
+class ExecutionCommandResult(DomainModel):
+    command_id: str
+    order_id: str
+    status: ExecutionCommandResultStatus
+    reason: str | None = None
+    adapter_order_ref: str | None = None
+    submitted_at: datetime | None = None
+    raw_payload: dict[str, Any] | None = None
+
+    @field_validator("command_id", "order_id")
+    @classmethod
+    def _required_identity(cls, value: str, info: Any) -> str:
+        return require_non_empty_string(value, field_name=info.field_name)
+
+
+class ExecutionGatewayResult(DomainModel):
+    status: ExecutionGatewayResultStatus
+    command: ExecutionCommand | None = None
+    command_result: ExecutionCommandResult | None = None
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def _valid_gateway_result(self) -> "ExecutionGatewayResult":
+        if self.status in {
+            ExecutionGatewayResultStatus.COMMAND_CREATED,
+            ExecutionGatewayResultStatus.DUPLICATE,
+        } and self.command is None:
+            raise ValueError(f"{self.status.value} requires command")
         return self
 
 

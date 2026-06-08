@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from futures_mvp.db.models import AccountSnapshot as AccountSnapshotOrm
+from futures_mvp.db.models import ExecutionCommand as ExecutionCommandOrm
 from futures_mvp.db.models import FeatureSnapshot as FeatureSnapshotOrm
 from futures_mvp.db.models import MarginSnapshot as MarginSnapshotOrm
 from futures_mvp.db.models import MarketBar as MarketBarOrm
@@ -28,6 +29,8 @@ from futures_mvp.domain.enums import (
     BarTimeframe,
     Direction,
     EventSource,
+    ExecutionCommandType,
+    ExecutionTarget,
     FeatureQualityStatus,
     MarketDataResultStatus,
     Offset,
@@ -44,6 +47,7 @@ from futures_mvp.domain.enums import (
 from futures_mvp.domain.models import (
     AccountSnapshot,
     Bar,
+    ExecutionCommand,
     FeatureSnapshot,
     MarginSnapshot,
     OrderEvent,
@@ -63,6 +67,7 @@ from futures_mvp.domain.models import (
 )
 from futures_mvp.interfaces.repositories import (
     EventAlreadyExistsError,
+    ExecutionCommandConflictError,
     FeatureSnapshotConflictError,
     IdempotencyConflictError,
     MarginSnapshotConflictError,
@@ -79,6 +84,7 @@ from futures_mvp.interfaces.repositories import (
     TradeIdempotencyConflictError,
     TradingRiskResultConflictError,
 )
+from futures_mvp.modules.execution_gateway.canonical import canonical_execution_command_payload
 from futures_mvp.modules.feature.canonical import canonical_feature_snapshot_payload
 from futures_mvp.modules.market.canonical import canonical_bar_payload, canonical_tick_payload
 from futures_mvp.modules.strategy.canonical import (
@@ -238,6 +244,30 @@ def order_intent_to_domain(intent: OrderIntentOrm) -> OrderIntent:
         expected_notional=intent.expected_notional,
         intent_reason=intent.intent_reason,
         raw_payload=intent.raw_payload,
+    )
+
+
+def execution_command_to_domain(command: ExecutionCommandOrm) -> ExecutionCommand:
+    return ExecutionCommand(
+        command_id=command.command_id,
+        order_id=command.order_id,
+        client_order_id=command.client_order_id,
+        account_id=command.account_id,
+        symbol=command.symbol,
+        instrument_id=command.instrument_id,
+        trade_instrument_id=command.trade_instrument_id,
+        exchange=command.exchange,
+        side=Direction(command.side),
+        offset=Offset(command.offset),
+        quantity=command.quantity,
+        price=command.price,
+        order_type=OrderType(command.order_type),
+        tif=command.tif,
+        command_type=ExecutionCommandType(command.command_type),
+        execution_target=ExecutionTarget(command.execution_target),
+        command_payload_hash=command.command_payload_hash,
+        created_at=command.created_at,
+        raw_payload=command.raw_payload,
     )
 
 
@@ -1694,6 +1724,105 @@ class SQLAlchemyOrderIntentRepository:
             raise OrderIntentConflictError(
                 "order intent identity reused with different canonical payload: "
                 f"{intent.intent_id}"
+            )
+        return existing
+
+
+class SQLAlchemyExecutionCommandRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def append_execution_command(self, command: ExecutionCommand) -> ExecutionCommand:
+        existing = self.get_by_command_id(command.command_id)
+        if existing is not None:
+            return self._existing_command_for_append(existing, command)
+
+        try:
+            with self._session.begin_nested():
+                command_orm = ExecutionCommandOrm(
+                    command_id=command.command_id,
+                    order_id=command.order_id,
+                    client_order_id=command.client_order_id,
+                    account_id=command.account_id,
+                    symbol=command.symbol,
+                    instrument_id=command.instrument_id,
+                    trade_instrument_id=command.trade_instrument_id,
+                    exchange=command.exchange,
+                    side=command.side.value,
+                    offset=command.offset.value,
+                    quantity=command.quantity,
+                    price=command.price,
+                    order_type=command.order_type.value,
+                    tif=command.tif,
+                    command_type=command.command_type.value,
+                    execution_target=command.execution_target.value,
+                    command_payload_hash=command.command_payload_hash,
+                    raw_payload=command.raw_payload,
+                    created_at=command.created_at,
+                )
+                self._session.add(command_orm)
+                self._session.flush()
+            return execution_command_to_domain(command_orm)
+        except IntegrityError as exc:
+            existing_after_conflict = self.get_by_command_id(command.command_id)
+            if existing_after_conflict is not None:
+                return self._existing_command_for_append(existing_after_conflict, command)
+            raise RepositoryError(
+                f"execution command append failed: {command.command_id}"
+            ) from exc
+
+    def get_by_command_id(self, command_id: str) -> ExecutionCommand | None:
+        command = self._session.scalar(
+            select(ExecutionCommandOrm).where(ExecutionCommandOrm.command_id == command_id)
+        )
+        return execution_command_to_domain(command) if command else None
+
+    def list_by_order_id(self, order_id: str) -> list[ExecutionCommand]:
+        commands = self._session.scalars(
+            select(ExecutionCommandOrm)
+            .where(ExecutionCommandOrm.order_id == order_id)
+            .order_by(ExecutionCommandOrm.created_at.asc(), ExecutionCommandOrm.id.asc())
+        ).all()
+        return [execution_command_to_domain(command) for command in commands]
+
+    def list_by_target(
+        self,
+        execution_target: ExecutionTarget | str,
+        start_ts: datetime | None = None,
+        end_ts: datetime | None = None,
+    ) -> list[ExecutionCommand]:
+        target_value = (
+            execution_target.value
+            if isinstance(execution_target, ExecutionTarget)
+            else execution_target
+        )
+        statement = select(ExecutionCommandOrm).where(
+            ExecutionCommandOrm.execution_target == target_value
+        )
+        if start_ts is not None:
+            statement = statement.where(ExecutionCommandOrm.created_at >= start_ts)
+        if end_ts is not None:
+            statement = statement.where(ExecutionCommandOrm.created_at <= end_ts)
+        commands = self._session.scalars(
+            statement.order_by(ExecutionCommandOrm.created_at.asc(), ExecutionCommandOrm.id.asc())
+        ).all()
+        return [execution_command_to_domain(command) for command in commands]
+
+    def _existing_command_for_append(
+        self,
+        existing: ExecutionCommand,
+        command: ExecutionCommand,
+    ) -> ExecutionCommand:
+        if canonical_execution_command_payload(existing) != canonical_execution_command_payload(
+            command
+        ):
+            raise ExecutionCommandConflictError(
+                "execution command identity reused with different canonical payload: "
+                f"{command.command_id}"
+            )
+        if existing.command_payload_hash != command.command_payload_hash:
+            raise ExecutionCommandConflictError(
+                "execution command payload hash conflict: " f"{command.command_id}"
             )
         return existing
 
