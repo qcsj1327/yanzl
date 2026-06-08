@@ -13,8 +13,10 @@
 - `src/futures_mvp/db/models.py`
 - `alembic/versions/0001_initial_schema.py`
 - `alembic/versions/0002_oms_repository_support.py`
+- `alembic/versions/0004_stage_c_position_manager.py`
 - `alembic/versions/0011_stage_j_trading_workflow_core.py`
 - `alembic/versions/0012_stage_k_execution_gateway_core.py`
+- `alembic/versions/0014_stage_l3_oms_to_trade_bridge.py`
 
 `DOMAIN_FREEZE.md` 不得遗漏当前 Domain 契约中已经存在的字段。新增字段、删除字段、字段重命名或字段语义变化，必须通过 domain migration，并同步更新本文档。
 
@@ -309,11 +311,15 @@ Stage B 冻结 `FillEvent` 作为 execution report 中的类型化成交事实�
 
 如 broker 无 `exchange_trade_id`，不得生成随机 ID 入账；必须先冻结稳定替代键，否则该成交不得进入 `Trade` ledger。
 
+Stage L.4 冻结 Trade-to-Position application contract：Position update 只能消费 typed `Trade` fact，不得直接消费 `NormalizedExecutionReport`、`OrderEventCandidate`、OMS `OrderState`、Broker state、FeatureSnapshot、SignalDecision、TradingRiskResult、OrderIntent 或 `raw_payload`。Trade 必须具备 stable identity、`account_id`、`exchange`、`instrument_id` / `trade_instrument_id`、direction / side、offset、positive Decimal `price`、positive Decimal `quantity`、typed `trade_time` 和可用或可从 typed 字段推导的 `trading_day`，否则不得应用到 Position。
+
 ### Position
 
 Stage C 已实现 Position Manager 契约。`Trade` ledger 是 Position 更新唯一输入事实；`positions(account_id, instrument_id)` 是 live position projection / current source-of-truth；`PositionEvent` 是 idempotency、replay 和 audit ledger。
 
-Position 禁止消费 `OrderStatus`、`OrderEvent`、`ExchangeReport` 或 `raw_payload`。只靠 `positions` snapshot 不允许作为 repeated trade replay no-op 的幂等依据。
+Position 禁止消费 `OrderStatus`、`OrderEvent`、`ExchangeReport`、`NormalizedExecutionReport`、`OrderEventCandidate`、Broker state 或 `raw_payload`。只靠 `positions` snapshot 不允许作为 repeated trade replay no-op 的幂等依据。
+
+Stage L.4 只冻结当前 L.3 typed Trade 主链进入 existing `PositionManager.apply_trade(...)` 的应用契约。它不新增 Domain model，不改 schema，不实现 Margin / PnL / Settlement / AccountSnapshot / Runtime。
 
 Stage C 当前负责字段：
 
@@ -358,6 +364,20 @@ Stage C update rules：
 - 任何 resulting quantity 不得为负。
 - 平仓不计算 realized PnL，不改变剩余 open avg price。
 
+Stage L.4 gate / effect rules：
+
+- same Trade applied twice must not double-count Position。
+- same Trade identity + same canonical -> duplicate / no-op。
+- same Trade identity + different canonical -> conflict before mutation。
+- raw_payload-only facts、missing identity、non-positive quantity、non-positive price、without stable source identity 必须 typed reject / conflict。
+- BUY open -> increase long。
+- SELL open -> increase short。
+- SELL close -> reduce long。
+- BUY close -> reduce short。
+- close more than available 必须 typed reject 或 conflict，不得静默创建负持仓。
+- frozen quantities must not be silently changed。
+- open trade deterministic 更新 avg price；close trade 不改写剩余 avg price，除非未来单独迁移 PositionManager contract。
+
 ### PositionEvent
 
 Stage C 选择 `PositionEvent`，不选择仅 `position_applied_trades`，因为 replay 和 audit 需要 before/after snapshot。
@@ -384,6 +404,8 @@ Stage C 选择 `PositionEvent`，不选择仅 `position_applied_trades`，因为
 
 PositionEvent 幂等键沿用 Trade identity：`account_id + exchange + exchange_trade_id`。已存在且 canonical payload 一致时，`apply_trade` 必须比对 live `positions` projection 与 `PositionEvent.after_snapshot`；一致才 no-op / duplicate applied，不一致必须返回 typed conflict / replay divergence。已存在但 canonical payload 不一致时，必须返回 typed conflict；未存在时，必须在同一 UoW 内更新 `positions` 并写入 `position_events`。
 PositionEvent canonical payload 必须包含 `before_snapshot` 和 `after_snapshot` 的 normalized typed representation；`raw_payload` 不参与 canonical payload。
+
+Stage L.4 复用现有 `PositionEvent`，不创建第二套 applied-trade ledger。当前 `position_events` 的 `UNIQUE(account_id, exchange, exchange_trade_id)` 对 L.4 applied Trade tracking 足够；Stage L.4 不需要 migration。只有当后续实现发现 L.3 deterministic fallback identity 无法稳定表达为 `exchange_trade_id` 时，才允许另开 schema migration 扩展现有 `position_events`，不得创建平行 position ledger。
 
 PositionEvent 必须支持回答：
 
@@ -3365,6 +3387,69 @@ Stage L.3 does not implement：
 - CTP / SimNow / live broker。
 - fee calculation。
 - trade correction / cancel flows。
+
+## Stage L.4 Trade-to-Position Contract Freeze
+
+Stage L.4 freezes the application contract from current typed `Trade` facts to existing `PositionManager.apply_trade(...)` and `PositionEvent` audit. It follows Stage L.3 and stays before Stage M Runtime / Infrastructure.
+
+Stage L.4 is docs-only. It does not change Domain models, schema, `src`, or tests.
+
+Source-of-truth path：
+
+```text
+typed Trade fact
+-> Trade-to-Position application
+-> PositionManager.apply_trade(...)
+-> Position projection / PositionEvent
+```
+
+Stage L.4 source-of-truth：
+
+- Position update consumes typed `Trade` fact only。
+- It must not consume `raw_payload` as facts, `NormalizedExecutionReport` directly, `OrderEventCandidate` directly, OMS `OrderState` directly, Broker state, FeatureSnapshot, SignalDecision, TradingRiskResult, OrderIntent, Margin / PnL / Settlement, Account tables, or Runtime transport。
+
+Stage L.4 gate：
+
+- stable Trade identity。
+- `account_id`。
+- `instrument_id` / `trade_instrument_id` and `exchange`。
+- side / `direction` and `offset`。
+- positive Decimal `price`。
+- positive Decimal `quantity`。
+- typed `trade_time` and available or derivable `trading_day`。
+- not already applied to Position unless same canonical duplicate / no-op。
+
+Stage L.4 idempotency：
+
+- same Trade identity + same canonical -> duplicate / no-op。
+- same Trade identity + different canonical -> conflict before mutation。
+- same Trade applied twice must not double-count Position。
+
+Stage L.4 effect rules：
+
+- BUY open -> increase long。
+- SELL open -> increase short。
+- SELL close -> reduce long。
+- BUY close -> reduce short。
+- close more than available -> typed reject / conflict; no negative position。
+- open trade updates avg price deterministically; close trade does not rewrite remaining avg price unless a future PositionManager migration changes that contract。
+- frozen quantities must not be silently changed。
+
+Stage L.4 repository / schema decision：
+
+- Reuse existing `PositionRepository` and `PositionEventRepository`。
+- Reuse existing `positions` and `position_events`。
+- `position_events` unique Trade identity is sufficient for applied-trade tracking。
+- No Stage L.4 migration is needed。
+- Do not create a second position ledger。
+
+Stage L.4 accounting boundary：
+
+- no Margin update。
+- no PnL update。
+- no Settlement update。
+- no AccountSnapshot update。
+- no Runtime / Kafka / FastAPI / Celery。
 
 ### feature_snapshots
 

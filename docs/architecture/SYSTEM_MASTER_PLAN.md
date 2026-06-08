@@ -76,11 +76,16 @@
   - Stage L.2 只推进 OMS `OrderStatus`；不生成 Trade，不生成 Fill ledger，不更新 Position / Accounting / Margin / PnL / Settlement，不调用 Broker，不进入 Runtime。
   - Stage L.2 不新增 schema；OMS event ledger 继续使用现有 `order_events`。
 - OMS-to-Trade Bridge Core 已完成。
-  - 当前基线：`stage-l2-oms-event-application-core / 54d6fc8`。
+  - 当前基线：`stage-l3-oms-to-trade-bridge-core / 957cf89`。
   - Stage L.3 已实现 `NormalizedExecutionReport / applied OMS OrderEvent proof -> typed Trade fact -> TradeRepository` 桥接边界。
   - 已新增 migration `0014_stage_l3_oms_to_trade_bridge.py`，只扩展 `trades` 和 `normalized_execution_reports` 的 L.3 typed lineage / identity / fee input 字段；未创建第二套 trade ledger。
   - 已实现 deterministic trade identity、`TradeBridgeResult`、OMS-to-Trade bridge service、replay、TradeRepository L.3 aliases 和 canonical conflict checks。
   - Stage L.3 不更新 Position / Margin / PnL / Settlement，不做 broker reconciliation，不进入 Runtime。
+- Stage L.4 Trade-to-Position Contract Freeze 已完成。
+  - 当前基线：`stage-l3-oms-to-trade-bridge-core / 957cf89`。
+  - Stage L.4 只冻结 `typed Trade fact -> Trade-to-Position application -> PositionManager.apply_trade(...) -> Position projection / PositionEvent` 应用契约。
+  - Stage L.4 不写代码、不改 schema、不改 `src` / `tests`；不实现 Margin / PnL / Settlement / AccountSnapshot / Runtime。
+  - 现有 Stage C `PositionManager`、`PositionRepository`、`PositionEventRepository` 和 `position_events` audit ledger 是后续实现复用边界。
 
 当前尚未实现为业务能力的部分：
 
@@ -177,7 +182,7 @@
 17. OMS 根据状态机、幂等、乱序、终态保护和 UNKNOWN 规则应用或拒绝事件。
 18. 当 OMS 已应用 `PARTIALLY_FILLED` / `FILLED` 状态且 normalized report 提供成交价格、数量和稳定成交身份时，Stage L.3 OMS-to-Trade Bridge 才能创建 typed `Trade` fact。
 19. `TradeRepository` 幂等持久化 Trade ledger；same identity + same canonical no-op，same identity + different canonical conflict。
-20. Position Manager 更新 live `positions`，处理开仓、平今、平昨和 today/yesterday bucket，并写入 `position_events` 作为 applied-trade audit。
+20. Stage L.4 Trade-to-Position application 只消费去重后的 typed `Trade` fact，并通过 `PositionManager.apply_trade(...)` 更新 live `positions`，处理开仓、平今、平昨和 today/yesterday bucket，并写入 `position_events` 作为 applied-trade audit。
 21. Margin Engine 基于 Position、instrument rules、account context 计算保证金。
 22. PnL Engine 基于 Trade、Position、last price、settlement price 计算 realized / unrealized PnL。
 23. Settlement Engine 在交易日边界执行结算、settlement price finalization、Margin fact finalization、PnL fact finalization 和 today -> yesterday roll。
@@ -233,7 +238,7 @@
 - `trades` ledger 是 Position 更新的唯一输入事实。
 - `positions(account_id, instrument_id)` 是 live position projection / current source-of-truth。
 - `position_events` 是幂等和 replay audit ledger，记录 trade 是否已应用、应用前后 position snapshot 和 conflict 判定依据。
-- Position 禁止消费 `OrderStatus`、`OrderEvent`、`ExchangeReport` 或 `raw_payload`。
+- Position 禁止消费 `OrderStatus`、`OrderEvent`、`ExchangeReport`、`NormalizedExecutionReport`、`OrderEventCandidate`、broker state 或 `raw_payload`。
 - Pending、submitted、rejected 或其他未成交订单都不是真实持仓。
 - 开仓、平今、平昨、冻结、解冻、today/yesterday roll 必须类型化；Stage C 只冻结 trade-driven position bucket 更新，不实现冻结/解冻或结算滚动。
 - `account_snapshots` 和 `settlement_snapshots` 不是 live position source-of-truth。
@@ -610,6 +615,83 @@ Stage F contract freeze：
 - Acceptance criteria：eligible filled report + OMS proof 可 deterministic 创建 typed Trade；same canonical duplicate/no-op；different canonical conflict；fallback identity deterministic；raw_payload excluded；fee unknown vs zero preserved；replay deterministic；无 OMS / Position / Accounting / Broker / Runtime side effects。
 - Suggested tag：`stage-l3-oms-to-trade-bridge-core`。
 
+### Stage L.4: Trade-to-Position Contract Freeze
+
+- Goal：冻结当前 L.3 typed Trade 主链到既有 PositionManager 的应用契约。
+- Inputs：typed `Trade` fact、current `Position` / `PositionSnapshot`、typed instrument identity、typed account identity、`trading_day` / calendar context、application context。
+- Outputs：Position application result、updated `positions` live projection、`PositionEvent` applied-trade audit。
+- Allowed changes：只改文档；冻结 source-of-truth、gate、idempotency、position effect、replay、repository/schema 和 accounting boundary。
+- Forbidden changes：不写代码；不改 schema；不改 `src` / `tests`；不实现 Margin / PnL / Settlement / AccountSnapshot / Runtime。
+- Required future tests：open long、open short、close long、close short、duplicate same trade no-op、same trade identity different canonical conflict、close more than available reject、non-positive qty/price reject、missing identity reject、raw_payload excluded、replay deterministic、no Margin/PnL/Settlement mutation、no Accounting mutation。
+- Acceptance criteria：Position update 只能消费 typed Trade fact；same Trade 重放不 double-count；same identity different canonical mutation 前 conflict；PositionEvent 可证明 trade 已应用和应用前后 position；Stage M 仍保留 Runtime / Infrastructure。
+- Suggested tag：`stage-l4-trade-to-position-contract-freeze`。
+
+Stage L.4 source-of-truth：
+
+- `Trade` 是 Position application 唯一成交事实输入。
+- 不允许从 `raw_payload`、`NormalizedExecutionReport`、`OrderEventCandidate`、OMS `OrderState`、`OrderEvent`、Broker state、FeatureSnapshot、SignalDecision、TradingRiskResult 或 OrderIntent 直接推 Position。
+- Stage L.3 的 typed Trade ledger 是本阶段上游；Stage L.4 的输出是 Position projection / PositionEvent，供后续 accounting bridge 使用。
+
+Stage L.4 required gate：
+
+- Trade identity 必须稳定，且包含 `account_id`、`instrument_id` / `trade_instrument_id`、`exchange`、direction / side、offset、positive Decimal `price`、positive Decimal `quantity`、typed `trade_time` 和可用或可从 typed 字段推导的 `trading_day`。
+- Trade 必须尚未被应用到 Position；已应用同 canonical 为 duplicate / no-op，已应用但 canonical 不同为 conflict。
+- 必须 reject：duplicate already-applied conflict、missing identity、non-positive quantity、non-positive price、raw_payload-only facts、without stable source identity。
+
+Stage L.4 position effect rules：
+
+- BUY + OPEN -> increase long。
+- SELL + OPEN -> increase short。
+- SELL + CLOSE / CLOSE_TODAY / CLOSE_YESTERDAY -> reduce long according to existing offset bucket semantics。
+- BUY + CLOSE / CLOSE_TODAY / CLOSE_YESTERDAY -> reduce short according to existing offset bucket semantics。
+- 必须尊重现有 `PositionSide` / direction、today/yesterday bucket 和 frozen quantity 语义；Stage L.4 不从订单状态推导冻结，也不得静默修改 frozen quantities。
+- close 数量超过可用 bucket / side 时必须 typed reject 或 conflict，不得生成负持仓，不得自动转成反向开仓。
+- open trade 按现有 PositionManager contract deterministic 更新同侧 avg price；close trade 不改写剩余 avg price，除非未来单独迁移 PositionManager contract。
+
+Stage L.4 idempotency / replay：
+
+- 幂等键沿用 Trade identity：`account_id + exchange + exchange_trade_id`，或 L.3 已标记的 deterministic fallback identity。
+- same trade identity + same canonical -> duplicate / no-op。
+- same trade identity + different canonical -> conflict / error，且必须发生在任何 Position mutation 之前。
+- 同一 Trade 应用两次不得 double-count Position。
+- Replay 只消费 ordered Trade facts；同一 trade sequence 必须得到同一 Position projection；duplicate no-op；conflict stops。
+- Replay 不更新 Margin / PnL / Settlement / Accounting，不 mutate OMS / Trade ledger / Broker state。
+
+Stage L.4 PositionEvent decision：
+
+- 复用现有 Stage C `PositionEvent`，不新增第二套 applied-trade ledger。
+- `PositionEvent` 必须包含 trade identity、`account_id`、instrument identity、previous position、new position、changed quantity、`event_type`、`occurred_at`。
+- 现有 `before_snapshot` / `after_snapshot` 是 replay 和 audit 必需事实；`raw_payload` 仍只诊断，不参与 canonical。
+
+Stage L.4 repository / schema decision：
+
+- 当前 `PositionRepository`、`PositionEventRepository`、`positions` 和 `position_events` schema 对 L.4 契约足够。
+- `position_events` 已有 `UNIQUE(account_id, exchange, exchange_trade_id)`，可作为 applied Trade tracking。
+- Stage L.4 不需要 migration；后续实现应避免新增第二个 position ledger。
+- 只有在后续实现发现 L.3 fallback identity 无法被 `position_events.exchange_trade_id` 稳定表达时，才允许另开 schema migration；迁移也必须扩展现有 `position_events`，不得创建平行 ledger。
+
+Stage L.4 accounting boundary：
+
+- 不调用 `MarginEngine`。
+- 不调用 `PnLEngine`。
+- 不调用 `SettlementEngine`。
+- 不更新 account snapshots。
+- 不更新 realized / unrealized PnL。
+- 不计算 margin。
+- Position output 只作为后续 Accounting bridge 输入。
+
+Stage L.4 explicit non-goals：
+
+- Margin update。
+- PnL update。
+- Settlement update。
+- AccountSnapshot update。
+- Broker reconciliation。
+- runtime scheduling。
+- Kafka / FastAPI / Celery。
+- trade correction / cancel flows，除非另开范围。
+- cross-account netting。
+
 ### Stage M: Runtime / Infrastructure
 
 - Goal：通过 port/adapter 引入 runtime/control plane/event bus/task system。
@@ -677,7 +759,8 @@ Stage J.2 -> Stage K
 Stage K -> Stage L
 Stage L -> Stage L.2
 Stage L.2 -> Stage L.3
-Stage L.3 -> Stage M
+Stage L.3 -> Stage L.4
+Stage L.4 -> Stage M
 Stage M -> Stage N
 Stage N -> Stage O
 Stage O -> Stage P
@@ -849,7 +932,7 @@ FastAPI、Celery、Kafka、Redis、async runtime、cloud、KMS 是后续 Runtime
 
 1. Stage A 先稳定 application execution boundary。
 2. Stage K 已先冻结并实现 Execution Gateway command boundary，确保 OMS Order -> ExecutionCommand 的 source-of-truth、idempotency 和 dry-run replay 稳定。
-3. Stage L.2 稳定 OMS event application 且 Stage L.3 稳定 OMS-to-Trade Bridge core 后，Stage M 才引入 event envelope、task boundary、control plane、config/secrets provider。
+3. Stage L.2 稳定 OMS event application、Stage L.3 稳定 OMS-to-Trade Bridge core 且 Stage L.4 冻结 Trade-to-Position application contract 后，Stage M 才引入 event envelope、task boundary、control plane、config/secrets provider。
 4. Kafka 只传输 typed events，不替代 DB source-of-truth。
 5. Celery 只调度任务，不承载领域判断。
 6. Redis 只做 cache/lock/pubsub/临时状态，不做事实来源。
@@ -875,10 +958,10 @@ FastAPI、Celery、Kafka、Redis、async runtime、cloud、KMS 是后续 Runtime
 
 本总方案没有发现 P0/P1 blocker。
 
-下一步不是进入 Broker / Runtime，而是先审查并实现 Trade -> Position handoff：
+下一步不是进入 Broker / Runtime，而是在 Stage L.4 冻结契约基础上实现 Trade -> Position handoff：
 
 ```text
-Trade -> Position handoff review / implementation
+Stage L.4 Trade -> Position handoff implementation
 ```
 
 Trade -> Position handoff 前必须确认：
@@ -887,9 +970,10 @@ Trade -> Position handoff 前必须确认：
 - Stage L.2 已通过 OMS event application boundary 推进 OMS OrderStatus。
 - Stage L.3 已只消费 eligible filled report + applied OMS proof，不从 raw payload 或 broker state 补事实。
 - Stage L.3 已只生成 / 持久化 typed Trade fact，未调用 Position / Accounting。
+- Stage L.4 已冻结 typed Trade -> PositionManager.apply_trade(...) -> PositionEvent / projection 契约。
 
 Trade -> Position handoff 必须保持：
 
 - PositionManager 只消费去重后的 Trade ledger。
-- Replay 必须不 mutate OMS，不更新 Position / Accounting。
+- Replay 必须不 mutate OMS，不更新 Margin / PnL / Settlement / Accounting。
 - 不应直接跳到 broker adapter 或 runtime infrastructure。

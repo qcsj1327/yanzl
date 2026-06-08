@@ -1,8 +1,8 @@
 # Execution 终态契约
 
-本文档是 Execution 的冻结契约。它描述终态 Execution 架构，同时明确 Current facts、Phase 4.1 implementation target、Stage K Execution Gateway contract、Stage L Execution Report Normalization contract、Stage L.2 OMS Event Application contract、Stage L.3 OMS-to-Trade Bridge contract、Phase 4.2+ target 和 Later Phase 的落地区分。除非另开契约迁移，后续实现必须以本文档和 `EXECUTION_TEST_MATRIX.md` 为准。
+本文档是 Execution 的冻结契约。它描述终态 Execution 架构，同时明确 Current facts、Phase 4.1 implementation target、Stage K Execution Gateway contract、Stage L Execution Report Normalization contract、Stage L.2 OMS Event Application contract、Stage L.3 OMS-to-Trade Bridge contract、Stage L.4 Trade-to-Position contract freeze、Phase 4.2+ target 和 Later Phase 的落地区分。除非另开契约迁移，后续实现必须以本文档和 `EXECUTION_TEST_MATRIX.md` 为准。
 
-Phase 4.0 只冻结契约。Phase 4.1 按本文档落地 DTO、enum、MappingContext、MappingResult、MappingError 和 pure mapper。Execution Runtime 和 Stage A ApplicationExecutionOrchestrator 已作为后续阶段实现。Stage K 在 `stage-j2-oms-bridge-core / ee4aace` 后实现 OMS Order -> Execution Gateway command boundary；它只支持 `MOCK` target，不实现真实 Broker、CTP、SimNow、Paper、Sim 或 Live。Stage L 在 `stage-k-execution-gateway-core / 94b498e` 后实现 Execution Report Normalization Core。Stage L.2 在 `stage-l-execution-report-normalization-core / 37cad40` 后实现 OMS event application core。Stage L.3 在 `stage-l2-oms-event-application-core / 54d6fc8` 后实现 OMS-to-Trade Bridge core，不进入 Runtime。
+Phase 4.0 只冻结契约。Phase 4.1 按本文档落地 DTO、enum、MappingContext、MappingResult、MappingError 和 pure mapper。Execution Runtime 和 Stage A ApplicationExecutionOrchestrator 已作为后续阶段实现。Stage K 在 `stage-j2-oms-bridge-core / ee4aace` 后实现 OMS Order -> Execution Gateway command boundary；它只支持 `MOCK` target，不实现真实 Broker、CTP、SimNow、Paper、Sim 或 Live。Stage L 在 `stage-k-execution-gateway-core / 94b498e` 后实现 Execution Report Normalization Core。Stage L.2 在 `stage-l-execution-report-normalization-core / 37cad40` 后实现 OMS event application core。Stage L.3 已在 `stage-l3-oms-to-trade-bridge-core / 957cf89` 完成 OMS-to-Trade Bridge core，不进入 Runtime。Stage L.4 在该基线后只冻结 Trade-to-Position application contract，不写代码、不改 schema、不进入 Stage M。
 
 ## Final-state Architecture
 
@@ -107,8 +107,9 @@ OMS 是订单状态唯一事实入口：
 - 当前 EMS / MockFuturesExchange / Application Execution Orchestrator 已有本地测试实现和 staged runtime surface；它们仍不代表真实 Broker / CTP / SimNow / Paper / Sim / Live。
 - 当前 Stage L.2 已实现 `OrderEventCandidate -> typed OrderEvent -> OMSService.apply_order_event(...)` 的 OMS event application boundary。
 - 当前 Stage L.3 已实现 `NormalizedExecutionReport / applied OMS proof -> typed Trade fact -> TradeRepository` 的 OMS-to-Trade Bridge core，并通过 migration `0014_stage_l3_oms_to_trade_bridge.py` 扩展 existing `trades` / `normalized_execution_reports`。
+- 当前 Stage L.4 只冻结 `typed Trade fact -> Trade-to-Position application -> PositionManager.apply_trade(...) -> Position projection / PositionEvent`；不实现，不更新 Margin / PnL / Settlement。
 - 当前 Phase 4 Execution Contract / pure mapper 阶段不接真实交易接口、CTP、SimNow 或 broker adapter；这些属于后续 Adapter 阶段。
-- 当前不进入 Position / Margin / PnL / Settlement。
+- 当前不进入 Margin / PnL / Settlement。
 - 当前 `stage-j2-oms-bridge-core / ee4aace` 已实现 `OrderIntent -> OMSService.create_order` bridge；OMS 已能创建订单记录。
 - 当前 Execution / Broker / Paper / Sim / Live 未进入。
 - 当前 Stage K 已实现 Execution Gateway Core：`ExecutionCommand`、deterministic `command_id`、canonical payload/hash、`ExecutionCommandRepository`、SQLAlchemy repository、UoW integration、`execution_commands` migration、`ExecutionAdapter` Protocol、deterministic `MockExecutionAdapter`、`ExecutionGatewayService`、dry-run replay 和 tests。
@@ -117,6 +118,7 @@ OMS 是订单状态唯一事实入口：
 - 当前 Stage L 基线为 `stage-l-execution-report-normalization-core / 37cad40`。Stage L 已实现 Execution Report Normalization Core；`ExecutionCommandResult` 只表示 adapter accepted / rejected，不表示 exchange accepted、fill 或 trade。Stage L may build typed `OrderEvent` candidate, but does not call `OMSService.apply_order_event(...)`。
 - 当前 Stage L.2 已实现 `OrderEventCandidate -> typed OrderEvent -> OMSService.apply_order_event(...)` 应用核心。Stage L.2 只推进 OMS `OrderStatus`，不生成 Trade / Fill ledger，不更新 Position / Accounting，不调用 Broker，不进入 Runtime，不新增 schema。
 - 当前 Stage L.3 只创建并持久化 typed Trade fact。Stage L.3 不更新 Position / Accounting，不调用 Broker，不进入 Runtime。
+- 当前 Stage L.4 不调用 Broker，不进入 Runtime，不占用 Stage M。
 
 `MockFuturesExchange.run_daily_settlement(trading_day)` 的移除是 intentional interface migration：
 
@@ -1032,6 +1034,191 @@ Stage L.3 does not implement：
 - CTP / SimNow / live broker。
 - fee calculation。
 - trade correction / cancel flows。
+
+## Stage L.4 Trade-to-Position Contract Freeze
+
+Stage L.4 freezes the downstream application contract that applies typed `Trade` facts to Position. It deliberately stays after Stage L.3 and before Stage M. It does not occupy Stage M, and Stage M remains Runtime / Infrastructure.
+
+Stage L.4 is documentation-only：
+
+- no code changes。
+- no schema changes。
+- no `src` / `tests` changes。
+- no implementation。
+
+Source-of-truth flow：
+
+```text
+typed Trade fact
+-> Trade-to-Position application
+-> PositionManager.apply_trade(...)
+-> Position projection / PositionEvent
+```
+
+### Stage L.4 Source Of Truth
+
+Position update may consume only typed `Trade` fact.
+
+Allowed inputs：
+
+- typed `Trade` fact。
+- current `Position` / `PositionSnapshot`。
+- typed instrument identity。
+- typed account identity。
+- `trading_day` / calendar context。
+- application context。
+
+Forbidden inputs：
+
+- `raw_payload` as facts。
+- `NormalizedExecutionReport` directly。
+- `OrderEventCandidate` directly。
+- OMS `OrderState` directly。
+- `FeatureSnapshot`。
+- `SignalDecision`。
+- `TradingRiskResult`。
+- `OrderIntent`。
+- Broker state。
+- Margin / PnL / Settlement。
+- Account tables。
+- Runtime / Kafka / Celery / FastAPI。
+
+Trade is the only fill / execution source that may change Position. Stage L.4 must not infer Position from report status, order status, broker query, raw payload, or upstream strategy/risk/order-intent facts.
+
+### Stage L.4 Required Gate
+
+Position may update only if：
+
+- Trade identity is stable。
+- Trade has `account_id`。
+- Trade has `instrument_id` / `trade_instrument_id` and `exchange`。
+- Trade has side / `direction` and `offset`。
+- Trade `price > 0`。
+- Trade `quantity > 0`。
+- Trade time / `trading_day` is available or derivable from typed field。
+- Trade has not already been applied to Position。
+
+Reject：
+
+- duplicate already-applied trade with different canonical payload。
+- missing identity。
+- non-positive quantity。
+- non-positive price。
+- raw_payload-only facts。
+- trade without stable source identity。
+
+### Stage L.4 Idempotency
+
+Same `trade_id` / Trade identity：
+
+- same canonical -> duplicate / no-op。
+- different canonical -> conflict / error。
+
+Position apply must be idempotent：
+
+- same Trade applied twice must not double-count Position。
+- different Trade with same identity but different canonical must conflict before mutation。
+
+### Stage L.4 Position Effect Rules
+
+Trade maps to Position as follows：
+
+- BUY open -> increase long。
+- SELL open -> increase short。
+- SELL close -> reduce long。
+- BUY close -> reduce short。
+
+The implementation must respect existing `PositionSide` / direction semantics, today/yesterday bucket semantics if the existing `PositionManager` supports them, and frozen quantities. Frozen quantities must not be silently changed.
+
+Close more than available must return typed reject or conflict. It must not silently create negative position or reverse the side.
+
+Open trade updates avg price deterministically according to the existing `PositionManager` weighted-average contract. Close trade does not rewrite remaining avg price unless a future PositionManager contract migration explicitly changes that behavior.
+
+### Stage L.4 PositionEvent
+
+Existing Stage C `PositionManager` already emits `PositionEvent`; Stage L.4 reuses that contract and does not create another position ledger.
+
+`PositionEvent` must include：
+
+- trade identity。
+- `account_id`。
+- instrument identity。
+- previous position。
+- new position。
+- changed quantity。
+- `event_type`。
+- `occurred_at`。
+
+`before_snapshot` / `after_snapshot` remain the audit and replay proof. `raw_payload` remains diagnostic-only and is excluded from canonical equality.
+
+### Stage L.4 Repository And Schema Decision
+
+Stage L.4 reuses current `PositionRepository` and `PositionEventRepository`.
+
+Current schema is sufficient for this contract：
+
+- `positions(account_id, instrument_id)` is the live projection。
+- `position_events` is the applied-trade audit / idempotency ledger。
+- `position_events` already has unique Trade identity via `UNIQUE(account_id, exchange, exchange_trade_id)`。
+
+No Stage L.4 migration is needed. Do not create a second position ledger. If a later implementation discovers that L.3 deterministic fallback identity cannot be represented by current `position_events.exchange_trade_id`, that must be handled as a separately scoped migration extending the existing event ledger.
+
+### Stage L.4 Replay
+
+Replay：
+
+- consumes ordered Trade facts。
+- same trade sequence -> same Position projection。
+- duplicate trade -> no-op。
+- conflict -> stops and reports typed conflict。
+- no Margin / PnL / Settlement update。
+- no Accounting mutation。
+- no OMS mutation。
+
+### Stage L.4 Accounting Boundary
+
+Stage L.4 must not：
+
+- call `MarginEngine`。
+- call `PnLEngine`。
+- call `SettlementEngine`。
+- update account snapshots。
+- update realized / unrealized PnL。
+- calculate margin。
+
+Position output becomes input for a later Accounting bridge.
+
+### Stage L.4 Future Test Freeze
+
+Future implementation must cover：
+
+- open long。
+- open short。
+- close long。
+- close short。
+- duplicate same trade no-op。
+- same trade identity different canonical conflict。
+- close more than available reject。
+- non-positive qty / price reject。
+- missing identity reject。
+- raw_payload excluded。
+- replay deterministic。
+- no Margin / PnL / Settlement mutation。
+- no Accounting mutation。
+
+### Stage L.4 Explicit Non-goals
+
+Stage L.4 does not implement：
+
+- Margin update。
+- PnL update。
+- Settlement update。
+- AccountSnapshot update。
+- Broker reconciliation。
+- runtime scheduling。
+- Kafka / FastAPI / Celery。
+- trade correction / cancel flows unless separately scoped。
+- cross-account netting。
 
 ## Phase 4.1 Implementation Target
 
