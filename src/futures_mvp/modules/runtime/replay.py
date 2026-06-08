@@ -4,6 +4,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
+from futures_mvp.modules.ops_safety.config import SafetyConfig
+from futures_mvp.modules.ops_safety.incident import OpsIncidentState
+from futures_mvp.modules.ops_safety.kill_switch import evaluate_replay_gate, evaluate_stage_gate
 from futures_mvp.modules.runtime.config import ReplayConfig
 
 
@@ -13,6 +16,8 @@ class ReplayStatus(StrEnum):
     SKIPPED = "SKIPPED"
     ERROR = "ERROR"
     DISABLED = "DISABLED"
+    PAUSED = "PAUSED"
+    BLOCKED = "BLOCKED"
 
 
 @dataclass(frozen=True)
@@ -51,8 +56,14 @@ class ReplayResult:
 
 
 class RuntimeReplayCoordinator:
-    def __init__(self, config: ReplayConfig, stages: tuple[ReplayStage, ...]) -> None:
+    def __init__(
+        self,
+        config: ReplayConfig,
+        stages: tuple[ReplayStage, ...],
+        safety_config: SafetyConfig | None = None,
+    ) -> None:
         self._config = config
+        self._safety_config = safety_config or SafetyConfig()
         self._stage_map: dict[str, ReplayStage] = {}
         self._configuration_error: ReplayStageResult | None = None
         known_stages = set(default_replay_stage_names())
@@ -84,6 +95,23 @@ class RuntimeReplayCoordinator:
     def replay(self) -> ReplayResult:
         if not self._config.enabled:
             return ReplayResult(status=ReplayStatus.DISABLED, stage_results=())
+        replay_gate = evaluate_replay_gate(self._safety_config)
+        if not replay_gate.allowed:
+            status = (
+                ReplayStatus.BLOCKED
+                if replay_gate.incident_state is OpsIncidentState.KILLED
+                else ReplayStatus.PAUSED
+            )
+            return ReplayResult(
+                status=status,
+                stage_results=(
+                    ReplayStageResult(
+                        stage_name="replay",
+                        status=status,
+                        reason=replay_gate.reason,
+                    ),
+                ),
+            )
         if self._configuration_error is not None:
             return ReplayResult(
                 status=ReplayStatus.ERROR,
@@ -111,6 +139,22 @@ class RuntimeReplayCoordinator:
                         reason="upstream conflict",
                     )
                 )
+                continue
+            stage_gate = evaluate_stage_gate(self._safety_config, stage_name)
+            if not stage_gate.allowed:
+                status = (
+                    ReplayStatus.BLOCKED
+                    if stage_gate.incident_state is OpsIncidentState.KILLED
+                    else ReplayStatus.PAUSED
+                )
+                results.append(
+                    ReplayStageResult(
+                        stage_name=stage_name,
+                        status=status,
+                        reason=stage_gate.reason,
+                    )
+                )
+                stopped = True
                 continue
             context = ReplayStageContext(
                 stage_name=stage.name,
@@ -168,6 +212,10 @@ def default_replay_stage_names() -> tuple[str, ...]:
 
 
 def _aggregate(results: list[ReplayStageResult]) -> ReplayStatus:
+    if any(result.status is ReplayStatus.BLOCKED for result in results):
+        return ReplayStatus.BLOCKED
+    if any(result.status is ReplayStatus.PAUSED for result in results):
+        return ReplayStatus.PAUSED
     if any(result.status is ReplayStatus.ERROR for result in results):
         return ReplayStatus.ERROR
     if any(result.status is ReplayStatus.CONFLICT for result in results):
