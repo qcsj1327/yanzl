@@ -12,7 +12,7 @@ from futures_mvp.modules.position import PositionManager
 
 def _trade(
     *,
-    trade_id: str = "1",
+    trade_id: str | None = "1",
     exchange_trade_id: str = "trade-1",
     direction: Direction = Direction.BUY,
     offset: Offset = Offset.OPEN,
@@ -396,6 +396,30 @@ def test_insufficient_yesterday_bucket_rejects_without_event() -> None:
     assert events == {}
 
 
+def test_close_rejects_when_frozen_quantity_would_be_consumed() -> None:
+    manager, positions, events = _manager(
+        {
+            ("account-1", "rb2601"): Position(
+                id="1",
+                account_id="account-1",
+                instrument_id="rb2601",
+                long_today_qty=Decimal("3"),
+                frozen_long_qty=Decimal("2"),
+            )
+        }
+    )
+
+    result = manager.apply_trade(
+        _trade(direction=Direction.SELL, offset=Offset.CLOSE_TODAY, quantity=Decimal("2"))
+    )
+
+    assert result.status == PositionManagerResultStatus.REJECTED_INSUFFICIENT_POSITION
+    assert result.reason == "insufficient unfrozen position: 3 - 2 < 2"
+    assert positions[("account-1", "rb2601")].long_today_qty == Decimal("3")
+    assert positions[("account-1", "rb2601")].frozen_long_qty == Decimal("2")
+    assert events == {}
+
+
 def test_unsupported_offset_returns_error() -> None:
     manager, _positions, events = _manager()
 
@@ -428,6 +452,28 @@ def test_duplicate_trade_conflict_is_typed_conflict() -> None:
     assert conflict.status == PositionManagerResultStatus.CONFLICT
 
 
+def test_trade_preflight_rejects_before_position_mutation() -> None:
+    manager, positions, events = _manager()
+
+    result = manager.apply_trade(_trade(trade_id=None))
+
+    assert result.status == PositionManagerResultStatus.ERROR
+    assert result.reason == "id is required to apply position"
+    assert positions == {}
+    assert events == {}
+
+
+def test_trade_preflight_rejects_non_positive_price() -> None:
+    manager, positions, events = _manager()
+
+    result = manager.apply_trade(_trade(price=Decimal("0")))
+
+    assert result.status == PositionManagerResultStatus.ERROR
+    assert result.reason == "trade.price must be positive to apply position"
+    assert positions == {}
+    assert events == {}
+
+
 def test_duplicate_trade_detects_position_projection_divergence() -> None:
     manager, positions, events = _manager()
     trade = _trade()
@@ -443,6 +489,29 @@ def test_duplicate_trade_detects_position_projection_divergence() -> None:
     assert replay.results[0].reason == "position_projection_diverged_from_event_snapshot"
     assert replay.has_divergence
     assert len(events) == 1
+
+
+def test_replay_trades_stops_on_conflict() -> None:
+    manager, positions, events = _manager()
+    first = _trade()
+    after_conflict = _trade(
+        trade_id="2",
+        exchange_trade_id="trade-2",
+        trade_time=datetime(2026, 1, 1, 9, 2, tzinfo=UTC),
+    )
+
+    manager.apply_trade(first)
+    positions[("account-1", "rb2601")] = positions[("account-1", "rb2601")].model_copy(
+        update={"long_today_qty": Decimal("2")}
+    )
+
+    replay = manager.replay_trades([first, after_conflict])
+
+    assert [result.status for result in replay.results] == [
+        PositionManagerResultStatus.CONFLICT,
+    ]
+    assert events.keys() == {("account-1", "SHFE", "trade-1")}
+    assert positions[("account-1", "rb2601")].long_today_qty == Decimal("2")
 
 
 def test_replay_trades_orders_by_trade_time_then_stable_key() -> None:

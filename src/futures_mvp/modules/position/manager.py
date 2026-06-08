@@ -42,6 +42,10 @@ class PositionManager:
         self._uow_factory = uow_factory
 
     def apply_trade(self, trade: Trade) -> PositionManagerResult:
+        preflight = _validate_trade_for_position(trade)
+        if preflight is not None:
+            return preflight
+
         with self._uow_factory() as uow:
             existing_event = uow.position_events.get_by_trade_key(
                 trade.account_id,
@@ -135,9 +139,35 @@ class PositionManager:
                 trade.id or trade.exchange_trade_id,
             ),
         )
-        return PositionReplayResult(
-            results=tuple(self.apply_trade(trade) for trade in ordered_trades)
-        )
+        results: list[PositionManagerResult] = []
+        for trade in ordered_trades:
+            result = self.apply_trade(trade)
+            results.append(result)
+            if result.status in {
+                PositionManagerResultStatus.CONFLICT,
+                PositionManagerResultStatus.ERROR,
+            }:
+                break
+        return PositionReplayResult(results=tuple(results))
+
+
+def _validate_trade_for_position(trade: Trade) -> PositionManagerResult | None:
+    required_fields = {
+        "id": trade.id,
+        "account_id": trade.account_id,
+        "exchange": trade.exchange,
+        "exchange_trade_id": trade.exchange_trade_id,
+        "instrument_id": trade.instrument_id,
+        "trade_time": trade.trade_time,
+    }
+    for field_name, value in required_fields.items():
+        if value is None or (isinstance(value, str) and value.strip() == ""):
+            return _error_result(trade, f"{field_name} is required to apply position")
+    if trade.price <= 0:
+        return _error_result(trade, "trade.price must be positive to apply position")
+    if trade.quantity <= 0:
+        return _error_result(trade, "trade.quantity must be positive to apply position")
+    return None
 
 
 def _apply_trade_to_position(position: Position, trade: Trade) -> PositionManagerResult:
@@ -177,6 +207,8 @@ def _apply_trade_to_position(position: Position, trade: Trade) -> PositionManage
             position,
             bucket_name="long_today_qty",
             current_qty=position.long_today_qty,
+            side_total_qty=position.long_today_qty + position.long_yesterday_qty,
+            frozen_qty=position.frozen_long_qty,
         )
     if trade.offset is Offset.CLOSE_YESTERDAY and trade.direction is Direction.SELL:
         return _close_bucket(
@@ -184,6 +216,8 @@ def _apply_trade_to_position(position: Position, trade: Trade) -> PositionManage
             position,
             bucket_name="long_yesterday_qty",
             current_qty=position.long_yesterday_qty,
+            side_total_qty=position.long_today_qty + position.long_yesterday_qty,
+            frozen_qty=position.frozen_long_qty,
         )
     if trade.offset is Offset.CLOSE_TODAY and trade.direction is Direction.BUY:
         return _close_bucket(
@@ -191,6 +225,8 @@ def _apply_trade_to_position(position: Position, trade: Trade) -> PositionManage
             position,
             bucket_name="short_today_qty",
             current_qty=position.short_today_qty,
+            side_total_qty=position.short_today_qty + position.short_yesterday_qty,
+            frozen_qty=position.frozen_short_qty,
         )
     if trade.offset is Offset.CLOSE_YESTERDAY and trade.direction is Direction.BUY:
         return _close_bucket(
@@ -198,6 +234,8 @@ def _apply_trade_to_position(position: Position, trade: Trade) -> PositionManage
             position,
             bucket_name="short_yesterday_qty",
             current_qty=position.short_yesterday_qty,
+            side_total_qty=position.short_today_qty + position.short_yesterday_qty,
+            frozen_qty=position.frozen_short_qty,
         )
     return PositionManagerResult(
         status=PositionManagerResultStatus.ERROR,
@@ -272,12 +310,26 @@ def _close_bucket(
     *,
     bucket_name: str,
     current_qty: Decimal,
+    side_total_qty: Decimal,
+    frozen_qty: Decimal,
 ) -> PositionManagerResult:
     if current_qty < trade.quantity:
         return PositionManagerResult(
             status=PositionManagerResultStatus.REJECTED_INSUFFICIENT_POSITION,
             position=position,
             reason=f"insufficient {bucket_name}: {current_qty} < {trade.quantity}",
+            trade_id=trade.id,
+            account_id=trade.account_id,
+            instrument_id=trade.instrument_id,
+        )
+    if side_total_qty - trade.quantity < frozen_qty:
+        return PositionManagerResult(
+            status=PositionManagerResultStatus.REJECTED_INSUFFICIENT_POSITION,
+            position=position,
+            reason=(
+                f"insufficient unfrozen position: "
+                f"{side_total_qty} - {trade.quantity} < {frozen_qty}"
+            ),
             trade_id=trade.id,
             account_id=trade.account_id,
             instrument_id=trade.instrument_id,
