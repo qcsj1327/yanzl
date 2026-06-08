@@ -26,6 +26,7 @@ from futures_mvp.db.models import (
     MarketTick,
     Order,
     OrderEvent,
+    OrderIntent,
     PnLSnapshot,
     Position,
     PositionEvent,
@@ -33,6 +34,7 @@ from futures_mvp.db.models import (
     SignalCandidate,
     SignalEvent,
     Trade,
+    TradingRiskResult,
 )
 from futures_mvp.domain.enums import SettlementResultStatus
 from futures_mvp.domain.models import SettlementSnapshot as DomainSettlementSnapshot
@@ -73,6 +75,8 @@ def test_required_tables_are_declared() -> None:
         "feature_snapshots",
         "signal_candidates",
         "signal_events",
+        "risk_results",
+        "order_intents",
         "risk_events",
     }.issubset(Base.metadata.tables)
 
@@ -463,6 +467,84 @@ def test_signal_events_match_stage_i_lifecycle_contract() -> None:
         "ix_signal_events_signal_id",
         "ix_signal_events_signal_created",
     }.issubset({index.name for index in SignalEvent.__table__.indexes})
+
+
+def test_stage_j_trading_workflow_tables_match_contract() -> None:
+    assert _unique_constraint_columns(
+        TradingRiskResult,
+        "uq_risk_results_risk_result_id",
+    ) == ("risk_result_id",)
+    for column_name in [
+        "risk_result_id",
+        "signal_id",
+        "evaluation_context_hash",
+        "risk_status",
+        "risk_reason",
+        "risk_level",
+        "requested_quantity",
+        "approved_quantity",
+        "max_quantity",
+        "expected_margin",
+        "expected_notional",
+        "config_hash",
+        "evaluation_ts",
+        "raw_payload",
+        "created_at",
+    ]:
+        assert column_name in TradingRiskResult.__table__.columns
+    for column_name in [
+        "evaluation_context_hash",
+        "requested_quantity",
+        "approved_quantity",
+        "max_quantity",
+        "expected_margin",
+        "expected_notional",
+    ]:
+        assert TradingRiskResult.__table__.columns[column_name].nullable is False
+
+    assert _unique_constraint_columns(OrderIntent, "uq_order_intents_intent_id") == (
+        "intent_id",
+    )
+    for column_name in [
+        "intent_id",
+        "signal_id",
+        "risk_result_id",
+        "strategy_name",
+        "strategy_version",
+        "strategy_config_hash",
+        "runtime_id",
+        "symbol",
+        "instrument_id",
+        "trade_instrument_id",
+        "exchange",
+        "trading_day",
+        "timeframe",
+        "bar_ts",
+        "feature_version",
+        "feature_config_hash",
+        "side",
+        "offset",
+        "quantity",
+        "price",
+        "order_type",
+        "tif",
+        "expected_margin",
+        "expected_notional",
+        "intent_reason",
+        "raw_payload",
+        "created_at",
+    ]:
+        assert column_name in OrderIntent.__table__.columns
+    assert isinstance(OrderIntent.__table__.columns["quantity"].type, Numeric)
+    assert isinstance(OrderIntent.__table__.columns["price"].type, Numeric)
+    assert OrderIntent.__table__.columns["expected_margin"].nullable is False
+    assert OrderIntent.__table__.columns["expected_notional"].nullable is False
+    assert {
+        "ix_order_intents_signal_id",
+        "ix_order_intents_risk_result_id",
+        "ix_order_intents_instrument_id",
+        "ix_order_intents_trading_day",
+    }.issubset({index.name for index in OrderIntent.__table__.indexes})
 
 
 def test_stage_f_migration_backfills_legacy_calculation_key() -> None:

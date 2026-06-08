@@ -817,6 +817,8 @@ class FakeUnitOfWork:
         self.feature_snapshots = FakeFeatureSnapshotRepository()
         self.signal_candidates = FakeSignalCandidateRepository()
         self.signal_events = FakeSignalEventRepository()
+        self.trading_risk_results = object()
+        self.order_intents = object()
         self.commit_count = 0
         self.rollback_count = 0
 

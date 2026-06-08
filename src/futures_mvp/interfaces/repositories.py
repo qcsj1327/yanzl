@@ -11,6 +11,7 @@ from futures_mvp.domain.models import (
     FeatureSnapshot,
     MarginSnapshot,
     OrderEvent,
+    OrderIntent,
     OrderRequest,
     OrderState,
     PnLSnapshot,
@@ -21,6 +22,7 @@ from futures_mvp.domain.models import (
     SignalLifecycleEvent,
     Tick,
     Trade,
+    TradingRiskResult,
 )
 
 
@@ -82,6 +84,14 @@ class SignalCandidateConflictError(RepositoryError):
 
 class SignalLifecycleConflictError(RepositoryError):
     """Raised when a signal lifecycle event cannot be appended consistently."""
+
+
+class TradingRiskResultConflictError(RepositoryError):
+    """Raised when a trading risk result identity is reused with different facts."""
+
+
+class OrderIntentConflictError(RepositoryError):
+    """Raised when an order intent identity is reused with different facts."""
 
 
 @runtime_checkable
@@ -390,6 +400,24 @@ class SignalEventRepository(Protocol):
 
 
 @runtime_checkable
+class TradingRiskResultRepository(Protocol):
+    def append_risk_result(self, result: TradingRiskResult) -> TradingRiskResult: ...
+
+    def get_by_risk_result_id(self, risk_result_id: str) -> TradingRiskResult | None: ...
+
+    def list_by_signal_id(self, signal_id: str) -> list[TradingRiskResult]: ...
+
+
+@runtime_checkable
+class OrderIntentRepository(Protocol):
+    def append_order_intent(self, intent: OrderIntent) -> OrderIntent: ...
+
+    def get_by_intent_id(self, intent_id: str) -> OrderIntent | None: ...
+
+    def list_by_signal_id(self, signal_id: str) -> list[OrderIntent]: ...
+
+
+@runtime_checkable
 class UnitOfWork(Protocol):
     orders: OrderRepository
     order_events: OrderEventRepository
@@ -405,6 +433,8 @@ class UnitOfWork(Protocol):
     feature_snapshots: FeatureSnapshotRepository
     signal_candidates: SignalCandidateRepository
     signal_events: SignalEventRepository
+    trading_risk_results: TradingRiskResultRepository
+    order_intents: OrderIntentRepository
 
     def commit(self) -> None: ...
 
@@ -467,6 +497,25 @@ class StrategySignalUnitOfWork(Protocol):
     def rollback(self) -> None: ...
 
     def __enter__(self) -> "StrategySignalUnitOfWork": ...
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> bool | None: ...
+
+
+@runtime_checkable
+class TradingWorkflowUnitOfWork(Protocol):
+    trading_risk_results: TradingRiskResultRepository
+    order_intents: OrderIntentRepository
+
+    def commit(self) -> None: ...
+
+    def rollback(self) -> None: ...
+
+    def __enter__(self) -> "TradingWorkflowUnitOfWork": ...
 
     def __exit__(
         self,

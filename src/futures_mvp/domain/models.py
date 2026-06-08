@@ -27,6 +27,7 @@ from futures_mvp.domain.enums import (
     PnLResultStatus,
     PositionManagerResultStatus,
     RiskDecision,
+    RiskResultStatus,
     SettlementResultStatus,
     SignalDecisionType,
     SignalLifecycleStatus,
@@ -34,6 +35,7 @@ from futures_mvp.domain.enums import (
     SignalResultStatus,
     SignalSide,
     StrategyResultStatus,
+    TradingWorkflowResultStatus,
 )
 
 
@@ -958,6 +960,202 @@ class StrategyResult(DomainModel):
     status: StrategyResultStatus
     decision: SignalDecision | None = None
     candidate: SignalCandidate | None = None
+    reason: str | None = None
+
+
+class TradingWorkflowContext(DomainModel):
+    signal_decision: SignalDecision
+    strategy_config: StrategyConfig
+    position_context: PositionContext | None = None
+    portfolio_context: PortfolioContext | None = None
+    account_context: "AccountContext | None" = None
+    margin_snapshot: "MarginSnapshot | None" = None
+    requested_quantity: Decimal
+    risk_config_hash: str
+    evaluation_context_hash: str
+    calendar_session_context: CalendarSessionContext | None = None
+
+    @field_validator("requested_quantity", mode="before")
+    @classmethod
+    def _requested_quantity_decimal(cls, value: Any) -> Decimal:
+        return require_decimal(value)
+
+    @field_validator("risk_config_hash", "evaluation_context_hash")
+    @classmethod
+    def _required_context_identity(cls, value: str, info: Any) -> str:
+        return require_non_empty_string(value, field_name=info.field_name)
+
+    @model_validator(mode="after")
+    def _valid_trading_workflow_context(self) -> "TradingWorkflowContext":
+        signal = self.signal_decision
+        config = self.strategy_config
+        checks = {
+            "strategy_name": (signal.strategy_name, config.strategy_name),
+            "strategy_version": (signal.strategy_version, config.strategy_version),
+            "strategy_config_hash": (signal.strategy_config_hash, config.strategy_config_hash),
+            "feature_version": (signal.feature_version, config.feature_version),
+            "feature_config_hash": (signal.feature_config_hash, config.feature_config_hash),
+            "timeframe": (signal.timeframe, config.timeframe),
+        }
+        for field_name, (actual, expected) in checks.items():
+            if actual != expected:
+                raise ValueError(f"TradingWorkflowContext {field_name} mismatch")
+        require_positive_decimal(self.requested_quantity, field_name="requested_quantity")
+        if self.margin_snapshot is not None:
+            if self.margin_snapshot.instrument_id != signal.instrument_id:
+                raise ValueError("TradingWorkflowContext margin instrument_id mismatch")
+            if (
+                self.account_context is not None
+                and self.margin_snapshot.account_id != self.account_context.account_id
+            ):
+                raise ValueError("TradingWorkflowContext margin account_id mismatch")
+        if self.calendar_session_context is not None:
+            if self.calendar_session_context.exchange != signal.exchange:
+                raise ValueError("TradingWorkflowContext calendar exchange mismatch")
+            if self.calendar_session_context.trading_day != signal.trading_day:
+                raise ValueError("TradingWorkflowContext calendar trading_day mismatch")
+        return self
+
+
+class TradingRiskResult(DomainModel):
+    signal_id: str
+    risk_result_id: str
+    evaluation_context_hash: str
+    risk_status: RiskResultStatus
+    risk_reason: str | None = None
+    risk_level: str
+    requested_quantity: Decimal
+    approved_quantity: Decimal
+    max_quantity: Decimal
+    expected_margin: Decimal
+    expected_notional: Decimal
+    config_hash: str
+    evaluation_ts: datetime
+    raw_payload: dict[str, Any] | None = None
+
+    @field_validator(
+        "signal_id",
+        "risk_result_id",
+        "evaluation_context_hash",
+        "risk_level",
+        "config_hash",
+    )
+    @classmethod
+    def _required_identity(cls, value: str, info: Any) -> str:
+        return require_non_empty_string(value, field_name=info.field_name)
+
+    @field_validator(
+        "requested_quantity",
+        "approved_quantity",
+        "max_quantity",
+        "expected_margin",
+        "expected_notional",
+        mode="before",
+    )
+    @classmethod
+    def _decimal_required(cls, value: Any) -> Decimal:
+        return require_decimal(value)
+
+    @model_validator(mode="after")
+    def _valid_trading_risk_result(self) -> "TradingRiskResult":
+        require_positive_decimal(self.requested_quantity, field_name="requested_quantity")
+        for field_name, value in {
+            "approved_quantity": self.approved_quantity,
+            "max_quantity": self.max_quantity,
+            "expected_margin": self.expected_margin,
+            "expected_notional": self.expected_notional,
+        }.items():
+            require_non_negative_decimal(value, field_name=field_name)
+        if self.risk_status is RiskResultStatus.ACCEPT:
+            if self.approved_quantity != self.requested_quantity:
+                raise ValueError("ACCEPT requires approved_quantity equal requested_quantity")
+        if self.risk_status is RiskResultStatus.REDUCE:
+            require_positive_decimal(self.approved_quantity, field_name="approved_quantity")
+            if self.approved_quantity >= self.requested_quantity:
+                raise ValueError("REDUCE requires approved_quantity less than requested_quantity")
+        if self.risk_status in {
+            RiskResultStatus.REJECT,
+            RiskResultStatus.BLOCK,
+            RiskResultStatus.UNKNOWN,
+        } and self.approved_quantity != Decimal("0"):
+            raise ValueError("non-intent risk statuses require zero approved_quantity")
+        return self
+
+
+class OrderIntent(DomainModel):
+    intent_id: str
+    signal_id: str
+    risk_result_id: str
+    strategy_name: str
+    strategy_version: str
+    strategy_config_hash: str
+    runtime_id: str
+    symbol: str
+    instrument_id: str
+    trade_instrument_id: str
+    exchange: str
+    trading_day: date
+    timeframe: BarTimeframe
+    bar_ts: datetime
+    feature_version: str
+    feature_config_hash: str
+    side: SignalSide
+    offset: Offset
+    quantity: Decimal
+    price: Decimal
+    order_type: OrderType
+    tif: str
+    expected_margin: Decimal
+    expected_notional: Decimal
+    intent_reason: str | None = None
+    raw_payload: dict[str, Any] | None = None
+
+    @field_validator(
+        "intent_id",
+        "signal_id",
+        "risk_result_id",
+        "strategy_name",
+        "strategy_version",
+        "strategy_config_hash",
+        "runtime_id",
+        "symbol",
+        "instrument_id",
+        "trade_instrument_id",
+        "exchange",
+        "feature_version",
+        "feature_config_hash",
+        "tif",
+    )
+    @classmethod
+    def _required_identity(cls, value: str, info: Any) -> str:
+        return require_non_empty_string(value, field_name=info.field_name)
+
+    @field_validator(
+        "quantity",
+        "price",
+        "expected_margin",
+        "expected_notional",
+        mode="before",
+    )
+    @classmethod
+    def _decimal_required(cls, value: Any) -> Decimal:
+        return require_decimal(value)
+
+    @model_validator(mode="after")
+    def _valid_order_intent(self) -> "OrderIntent":
+        require_positive_decimal(self.quantity, field_name="quantity")
+        require_positive_decimal(self.price, field_name="price")
+        if self.side is SignalSide.NONE:
+            raise ValueError("OrderIntent side cannot be NONE")
+        require_non_negative_decimal(self.expected_margin, field_name="expected_margin")
+        require_non_negative_decimal(self.expected_notional, field_name="expected_notional")
+        return self
+
+
+class TradingWorkflowResult(DomainModel):
+    status: TradingWorkflowResultStatus
+    risk_result: TradingRiskResult | None = None
+    order_intent: OrderIntent | None = None
     reason: str | None = None
 
 

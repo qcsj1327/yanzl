@@ -15,6 +15,7 @@ from futures_mvp.db.models import MarketBar as MarketBarOrm
 from futures_mvp.db.models import MarketTick as MarketTickOrm
 from futures_mvp.db.models import Order
 from futures_mvp.db.models import OrderEvent as OrderEventOrm
+from futures_mvp.db.models import OrderIntent as OrderIntentOrm
 from futures_mvp.db.models import PnLSnapshot as PnLSnapshotOrm
 from futures_mvp.db.models import Position as PositionOrm
 from futures_mvp.db.models import PositionEvent as PositionEventOrm
@@ -22,6 +23,7 @@ from futures_mvp.db.models import SettlementSnapshot as SettlementSnapshotOrm
 from futures_mvp.db.models import SignalCandidate as SignalCandidateOrm
 from futures_mvp.db.models import SignalEvent as SignalEventOrm
 from futures_mvp.db.models import Trade as TradeOrm
+from futures_mvp.db.models import TradingRiskResult as TradingRiskResultOrm
 from futures_mvp.domain.enums import (
     BarTimeframe,
     Direction,
@@ -32,6 +34,7 @@ from futures_mvp.domain.enums import (
     OrderStatus,
     OrderType,
     PnLPriceBasis,
+    RiskResultStatus,
     SettlementResultStatus,
     SignalDecisionType,
     SignalLifecycleStatus,
@@ -44,6 +47,7 @@ from futures_mvp.domain.models import (
     FeatureSnapshot,
     MarginSnapshot,
     OrderEvent,
+    OrderIntent,
     OrderRequest,
     OrderState,
     PnLSnapshot,
@@ -55,6 +59,7 @@ from futures_mvp.domain.models import (
     SignalLifecycleEvent,
     Tick,
     Trade,
+    TradingRiskResult,
 )
 from futures_mvp.interfaces.repositories import (
     EventAlreadyExistsError,
@@ -63,6 +68,7 @@ from futures_mvp.interfaces.repositories import (
     MarginSnapshotConflictError,
     MarketDataConflictError,
     OptimisticLockError,
+    OrderIntentConflictError,
     OrderNotFoundError,
     PnLSnapshotConflictError,
     PositionEventConflictError,
@@ -71,12 +77,17 @@ from futures_mvp.interfaces.repositories import (
     SignalCandidateConflictError,
     SignalLifecycleConflictError,
     TradeIdempotencyConflictError,
+    TradingRiskResultConflictError,
 )
 from futures_mvp.modules.feature.canonical import canonical_feature_snapshot_payload
 from futures_mvp.modules.market.canonical import canonical_bar_payload, canonical_tick_payload
 from futures_mvp.modules.strategy.canonical import (
     canonical_signal_candidate_payload,
     canonical_signal_event_payload,
+)
+from futures_mvp.modules.trading_workflow.canonical import (
+    canonical_order_intent_payload,
+    canonical_trading_risk_result_payload,
 )
 
 OPEN_RECOVERY_STATUSES = frozenset(
@@ -177,6 +188,56 @@ def signal_event_to_domain(event: SignalEventOrm) -> SignalLifecycleEvent:
         event_ts=event.event_ts,
         raw_payload=event.raw_payload,
         created_at=event.created_at,
+    )
+
+
+def trading_risk_result_to_domain(result: TradingRiskResultOrm) -> TradingRiskResult:
+    return TradingRiskResult(
+        signal_id=result.signal_id,
+        risk_result_id=result.risk_result_id,
+        evaluation_context_hash=result.evaluation_context_hash,
+        risk_status=RiskResultStatus(result.risk_status),
+        risk_reason=result.risk_reason,
+        risk_level=result.risk_level,
+        requested_quantity=result.requested_quantity,
+        approved_quantity=result.approved_quantity,
+        max_quantity=result.max_quantity,
+        expected_margin=result.expected_margin,
+        expected_notional=result.expected_notional,
+        config_hash=result.config_hash,
+        evaluation_ts=result.evaluation_ts,
+        raw_payload=result.raw_payload,
+    )
+
+
+def order_intent_to_domain(intent: OrderIntentOrm) -> OrderIntent:
+    return OrderIntent(
+        intent_id=intent.intent_id,
+        signal_id=intent.signal_id,
+        risk_result_id=intent.risk_result_id,
+        strategy_name=intent.strategy_name,
+        strategy_version=intent.strategy_version,
+        strategy_config_hash=intent.strategy_config_hash,
+        runtime_id=intent.runtime_id,
+        symbol=intent.symbol,
+        instrument_id=intent.instrument_id,
+        trade_instrument_id=intent.trade_instrument_id,
+        exchange=intent.exchange,
+        trading_day=intent.trading_day,
+        timeframe=BarTimeframe(intent.timeframe),
+        bar_ts=intent.bar_ts,
+        feature_version=intent.feature_version,
+        feature_config_hash=intent.feature_config_hash,
+        side=SignalSide(intent.side),
+        offset=Offset(intent.offset),
+        quantity=intent.quantity,
+        price=intent.price,
+        order_type=OrderType(intent.order_type),
+        tif=intent.tif,
+        expected_margin=intent.expected_margin,
+        expected_notional=intent.expected_notional,
+        intent_reason=intent.intent_reason,
+        raw_payload=intent.raw_payload,
     )
 
 
@@ -1489,6 +1550,150 @@ class SQLAlchemySignalEventRepository:
             raise SignalLifecycleConflictError(
                 f"signal lifecycle event key reused with different canonical payload: "
                 f"{event.event_key}"
+            )
+        return existing
+
+
+class SQLAlchemyTradingRiskResultRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def append_risk_result(self, result: TradingRiskResult) -> TradingRiskResult:
+        existing = self.get_by_risk_result_id(result.risk_result_id)
+        if existing is not None:
+            return self._existing_result_for_append(existing, result)
+
+        try:
+            with self._session.begin_nested():
+                result_orm = TradingRiskResultOrm(
+                    risk_result_id=result.risk_result_id,
+                    signal_id=result.signal_id,
+                    evaluation_context_hash=result.evaluation_context_hash,
+                    risk_status=result.risk_status.value,
+                    risk_reason=result.risk_reason,
+                    risk_level=result.risk_level,
+                    requested_quantity=result.requested_quantity,
+                    approved_quantity=result.approved_quantity,
+                    max_quantity=result.max_quantity,
+                    expected_margin=result.expected_margin,
+                    expected_notional=result.expected_notional,
+                    config_hash=result.config_hash,
+                    evaluation_ts=result.evaluation_ts,
+                    raw_payload=result.raw_payload,
+                )
+                self._session.add(result_orm)
+                self._session.flush()
+            return trading_risk_result_to_domain(result_orm)
+        except IntegrityError as exc:
+            existing_after_conflict = self.get_by_risk_result_id(result.risk_result_id)
+            if existing_after_conflict is not None:
+                return self._existing_result_for_append(existing_after_conflict, result)
+            raise RepositoryError(
+                f"trading risk result append failed: {result.risk_result_id}"
+            ) from exc
+
+    def get_by_risk_result_id(self, risk_result_id: str) -> TradingRiskResult | None:
+        result = self._session.scalar(
+            select(TradingRiskResultOrm).where(
+                TradingRiskResultOrm.risk_result_id == risk_result_id
+            )
+        )
+        return trading_risk_result_to_domain(result) if result else None
+
+    def list_by_signal_id(self, signal_id: str) -> list[TradingRiskResult]:
+        results = self._session.scalars(
+            select(TradingRiskResultOrm)
+            .where(TradingRiskResultOrm.signal_id == signal_id)
+            .order_by(TradingRiskResultOrm.evaluation_ts.asc(), TradingRiskResultOrm.id.asc())
+        ).all()
+        return [trading_risk_result_to_domain(result) for result in results]
+
+    def _existing_result_for_append(
+        self,
+        existing: TradingRiskResult,
+        result: TradingRiskResult,
+    ) -> TradingRiskResult:
+        if canonical_trading_risk_result_payload(
+            existing
+        ) != canonical_trading_risk_result_payload(result):
+            raise TradingRiskResultConflictError(
+                "trading risk result identity reused with different canonical payload: "
+                f"{result.risk_result_id}"
+            )
+        return existing
+
+
+class SQLAlchemyOrderIntentRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def append_order_intent(self, intent: OrderIntent) -> OrderIntent:
+        existing = self.get_by_intent_id(intent.intent_id)
+        if existing is not None:
+            return self._existing_intent_for_append(existing, intent)
+
+        try:
+            with self._session.begin_nested():
+                intent_orm = OrderIntentOrm(
+                    intent_id=intent.intent_id,
+                    signal_id=intent.signal_id,
+                    risk_result_id=intent.risk_result_id,
+                    strategy_name=intent.strategy_name,
+                    strategy_version=intent.strategy_version,
+                    strategy_config_hash=intent.strategy_config_hash,
+                    runtime_id=intent.runtime_id,
+                    symbol=intent.symbol,
+                    instrument_id=intent.instrument_id,
+                    trade_instrument_id=intent.trade_instrument_id,
+                    exchange=intent.exchange,
+                    trading_day=intent.trading_day,
+                    timeframe=intent.timeframe.value,
+                    bar_ts=intent.bar_ts,
+                    feature_version=intent.feature_version,
+                    feature_config_hash=intent.feature_config_hash,
+                    side=intent.side.value,
+                    offset=intent.offset.value,
+                    quantity=intent.quantity,
+                    price=intent.price,
+                    order_type=intent.order_type.value,
+                    tif=intent.tif,
+                    expected_margin=intent.expected_margin,
+                    expected_notional=intent.expected_notional,
+                    intent_reason=intent.intent_reason,
+                    raw_payload=intent.raw_payload,
+                )
+                self._session.add(intent_orm)
+                self._session.flush()
+            return order_intent_to_domain(intent_orm)
+        except IntegrityError as exc:
+            existing_after_conflict = self.get_by_intent_id(intent.intent_id)
+            if existing_after_conflict is not None:
+                return self._existing_intent_for_append(existing_after_conflict, intent)
+            raise RepositoryError(f"order intent append failed: {intent.intent_id}") from exc
+
+    def get_by_intent_id(self, intent_id: str) -> OrderIntent | None:
+        intent = self._session.scalar(
+            select(OrderIntentOrm).where(OrderIntentOrm.intent_id == intent_id)
+        )
+        return order_intent_to_domain(intent) if intent else None
+
+    def list_by_signal_id(self, signal_id: str) -> list[OrderIntent]:
+        intents = self._session.scalars(
+            select(OrderIntentOrm)
+            .where(OrderIntentOrm.signal_id == signal_id)
+            .order_by(OrderIntentOrm.created_at.asc(), OrderIntentOrm.id.asc())
+        ).all()
+        return [order_intent_to_domain(intent) for intent in intents]
+
+    def _existing_intent_for_append(
+        self,
+        existing: OrderIntent,
+        intent: OrderIntent,
+    ) -> OrderIntent:
+        if canonical_order_intent_payload(existing) != canonical_order_intent_payload(intent):
+            raise OrderIntentConflictError(
+                "order intent identity reused with different canonical payload: "
+                f"{intent.intent_id}"
             )
         return existing
 

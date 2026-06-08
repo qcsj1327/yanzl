@@ -13,6 +13,7 @@
 - `src/futures_mvp/db/models.py`
 - `alembic/versions/0001_initial_schema.py`
 - `alembic/versions/0002_oms_repository_support.py`
+- `alembic/versions/0011_stage_j_trading_workflow_core.py`
 
 `DOMAIN_FREEZE.md` 不得遗漏当前 Domain 契约中已经存在的字段。新增字段、删除字段、字段重命名或字段语义变化，必须通过 domain migration，并同步更新本文档。
 
@@ -1843,9 +1844,9 @@ Stage I 已新增 `signal_events` 表作为 Signal lifecycle event ledger。
 
 ## Stage J Trading Workflow Core Contract Freeze
 
-Stage J 冻结 Trading Workflow Core 契约：`SignalDecision -> RiskResult -> OrderIntent -> OMS.create_order`。本阶段只改文档，不写代码，不改 schema，不改 `src/` / `tests/` / `alembic/`，不改 OMS / Risk / Strategy / Execution implementation，不进入 Broker / Runtime / Paper / Sim / Live。
+Stage J 已实现 Trading Workflow Core：`SignalDecision -> TradingRiskResult -> OrderIntent`。本阶段停止在 `OrderIntent` persistence，不调用 OMS，不调用 Execution，不调用 Broker，不写 `orders` / `order_events`，不进入 Broker / Runtime / Paper / Sim / Live。
 
-Stage J 是契约冻结，不表示当前代码已经实现 `RiskResultRepository`、`OrderIntentRepository`、`OrderIntent` schema 或 `OMS.create_order(OrderIntent)`。这些只能在后续实现阶段通过明确 migration / tests 进入。
+Stage J 已新增 Stage J 专用 `TradingRiskResult`，避免和早期 pure Risk / OMS legacy `RiskResult(decision, rule_name, reason)` 混淆。Legacy `RiskResult`、现有 `RiskEngine` 和 OMS state machine 未被修改。`OrderIntent -> OMS.create_order` bridge deferred 到 future Stage J.2 / OMS bridge adapter review。
 
 ### Trading Workflow source-of-truth
 
@@ -1857,7 +1858,9 @@ Trading Workflow 只允许消费：
 - `PortfolioContext`
 - `AccountContext`
 - `MarginSnapshot`
-- `RiskConfig`
+- `RiskConfig` 或 Stage J `risk_config_hash`
+- `requested_quantity`
+- `evaluation_context_hash`
 - `TradingCalendar` / `Session`
 
 Trading Workflow 禁止消费：
@@ -1881,9 +1884,9 @@ Stage J `RiskResultStatus` 冻结为：
 - `BLOCK`：策略、账户、组合、交易时段或安全门禁阻断，不生成 `OrderIntent`。
 - `UNKNOWN`：风控无法确定 typed result，不生成 `OrderIntent`。
 
-### RiskResult contract
+### TradingRiskResult contract
 
-Stage J `RiskResult` 是 trading workflow 的 deterministic 风控事实。它不同于早期 pure Risk / OMS legacy `RiskResult(decision, rule_name, reason)`；后续实现如需迁移，必须显式处理兼容边界，不得把 legacy 字段扩展成隐式事实来源。
+Stage J `TradingRiskResult` 是 trading workflow 的 deterministic 风控事实。它不同于早期 pure Risk / OMS legacy `RiskResult(decision, rule_name, reason)`；后续实现如需迁移，必须显式处理兼容边界，不得把 legacy 字段扩展成隐式事实来源。
 
 字段冻结：
 
@@ -1891,25 +1894,33 @@ Stage J `RiskResult` 是 trading workflow 的 deterministic 风控事实。它�
 |---|---|---|---|
 | `signal_id` | `str` | required | 输入 `SignalDecision` 身份。 |
 | `risk_result_id` | `str` | required | deterministic RiskResult identity。 |
+| `evaluation_context_hash` | `str` | required | 上层应用基于 typed deterministic inputs 供应的评价上下文身份。 |
 | `risk_status` | `RiskResultStatus` | required | `ACCEPT` / `REDUCE` / `REJECT` / `BLOCK` / `UNKNOWN`。 |
 | `risk_reason` | `str \| None` | `None` | 类型化风控说明；不是 raw diagnostic payload。 |
 | `risk_level` | `str` | required | 风控等级，例如 rule/policy severity；后续 enum 化前仍必须 canonical。 |
+| `requested_quantity` | `Decimal` | required | 原始请求数量，来自 Stage J context。 |
 | `approved_quantity` | `Decimal` | required | 允许下单数量；`ACCEPT` 等于 requested quantity，`REDUCE` 为降低后的 positive quantity，其他状态为 `Decimal("0")`。 |
 | `max_quantity` | `Decimal` | required | 本次上下文允许的最大数量。 |
 | `expected_margin` | `Decimal` | required | 预期保证金。 |
 | `expected_notional` | `Decimal` | required | 预期名义金额。 |
 | `config_hash` | `str` | required | `RiskConfig` canonical hash。 |
-| `evaluation_ts` | `datetime` | required | 风控评价时间；用于 audit，只有进入 canonical policy 时才可影响 identity。 |
+| `evaluation_ts` | `datetime` | required | 风控评价时间；用于 audit；当前实现不参与 `risk_result_id` / canonical。 |
+| `raw_payload` | `dict[str, Any] \| None` | `None` | 诊断字段，不参与 facts / canonical / id。 |
 
 规则：
 
-- `RiskResult` 必须 deterministic。
+- `TradingRiskResult` 必须 deterministic。
 - `raw_payload` 不参与事实。
 - same inputs -> same result。
-- `signal_id + config_hash + position snapshot identity` 必须得到 deterministic result。
-- `risk_result_id` 必须由 canonical payload deterministic 派生，不得使用 runtime random value、DB id 或系统当前时间。
+- `signal_id + config_hash + evaluation_context_hash` 必须得到 deterministic result。
+- `risk_result_id` 必须由 canonical payload deterministic 派生，不得使用 runtime random value、DB id、`raw_payload` 或系统当前时间。
+- `evaluation_ts` 不参与 `risk_result_id` 或 canonical equality。
 - same canonical -> no-op。
 - different canonical -> conflict / error。
+- `TradingRiskResult.config_hash` 必须等于 `TradingWorkflowContext.risk_config_hash`。
+- `TradingRiskResult.evaluation_context_hash` 必须等于 `TradingWorkflowContext.evaluation_context_hash`。
+- `requested_quantity`、`approved_quantity`、`max_quantity`、`expected_margin`、`expected_notional` 均 required Decimal；`None` 不允许进入 Stage J core facts。
+- `REJECT` / `BLOCK` / `UNKNOWN` 用 `Decimal("0")` 表达明确 none/blocked。
 
 ### OrderIntent contract
 
@@ -1925,10 +1936,16 @@ Stage J `RiskResult` 是 trading workflow 的 deterministic 风控事实。它�
 | `strategy_name` | `str` | required | strategy identity。 |
 | `strategy_version` | `str` | required | strategy identity。 |
 | `strategy_config_hash` | `str` | required | strategy identity。 |
+| `runtime_id` | `str` | required | runtime lineage / audit 字段，不代表 deterministic signal identity。 |
+| `symbol` | `str` | required | display / market symbol identity。 |
 | `instrument_id` | `str` | required | instrument identity。 |
 | `trade_instrument_id` | `str` | required | tradable instrument identity。 |
-| `symbol` | `str` | required | display / market symbol identity。 |
 | `exchange` | `str` | required | exchange identity。 |
+| `trading_day` | `date` | required | 交易日。 |
+| `timeframe` | `BarTimeframe` | required | 策略 timeframe。 |
+| `bar_ts` | `datetime` | required | source bar timestamp。 |
+| `feature_version` | `str` | required | feature identity。 |
+| `feature_config_hash` | `str` | required | feature identity。 |
 | `side` | enum / `str` | required | 买卖方向。 |
 | `offset` | enum / `str` | required | 开平方向。 |
 | `quantity` | `Decimal` | required | 授权下单数量。 |
@@ -1938,6 +1955,7 @@ Stage J `RiskResult` 是 trading workflow 的 deterministic 风控事实。它�
 | `expected_margin` | `Decimal` | required | 来自 `RiskResult` 的预期保证金。 |
 | `expected_notional` | `Decimal` | required | 来自 `RiskResult` 的预期名义金额。 |
 | `intent_reason` | `str \| None` | `None` | 生成意图的 typed reason。 |
+| `raw_payload` | `dict[str, Any] \| None` | `None` | 诊断字段，不参与 facts / canonical / id。 |
 
 规则：
 
@@ -1945,7 +1963,7 @@ Stage J `RiskResult` 是 trading workflow 的 deterministic 风控事实。它�
 - `OrderIntent` 不得从 `OrderStatus`、`OrderEvent`、`ExchangeReport`、Broker state、OMS internals 或 `raw_payload` 派生。
 - `OrderIntent` same canonical -> no-op。
 - `OrderIntent` different canonical -> conflict / error。
-- Stage J 目标契约中，`OMS.create_order(...)` 只接受 `OrderIntent`。当前实现仍是 legacy `OrderRequest` 入口，后续实现必须通过显式 contract migration 改造。
+- Stage J 当前不调用 `OMS.create_order(...)`。当前 OMS 实现仍是 legacy `OrderRequest` 入口；`OrderIntent -> OMS` bridge 必须通过 future Stage J.2 / OMS bridge adapter review 显式迁移。
 
 ### Workflow contract
 
@@ -1954,15 +1972,15 @@ Stage J `RiskResult` 是 trading workflow 的 deterministic 风控事实。它�
 ```text
 SignalDecision
 ↓
-RiskEngine.evaluate(...)
+RiskEvaluator.evaluate(...)
 ↓
-RiskResult
+TradingRiskResult
 ↓
 OrderIntentBuilder
 ↓
 OrderIntent
 ↓
-OMS.create_order(...)
+OrderIntent persistence
 ```
 
 只有以下 `RiskResultStatus` 允许进入 `OrderIntentBuilder` 并创建 `OrderIntent`：
@@ -1992,7 +2010,9 @@ OMS.create_order(...)
 
 如果 reduced quantity `<= 0`，必须转换为 `REJECT`。
 
-`ACCEPT` 必须保持 approved quantity 等于 original requested quantity。`REJECT` / `BLOCK` / `UNKNOWN` 的 approved quantity 必须为 `Decimal("0")`。
+如果 reduced quantity 等于 original requested quantity，必须 normalize 为 `ACCEPT`。
+
+`ACCEPT` 必须保持 approved quantity 等于 original requested quantity。`approved_quantity > requested_quantity` 必须返回 `ERROR` 且不持久化。`REJECT` / `BLOCK` / `UNKNOWN` 的 approved quantity 必须为 `Decimal("0")`。
 
 ### Replay / idempotency contract
 
@@ -2016,7 +2036,7 @@ Replay 输入相同：
 
 Replay 结果必须相同：
 
-- `RiskResult`
+- `TradingRiskResult`
 - `OrderIntent`
 
 Replay 禁止：
@@ -2036,18 +2056,21 @@ Replay 禁止：
 - OMS 不消费 `FeatureSnapshot`。
 - OMS 不消费 `StrategyConfig`。
 - Broker 不参与 Stage J。
-- Trading Workflow application layer 负责连接 `SignalDecision`、`RiskEngine.evaluate(...)`、`OrderIntentBuilder` 和 `OMS.create_order(...)`，但不得把 OMS state machine internals 暴露给 Risk 或 Strategy。
+- `TradingWorkflowService` 负责连接 `SignalDecision`、`RiskEvaluator.evaluate(...)`、`OrderIntentBuilder` 和 repository persistence，但不得 import OMS / Execution / Broker，不得把 OMS state machine internals 暴露给 Risk 或 Strategy。
 
-### Future repositories
+### Repository / UoW contract
 
-Stage J 后续实现需要：
+Stage J 已实现：
 
-- `RiskResultRepository`
+- `TradingRiskResultRepository`
 - `OrderIntentRepository`
+- `UnitOfWork.trading_risk_results`
+- `UnitOfWork.order_intents`
+- 窄 `TradingWorkflowUnitOfWork`
 
 唯一键：
 
-- `RiskResult`：`risk_result_id`
+- `TradingRiskResult`：`risk_result_id`
 - `OrderIntent`：`intent_id`
 
 Canonical excludes：
@@ -2055,6 +2078,12 @@ Canonical excludes：
 - `raw_payload`
 - `created_at`
 - `received_at`
+- 非 deterministic `evaluation_ts`
+
+Canonical includes：
+
+- `evaluation_context_hash`
+- `requested_quantity`
 
 Repository behavior：
 
@@ -2062,9 +2091,9 @@ Repository behavior：
 - duplicate different canonical -> typed conflict / error。
 - 不裸露 `IntegrityError`。
 
-### Stage J future implementation tests
+### Stage J implementation tests
 
-未来实现必须覆盖：
+Stage J tests 覆盖：
 
 - `ACCEPT`
 - `REDUCE`
@@ -2194,6 +2223,9 @@ Stage G 不实现：
 - `MarketDataMock.latest_price(instrument_id: str) -> Decimal`：Mock 行情价格查询。
 - `StrategyEngine.on_market_data(...) -> list[Signal]`：策略代码只能输出信号。
 - `FuturesRiskEngine.check_order(signal: Signal) -> RiskResult`：pure Risk 风控计算边界；OMS 不调用该接口。
+- `RiskEvaluator.evaluate(context: TradingWorkflowContext) -> TradingRiskResult`：Stage J trading workflow 风控评价端口；`TradingWorkflowService` 只依赖该 Protocol，不依赖 concrete RiskEngine。
+- `TradingWorkflowService.run(context: TradingWorkflowContext) -> TradingWorkflowResult`：Stage J workflow application service；持久化 `TradingRiskResult`，仅 `ACCEPT` / `REDUCE` 生成并持久化 `OrderIntent`；不调用 OMS / Execution / Broker。
+- `TradingWorkflowReplay.replay(contexts: Iterable[TradingWorkflowContext]) -> list[TradingWorkflowResult]`：Stage J deterministic replay；使用同一 service path，不调用 OMS / Execution / Accounting。
 - `OMS.create_order(request: OrderRequest, *, client_order_id: str) -> OrderState`：创建或幂等返回 OMS 订单。
 - `OMS.apply_risk_result(order_id: str, risk_result: RiskResult, *, external_event_id: str, occurred_at: datetime | None = None) -> OrderEventApplicationResult`：消费外部 `RiskResult` 推进风控状态，不计算风控。
 - `OMS.apply_order_event(event: OrderEvent) -> OrderEventApplicationResult`：订单状态变化通过 OMS 事件处理。
@@ -2837,6 +2869,81 @@ Stage G 已新增 `market_bars` 表作为 Bar market facts ledger。
 - `(exchange, instrument_id, trading_day)` 复合索引
 
 Canonical payload 字段为 `exchange`、`instrument_id`、`trade_instrument_id`、`symbol`、`trading_day`、`timeframe`、`bar_ts`、`open`、`high`、`low`、`close`、`volume`、`turnover`、`open_interest`、`source`、`quality_status`。`raw_payload` 和 `received_at` 不参与 canonical equality。
+
+### risk_results
+
+Stage J 已新增 `risk_results` 表作为 `TradingRiskResult` persisted facts ledger。
+
+字段：
+
+- `id`
+- `risk_result_id`
+- `signal_id`
+- `evaluation_context_hash`
+- `risk_status`
+- `risk_reason`
+- `risk_level`
+- `requested_quantity`
+- `approved_quantity`
+- `max_quantity`
+- `expected_margin`
+- `expected_notional`
+- `config_hash`
+- `evaluation_ts`
+- `raw_payload`
+- `created_at`
+
+约束和索引：
+
+- `UNIQUE(risk_result_id)`，名称为 `uq_risk_results_risk_result_id`
+- `signal_id` 索引
+
+Canonical payload 字段为 `signal_id`、`evaluation_context_hash`、`risk_status`、`risk_reason`、`risk_level`、`requested_quantity`、`approved_quantity`、`max_quantity`、`expected_margin`、`expected_notional` 和 `config_hash`。`risk_result_id` 是该 canonical payload 的 deterministic identity；`raw_payload`、`created_at`、`received_at`、DB id 和非 deterministic `evaluation_ts` 不参与 canonical equality。
+
+### order_intents
+
+Stage J 已新增 `order_intents` 表作为 `OrderIntent` persisted facts ledger。`order_intents` 不写 `orders`，不替代 OMS `OrderState`，不表达 OMS state。
+
+字段：
+
+- `id`
+- `intent_id`
+- `signal_id`
+- `risk_result_id`
+- `strategy_name`
+- `strategy_version`
+- `strategy_config_hash`
+- `runtime_id`
+- `symbol`
+- `instrument_id`
+- `trade_instrument_id`
+- `exchange`
+- `trading_day`
+- `timeframe`
+- `bar_ts`
+- `feature_version`
+- `feature_config_hash`
+- `side`
+- `offset`
+- `quantity`
+- `price`
+- `order_type`
+- `tif`
+- `expected_margin`
+- `expected_notional`
+- `intent_reason`
+- `raw_payload`
+- `created_at`
+
+约束和索引：
+
+- `UNIQUE(intent_id)`，名称为 `uq_order_intents_intent_id`
+- `signal_id` 索引
+- `risk_result_id` 索引
+- `instrument_id` 索引
+- `trading_day` 索引
+
+Canonical payload 字段为 `signal_id`、`risk_result_id`、strategy identity、instrument identity、`side`、`offset`、`quantity`、`price`、`order_type`、`tif`、`expected_margin`、`expected_notional` 和 `intent_reason`。`intent_id` 是该 canonical payload 的 deterministic identity；`raw_payload`、`created_at`、`received_at` 和 DB id 不参与 canonical equality。
 
 ### risk_events
 

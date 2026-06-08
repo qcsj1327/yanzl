@@ -556,6 +556,71 @@ class SignalEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class TradingRiskResult(Base):
+    __tablename__ = "risk_results"
+    __table_args__ = (
+        UniqueConstraint("risk_result_id", name="uq_risk_results_risk_result_id"),
+        Index("ix_risk_results_signal_id", "signal_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    risk_result_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    signal_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    evaluation_context_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    risk_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    risk_reason: Mapped[str | None] = mapped_column(String(512))
+    risk_level: Mapped[str] = mapped_column(String(32), nullable=False)
+    requested_quantity: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    approved_quantity: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    max_quantity: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    expected_margin: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    expected_notional: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    evaluation_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    raw_payload: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class OrderIntent(Base):
+    __tablename__ = "order_intents"
+    __table_args__ = (
+        UniqueConstraint("intent_id", name="uq_order_intents_intent_id"),
+        Index("ix_order_intents_signal_id", "signal_id"),
+        Index("ix_order_intents_risk_result_id", "risk_result_id"),
+        Index("ix_order_intents_instrument_id", "instrument_id"),
+        Index("ix_order_intents_trading_day", "trading_day"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    intent_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    signal_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    risk_result_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    strategy_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    strategy_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    strategy_config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    runtime_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(64), nullable=False)
+    instrument_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    trade_instrument_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    exchange: Mapped[str] = mapped_column(String(32), nullable=False)
+    trading_day: Mapped[date] = mapped_column(Date, nullable=False)
+    timeframe: Mapped[str] = mapped_column(String(16), nullable=False)
+    bar_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    feature_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    feature_config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    side: Mapped[str] = mapped_column(String(16), nullable=False)
+    offset: Mapped[str] = mapped_column(String(32), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    price: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    order_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    tif: Mapped[str] = mapped_column(String(16), nullable=False)
+    expected_margin: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    expected_notional: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    intent_reason: Mapped[str | None] = mapped_column(String(512))
+    raw_payload: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class RiskEvent(Base):
     __tablename__ = "risk_events"
 

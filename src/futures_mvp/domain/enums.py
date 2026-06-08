@@ -206,6 +206,24 @@ class SignalResultStatus(StrEnum):
     ERROR = "ERROR"
 
 
+class RiskResultStatus(StrEnum):
+    ACCEPT = "ACCEPT"
+    REDUCE = "REDUCE"
+    REJECT = "REJECT"
+    BLOCK = "BLOCK"
+    UNKNOWN = "UNKNOWN"
+
+
+class TradingWorkflowResultStatus(StrEnum):
+    INTENT_CREATED = "INTENT_CREATED"
+    RISK_REJECTED = "RISK_REJECTED"
+    RISK_BLOCKED = "RISK_BLOCKED"
+    RISK_UNKNOWN = "RISK_UNKNOWN"
+    DUPLICATE = "DUPLICATE"
+    CONFLICT = "CONFLICT"
+    ERROR = "ERROR"
+
+
 class BarTimeframe(StrEnum):
     M1 = "M1"
     M5 = "M5"

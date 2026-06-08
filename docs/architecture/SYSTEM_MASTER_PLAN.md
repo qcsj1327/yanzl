@@ -57,7 +57,6 @@
 当前尚未实现为业务能力的部分：
 
 - Application Execution Orchestrator。
-- Trading Workflow Core implementation。
 - RiskContext、portfolio/account risk、intraday limits、kill switch risk。
 - Recovery / Replay Framework。
 - FastAPI / Celery / Kafka / Runtime control plane。
@@ -136,11 +135,12 @@
 3. Feature Builder 基于 typed market facts、calendar、session 和规则版本生成 deterministic `FeatureSnapshot`。
 4. Strategy 消费 `FeatureSnapshot` 和允许的 typed context，输出 `SignalCandidate` / `SignalDecision`。
 5. Trading Workflow application layer 组装 `SignalDecision`、Strategy / Position / Portfolio / Account / Margin / RiskConfig / Calendar typed context。
-6. RiskEngine deterministic evaluate 并返回 Stage J `RiskResult`。
+6. RiskEvaluator deterministic evaluate 并返回 Stage J `TradingRiskResult`。
 7. 只有 `ACCEPT` / `REDUCE` 进入 `OrderIntentBuilder`；`REJECT` / `BLOCK` / `UNKNOWN` 不创建 `OrderIntent`，不调用 OMS。
 8. `OrderIntentBuilder` 生成 deterministic `OrderIntent` 和 `intent_id`。
-9. OMS 通过 `OMS.create_order(OrderIntent)` 创建订单；`OrderIntent` 不是 Order，不承载 OMS state。
-10. Application Execution Orchestrator 对可提交订单发起 submit。
+9. Stage J 持久化 `OrderIntent`；`OrderIntent` 不是 Order，不承载 OMS state。
+10. Future Stage J.2 / OMS bridge adapter 通过显式验收后，才可把 `OrderIntent` 转入 OMS 创建订单。
+11. Application Execution Orchestrator 对可提交订单发起 submit。
 11. Orchestrator 先通过 OMS 事件让订单进入 `SUBMITTING`，再调用 EMS command port。
 12. EMS 调用 Mock / paper / SimNow / live broker adapter 的 command port。
 13. Execution / Broker adapter 产生 typed `ExchangeReport`。
@@ -442,27 +442,29 @@ Stage F contract freeze：
 - Acceptance criteria：Strategy / Signal Lifecycle Core 可 deterministic 生成、持久化、幂等 duplicate、typed conflict/error、执行 lifecycle gate 和 replay；不得越过 Strategy source-of-truth、output boundary、replay/idempotency 和 Risk / OMS 隔离规则。
 - Suggested tag：`stage-i-strategy-signal-lifecycle-core`。
 
-### Stage J: Trading Workflow Core Contract Freeze
+### Stage J: Trading Workflow Core
 
-- Goal：冻结 Strategy / Signal -> Risk -> OrderIntent -> OMS 的 Trading Workflow Core 契约；本阶段只改文档，不实现代码、schema、repository、OMS/Risk/Strategy/Execution 变更，也不进入 Broker / Paper / Sim / Live。
+- Goal：实现 Strategy / Signal -> TradingRiskResult -> OrderIntent 的 Trading Workflow Core；本阶段停止在 `OrderIntent` persistence，不调用 OMS / Execution / Broker，不写 `orders` / `order_events`，不进入 Broker / Paper / Sim / Live。
 - Inputs：`SignalDecision`、`StrategyConfig`、`PositionContext`、`PortfolioContext`、`AccountContext`、`MarginSnapshot`、`RiskConfig`、`TradingCalendar` / `Session`。
 - Forbidden inputs：`OrderStatus`、`OrderEvent`、`ExchangeReport`、`raw_payload`、Broker state、OMS state machine internals。
-- Outputs：`RiskResult`、`OrderIntent` 和 workflow/replay/idempotency/boundary contract；`OrderIntent` 不是 Order。
-- Allowed changes：`docs/architecture/SYSTEM_MASTER_PLAN.md`、`docs/domain/DOMAIN_FREEZE.md`。
-- Forbidden changes：`src/`、`tests/`、`alembic/`、schema、OMS implementation、Risk implementation、Strategy implementation、Execution implementation、Broker / Runtime。
+- Outputs：`TradingRiskResult`、`OrderIntent`、repository/UoW persistence、deterministic replay 和 workflow/idempotency/boundary tests；`OrderIntent` 不是 Order。
+- Implemented changes：Stage J domain enums/models、pure `RiskEvaluator` Protocol、pure `OrderIntentBuilder`、canonical payload/id helpers、`TradingRiskResultRepository` / `OrderIntentRepository` Protocol、SQLAlchemy repositories、UoW integration、`0011_stage_j_trading_workflow_core` migration、`TradingWorkflowService`、`TradingWorkflowReplay`、unit/integration/boundary tests 和 docs update。
+- Forbidden changes：不改 OMS implementation / state machine，不调用 `OMS.create_order`，不调用 Execution，不接 Broker / Runtime，不写 `orders` / `order_events`，不做 portfolio optimization。
 - `RiskResultStatus`：冻结为 `ACCEPT`、`REDUCE`、`REJECT`、`BLOCK`、`UNKNOWN`。
-- `RiskResult`：字段冻结为 `signal_id`、`risk_result_id`、`risk_status`、`risk_reason`、`risk_level`、`approved_quantity`、`max_quantity`、`expected_margin`、`expected_notional`、`config_hash`、`evaluation_ts`。RiskResult 必须 deterministic；`raw_payload` 不参与事实；same inputs -> same result。
+- `TradingWorkflowContext`：必须携带 `requested_quantity`、`risk_config_hash` 和由上层应用基于 typed deterministic inputs 供应的 `evaluation_context_hash`；Stage J 不从 DB 或 `raw_payload` 计算该 hash。
+- `TradingRiskResult`：字段冻结为 `signal_id`、`risk_result_id`、`evaluation_context_hash`、`risk_status`、`risk_reason`、`risk_level`、`requested_quantity`、`approved_quantity`、`max_quantity`、`expected_margin`、`expected_notional`、`config_hash`、`evaluation_ts`。`TradingRiskResult` 必须 deterministic；`raw_payload` 和非 deterministic `evaluation_ts` 不参与 canonical/id；same inputs -> same result。
 - `OrderIntent`：字段冻结为 `intent_id`、`signal_id`、`risk_result_id`、strategy identity、instrument identity、`side`、`offset`、`quantity`、`price`、`order_type`、`tif`、`expected_margin`、`expected_notional`、`intent_reason`。`intent_id` 必须 deterministic。
-- Workflow：`SignalDecision -> RiskEngine.evaluate(...) -> RiskResult -> OrderIntentBuilder -> OrderIntent -> OMS.create_order(...)`。只有 `ACCEPT` / `REDUCE` 可进入 `OrderIntent`；`REJECT` / `BLOCK` / `UNKNOWN` 不创建 `OrderIntent`，不调用 OMS。
-- Quantity reduction：`REDUCE` 必须满足 reduced quantity `> 0` 且 `< original requested quantity`；若 reduced quantity `<= 0`，必须转换为 `REJECT`。
-- Idempotency：`RiskResult` same canonical -> no-op，different canonical -> conflict/error；`OrderIntent` same canonical -> no-op，different canonical -> conflict/error。`signal_id + config_hash + position snapshot identity` 必须得到 deterministic result。
-- Replay：same `SignalDecision`、`RiskConfig`、`PositionContext`、`PortfolioContext`、`MarginSnapshot` 得到 same `RiskResult` 和 same `OrderIntent`；replay 不调用 OMS、不调用 Execution、不修改 Accounting。
-- Boundaries：Strategy 不创建 `OrderIntent`、不调用 OMS；Risk 不知道 Execution；Execution 不知道 Signal；OMS 不消费 `FeatureSnapshot`、不消费 `StrategyConfig`；Broker 不参与 Stage J。
-- Future repositories：后续实现需要 `RiskResultRepository` 和 `OrderIntentRepository`。唯一键分别为 `risk_result_id`、`intent_id`。Canonical 排除 `raw_payload`、`created_at`、`received_at`。
-- Required future tests：`ACCEPT`、`REDUCE`、`REJECT`、`BLOCK`、`UNKNOWN`；deterministic RiskResult；deterministic OrderIntent；REDUCE quantity rule；REJECT/BLOCK/UNKNOWN no OMS call；replay deterministic；duplicate same canonical；duplicate different canonical；no Strategy direct OMS call；no Execution direct Signal consumption；no raw_payload facts。
-- Explicit non-goals：Execution submit、Broker adapter、Paper、Sim、Live、Exchange connectivity、OMS state machine changes、Portfolio optimization。
-- Acceptance criteria：Trading Workflow Core 契约可作为下一阶段实现边界；不得提前改变代码、schema、OMS/Risk/Strategy/Execution 或 Broker/Runtime。
-- Suggested tag：`stage-j-trading-workflow-core-contract-freeze`。
+- Workflow：`SignalDecision -> RiskEvaluator.evaluate(...) -> TradingRiskResult -> OrderIntentBuilder -> OrderIntent persistence`。只有 `ACCEPT` / `REDUCE` 可进入 `OrderIntent`；`REJECT` / `BLOCK` / `UNKNOWN` 不创建 `OrderIntent`，不调用 OMS。
+- Quantity reduction：`ACCEPT` 必须满足 approved quantity 等于 original requested quantity；`REDUCE` 必须满足 reduced quantity `> 0` 且 `< original requested quantity`；若 reduced quantity 等于 requested quantity，normalize 为 `ACCEPT`；若 reduced quantity `<= 0`，normalize 为 `REJECT`；若 approved quantity 大于 requested quantity，返回 `ERROR` 且不持久化。
+- Decimal facts：`requested_quantity`、`approved_quantity`、`max_quantity`、`expected_margin`、`expected_notional` 均为 required Decimal。`REJECT` / `BLOCK` / `UNKNOWN` 使用 `Decimal("0")` 表示明确 none/blocked；`None` 不允许进入 Stage J core facts。
+- Idempotency：`RiskResult` same canonical -> no-op，different canonical -> conflict/error；`OrderIntent` same canonical -> no-op，different canonical -> conflict/error。`signal_id + config_hash + evaluation_context_hash` 必须得到 deterministic result。
+- Replay：same `SignalDecision`、`RiskConfig`、`PositionContext`、`PortfolioContext`、`MarginSnapshot` 得到 same `TradingRiskResult` 和 same `OrderIntent`；replay 不调用 OMS、不调用 Execution、不修改 Accounting。
+- Boundaries：Strategy 不创建 `OrderIntent`、不调用 OMS；TradingWorkflowService 依赖 `RiskEvaluator` Protocol，不依赖 concrete RiskEngine；Risk 不知道 Execution；Execution 不知道 Signal；OMS 不消费 `FeatureSnapshot`、不消费 `StrategyConfig`；Broker 不参与 Stage J。
+- Repositories：已实现 `TradingRiskResultRepository` 和 `OrderIntentRepository`。唯一键分别为 `risk_result_id`、`intent_id`。Canonical 包含 `evaluation_context_hash` / `requested_quantity`，并排除 `raw_payload`、`created_at`、`received_at`、非 deterministic `evaluation_ts`。
+- Tests：覆盖 `ACCEPT`、`REDUCE`、`REJECT`、`BLOCK`、`UNKNOWN`；deterministic TradingRiskResult；deterministic OrderIntent；REDUCE quantity rule；REJECT/BLOCK/UNKNOWN no OMS call；replay deterministic；duplicate same canonical；duplicate different canonical；no OMS/Execution/Broker imports；no raw_payload facts。
+- Explicit non-goals：Execution submit、Broker adapter、Paper、Sim、Live、Exchange connectivity、OMS state machine changes、Portfolio optimization、OrderIntent -> OMS bridge。
+- Acceptance criteria：Trading Workflow Core 可 deterministic 生成并持久化 `TradingRiskResult` / `OrderIntent`，可 replay，且不越过 OMS / Execution / Broker 边界。
+- Suggested tag：`stage-j-trading-workflow-core`。
 
 ### Stage K: Recovery / Replay Framework
 
@@ -549,7 +551,7 @@ Stage N -> Stage O
 
 - Market Data / Feature Snapshot 是 Strategy / Signal Lifecycle 的前置，并应作为并行主线提前规划；Stage H 只冻结 FeatureSnapshot，不进入 Strategy / Signal。
 - Stage I 实现 Strategy / Signal Lifecycle Core，但不实现 Order creation、Risk check、OMS integration 或 Execution integration。
-- Stage J 冻结 Trading Workflow Core 契约，只定义 SignalDecision -> RiskResult -> OrderIntent -> OMS.create_order 的边界；不改 OMS state machine，不接 Execution，不进入 Broker/Runtime。
+- Stage J 实现 Trading Workflow Core，只到 SignalDecision -> TradingRiskResult -> OrderIntent persistence；不改 OMS state machine，不接 Execution，不进入 Broker/Runtime。
 - Risk Context / Portfolio Risk Upgrade 依赖 Position、Margin、Accounting、Market Data、FeatureSnapshot、Strategy / Signal，不应提前硬接 broker state 或 raw payload。
 - Recovery / Replay 依赖订单、成交、持仓、结算、行情、Strategy / Signal 和 Trading Workflow 语义。
 - Broker / Adapter 必须在 Recovery / Replay 和 Runtime 边界稳定后进入。
@@ -610,7 +612,7 @@ Contract Amendment 必须包含：
 - Accounting calculation：Trade、Position、Margin、PnL、Settlement。
 - Market Data data quality、FeatureSnapshot deterministic generation。
 - Strategy deterministic signal id、SignalCandidate / SignalDecision validation、Signal lifecycle gate。
-- Trading Workflow RiskResult / OrderIntent deterministic contract。
+- Trading Workflow TradingRiskResult / OrderIntent deterministic contract。
 
 ### Integration Tests
 
@@ -729,22 +731,20 @@ FastAPI、Celery、Kafka、Redis、async runtime、cloud、KMS 是后续 Runtime
 
 本总方案没有发现 P0/P1 blocker。
 
-下一步不是继续写文档，也不是进入 Broker / Runtime，而是进入：
+下一步不是进入 Broker / Runtime，而是先做：
 
 ```text
-Stage J implementation: Trading Workflow Core
+Stage J acceptance review / Stage J.2 OMS bridge adapter planning
 ```
 
-Stage J implementation 的实施入口应聚焦：
+Stage J.2 前必须确认：
 
-- 新增 typed `RiskResultStatus` / Stage J `RiskResult` contract 实现，保持 deterministic canonical。
-- 新增 `OrderIntent` 与 deterministic `intent_id`。
-- 实现 `OrderIntentBuilder`，只允许 `ACCEPT` / `REDUCE` 进入。
-- 实现 replay / idempotency guards：same canonical no-op，different canonical conflict/error。
-- 保持 Strategy 不调用 OMS，Risk 不知道 Execution，Execution 不知道 Signal，OMS 不消费 FeatureSnapshot / StrategyConfig。
-- 后续需要 repository 时再新增 `RiskResultRepository` / `OrderIntentRepository` 和 schema migration。
+- Stage J `TradingWorkflowService` 只生成并持久化 `TradingRiskResult` / `OrderIntent`。
+- Stage J replay 不调用 OMS / Execution / Accounting。
+- Stage J 没有写 `orders` / `order_events`。
+- `OrderIntent -> OMS.create_order` bridge deferred 到 future Stage J.2 / OMS bridge adapter review。
 
-Stage J implementation 完成后：
+Stage J acceptance review 通过后：
 
-- 可进入 Stage K: Recovery / Replay Framework。
+- 可规划 Stage J.2 OMS bridge adapter 或进入 Stage K: Recovery / Replay Framework。
 - 不应直接跳到 broker adapter 或 runtime infrastructure。
