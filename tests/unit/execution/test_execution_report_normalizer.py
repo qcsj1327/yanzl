@@ -176,6 +176,74 @@ def test_order_event_candidate_mapping_and_non_event_statuses() -> None:
     ) is None
 
 
+def test_normalized_report_to_order_event_candidate_full_status_coverage() -> None:
+    expected_candidates = {
+        ExecutionReportStatus.ACKED: OrderStatus.ACKED,
+        ExecutionReportStatus.PARTIALLY_FILLED: OrderStatus.PARTIALLY_FILLED,
+        ExecutionReportStatus.FILLED: OrderStatus.FILLED,
+        ExecutionReportStatus.REJECTED: OrderStatus.REJECTED_BY_EXCHANGE,
+        ExecutionReportStatus.CANCELED: OrderStatus.CANCELED,
+    }
+    for execution_status, order_status in expected_candidates.items():
+        normalized = NormalizedExecutionReport(
+            report_id=f"er-{execution_status.value}",
+            raw_report_id=f"raw-{execution_status.value}",
+            adapter_name="mock",
+            execution_target=ExecutionTarget.MOCK,
+            command_id="command-1",
+            order_id="order-1",
+            client_order_id="client-1",
+            adapter_order_ref="adapter-order-1",
+            exchange_order_id="exchange-order-1",
+            execution_status=execution_status,
+            filled_qty=Decimal("1")
+            if execution_status
+            in {ExecutionReportStatus.PARTIALLY_FILLED, ExecutionReportStatus.FILLED}
+            else Decimal("0"),
+            fill_price=Decimal("500")
+            if execution_status
+            in {ExecutionReportStatus.PARTIALLY_FILLED, ExecutionReportStatus.FILLED}
+            else None,
+            cumulative_filled_qty=Decimal("1")
+            if execution_status
+            in {ExecutionReportStatus.PARTIALLY_FILLED, ExecutionReportStatus.FILLED}
+            else Decimal("0"),
+            remaining_qty=Decimal("1"),
+            report_ts=NOW,
+            normalized_at=NOW + timedelta(seconds=1),
+            source_report_hash="hash-1",
+        )
+
+        candidate = build_order_event_candidate(normalized)
+
+        assert candidate is not None
+        assert candidate.execution_status is execution_status
+        assert candidate.new_status is order_status
+
+    for execution_status in {ExecutionReportStatus.SUBMITTED, ExecutionReportStatus.ERROR}:
+        normalized = NormalizedExecutionReport(
+            report_id=f"er-{execution_status.value}",
+            raw_report_id=f"raw-{execution_status.value}",
+            adapter_name="mock",
+            execution_target=ExecutionTarget.MOCK,
+            command_id="command-1",
+            order_id="order-1",
+            client_order_id="client-1",
+            adapter_order_ref="adapter-order-1",
+            exchange_order_id="exchange-order-1",
+            execution_status=execution_status,
+            filled_qty=Decimal("0"),
+            fill_price=None,
+            cumulative_filled_qty=Decimal("0"),
+            remaining_qty=Decimal("2"),
+            report_ts=NOW,
+            normalized_at=NOW + timedelta(seconds=1),
+            source_report_hash="hash-1",
+        )
+
+        assert build_order_event_candidate(normalized) is None
+
+
 def test_normalizer_persists_duplicate_noops_and_conflicts_without_oms_apply() -> None:
     repository = InMemoryExecutionReportRepository()
     service = _service(repository)

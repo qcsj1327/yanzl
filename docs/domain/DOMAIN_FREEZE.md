@@ -238,6 +238,8 @@ OMS 是订单状态唯一事实来源。
 
 当前 schema 幂等约束为 `UNIQUE(event_source, external_event_id)`。
 
+Stage L.2 OMS event application 中，`OrderEvent.external_event_id` / `event_id` 必须 deterministic from `report_id + order_id + execution_status + cumulative_filled_qty + report_ts`。不得使用 UUID、timestamp-now 或 DB id 生成 OMS event identity。
+
 ### OrderEventApplicationResult
 
 `OrderEventApplicationResult` 是 OMS application service 返回的类型化事件应用结果。
@@ -2674,7 +2676,7 @@ Stage K does not implement：
 
 ## Stage L Execution Report Normalization Core Contract
 
-Stage L implements the Execution Report Normalizer Core on baseline `stage-k-execution-gateway-core / 94b498e`。It adds typed execution report domain objects, deterministic hash / id helpers, explicit status mapping, candidate-only OMS event mapping, repository/UoW persistence, `normalized_execution_reports` migration, replay and tests。
+Stage L implements the Execution Report Normalizer Core on baseline `stage-l-execution-report-normalization-core / 37cad40`。It adds typed execution report domain objects, deterministic hash / id helpers, explicit status mapping, candidate-only OMS event mapping, repository/UoW persistence, `normalized_execution_reports` migration, replay and tests。
 
 Stage K `ExecutionCommandResult` remains adapter command-result semantics only：adapter accepted / rejected does not mean exchange accepted, filled or traded。
 
@@ -2932,6 +2934,132 @@ Stage L does not implement：
 - Runtime scheduler。
 - Kafka / FastAPI / Celery。
 
+## Stage L.2 OMS Event Application Core
+
+Stage L.2 implements the OMS event application core on baseline `stage-l-execution-report-normalization-core / 37cad40`。It adds `OMSEventApplyResultStatus`、`OMSEventApplyResult`、`OMSEventApplyContext`、deterministic `event_id`、canonical payload、candidate -> typed `OrderEvent` mapper、`OMSOrderEventApplier` Protocol、`OMSEventApplicationService`、dry-run default `replay_oms_order_events` and tests. It does not add schema or a repository.
+
+```text
+NormalizedExecutionReport
+-> OrderEventCandidate
+-> typed OrderEvent
+-> OMSService.apply_order_event(...)
+-> OMS OrderState transition
+```
+
+Stage L.2 只推进 OMS `OrderStatus`。它不生成 Trade，不生成 Fill ledger，不更新 Position，不更新 Accounting，不更新 Margin / PnL / Settlement，不调用 Broker，不进入 Runtime。
+
+### Stage L.2 source-of-truth
+
+OMS 状态变化只能通过：
+
+```text
+OrderEventCandidate -> typed OrderEvent -> OMS.apply_order_event
+```
+
+Allowed inputs：
+
+- `NormalizedExecutionReport`。
+- `OrderEventCandidate`。
+- current OMS `OrderState`。
+- typed application context。
+
+Forbidden inputs：
+
+- `FeatureSnapshot`。
+- `SignalDecision`。
+- `TradingRiskResult`。
+- `OrderIntent` mutation。
+- `raw_payload` facts。
+- Broker state。
+- Accounting tables。
+- Position tables。
+- Margin / PnL / Settlement。
+
+### Stage L.2 event identity
+
+`event_id` / `OrderEvent.external_event_id` 必须 deterministic from：
+
+- `report_id`
+- `order_id`
+- `execution_status`
+- `cumulative_filled_qty`
+- `report_ts`
+
+禁止：
+
+- UUID。
+- timestamp-now。
+- DB id。
+
+### Stage L.2 candidate to OrderEvent mapping
+
+| `OrderEventCandidate` status | OMS `OrderEvent.new_status` |
+|---|---|
+| `ACKED` | `ACKED` |
+| `PARTIALLY_FILLED` | `PARTIALLY_FILLED` |
+| `FILLED` | `FILLED` |
+| `REJECTED` | `REJECTED_BY_EXCHANGE` |
+| `CANCELED` | `CANCELED` |
+| `SUBMITTED` | no-op / no event |
+| `ERROR` | no event |
+
+Stage L normalizer normally emits `OrderEventCandidate` only for `ACKED`、`PARTIALLY_FILLED`、`FILLED`、`REJECTED` 和 `CANCELED`。It does not emit candidates for `SUBMITTED` or `ERROR`。Stage L.2 still defensively handles manually supplied `SUBMITTED` and `ERROR` candidates as typed no-event results：`SUBMITTED -> NO_OP`，`ERROR -> REJECTED_NO_EVENT`，and neither path calls OMS。
+
+### Stage L.2 OMS apply boundary
+
+Only Stage L.2 application service may call：
+
+- `OMSService.apply_order_event`
+
+Stage L.2 must not call：
+
+- `OMSService.create_order`
+- Execution adapter
+- Broker
+- Accounting
+- PositionManager
+- TradeRepository
+
+`OMSService.apply_order_event(...)` remains the OMS-owned state transition boundary. Terminal order protection, legal transition validation, duplicate event handling and old-event handling remain owned by the OMS state machine and OMS application service.
+
+### Stage L.2 idempotency and replay
+
+Idempotency：
+
+- same candidate -> same `OrderEvent` -> same OMS transition / no-op。
+- before live OMS apply, Stage L.2 must lookup existing OMS `order_events` by deterministic `event_source + event_id` and compare typed canonical order-event payload。
+- existing same canonical -> `DUPLICATE` / no-op before calling OMS。
+- existing different canonical, or existing event missing typed canonical fields -> `CONFLICT` before calling OMS。
+- different candidate same `event_id` -> `CONFLICT`。
+- duplicate events use current OMS `order_events` idempotency semantics。
+- terminal order protection remains owned by OMS state machine。
+
+Replay：
+
+- same normalized report -> same candidate -> same `OrderEvent`。
+- live replay must run a full canonical preflight across the replay batch before any OMS apply。
+- if any batch item has same `event_id` + different canonical payload, replay returns `CONFLICT` and performs no OMS apply。
+- replay may call OMS only in explicit OMS replay mode。
+- default review recommendation：dry-run first。
+- live apply requires explicit flag。
+
+### Stage L.2 repository decision
+
+Stage L.2 uses existing `order_events` as the OMS event ledger. It does not add a Stage L.2 audit table, repository, migration or schema change.
+
+If extra audit is needed later, it must be introduced by a separate contract amendment.
+
+### Stage L.2 explicit non-goals
+
+Stage L.2 does not implement：
+
+- Trade ledger。
+- Fill ledger。
+- Position update。
+- Margin / PnL / Settlement update。
+- Broker / CTP / SimNow。
+- Runtime / Kafka / Celery / FastAPI。
+
 ### feature_snapshots
 
 Stage H 已新增 `feature_snapshots` 表作为 FeatureSnapshot derived facts ledger。
@@ -3045,6 +3173,8 @@ Stage G 不实现：
 - `ExecutionCommandRepository.list_by_target(execution_target: ExecutionTarget, start_ts: datetime, end_ts: datetime) -> list[ExecutionCommand]`：按 target 和时间范围查询 commands。
 - `ExecutionAdapter.submit(command: ExecutionCommand) -> ExecutionCommandResult`：Stage K execution adapter Protocol；返回 typed result，不返回 raw broker response 作为事实。
 - `replay_execution_gateway(service: ExecutionGatewayService, orders: Iterable[OrderState], *, execution_target: ExecutionTarget = MOCK, symbol: str, trade_instrument_id: str, tif: str, dry_run: bool = True, allow_submit: bool = False) -> list[ExecutionGatewayResult]`：Stage K replay boundary；默认 dry-run，不提交 adapter / broker，不修改 OMS / Accounting。
+- `OMSEventApplicationService.apply_candidate(context: OMSEventApplyContext) -> OMSEventApplyResult`：Stage L.2 application boundary；只将 candidate deterministic 映射为 typed `OrderEvent`；默认 `allow_live_apply=False` dry-run，不调用 OMS，只有 `allow_live_apply=True` 才可调用 `OMSOrderEventApplier.apply_order_event(...)`；不得调用 `create_order` / Execution / Broker / Accounting / PositionManager / TradeRepository。
+- `replay_oms_order_events(contexts: Iterable[OMSEventApplyContext], *, service: OMSEventApplicationService, allow_live_apply: bool = False) -> list[OMSEventApplyResult]`：Stage L.2 replay boundary；默认 dry-run，不调用 OMS；只有 `allow_live_apply=True` 才可 live apply。
 - `OMS.create_order(request: OrderRequest, *, client_order_id: str) -> OrderState`：创建或幂等返回 OMS 订单。
 - `OMS.apply_risk_result(order_id: str, risk_result: RiskResult, *, external_event_id: str, occurred_at: datetime | None = None) -> OrderEventApplicationResult`：消费外部 `RiskResult` 推进风控状态，不计算风控。
 - `OMS.apply_order_event(event: OrderEvent) -> OrderEventApplicationResult`：订单状态变化通过 OMS 事件处理。
@@ -3364,6 +3494,8 @@ Stage F testing matrix：
 - `UNIQUE(event_source, external_event_id)`，名称为 `uq_order_events_source_external`
 - `order_id, created_at` 索引，名称为 `ix_order_events_order_id_created_at`
 - `order_id` references `orders.id`
+
+Stage L.2 复用现有 `order_events` 作为 OMS event ledger，不新增 `oms_order_event_applications`、candidate audit table、repository 或 migration。`external_event_id` / `event_id` 必须 deterministic from `report_id + order_id + execution_status + cumulative_filled_qty + report_ts`。
 
 `raw_payload` 是诊断 payload。凡是订单状态事实来源需要的字段，都必须有类型化列承载，不得只存在于 `raw_payload`。
 `occurred_at` 是业务事件发生时间，`created_at` 是本地入库时间，二者不得混用。

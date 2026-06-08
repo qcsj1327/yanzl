@@ -13,6 +13,7 @@ from futures_mvp.domain.enums import (
     MarketDataEventType,
     MarketDataResultStatus,
     Offset,
+    OMSEventApplyResultStatus,
     OrderStatus,
     OrderType,
     PnLPriceBasis,
@@ -86,6 +87,19 @@ def test_event_application_status_complete_contract() -> None:
         "RECOVERED_FROM_UNKNOWN",
         "IGNORED_TERMINAL",
         "EVENT_KEY_COLLISION",
+    ]
+
+
+def test_oms_event_apply_result_status_complete_contract() -> None:
+    assert [status.value for status in OMSEventApplyResultStatus] == [
+        "APPLIED",
+        "DRY_RUN",
+        "NO_OP",
+        "DUPLICATE",
+        "CONFLICT",
+        "REJECTED_INVALID_CANDIDATE",
+        "REJECTED_NO_EVENT",
+        "ERROR",
     ]
 
 

@@ -6,10 +6,14 @@
 - `Phase 4.1`
 - `Execution Runtime`
 - `Stage A`
+- `Stage L`
+- `Stage L.2`
 - `Stage B Contract`
 - `Stage B`
 - `Stage K Contract`
 - `Stage K`
+- `Stage L.2 Contract`
+- `Stage L.2`
 - `Phase 4.2+`
 - `Later Phase`
 
@@ -19,6 +23,8 @@
 `Stage B` 表示 Fill / Trade Domain Migration 已实现并用 domain、execution mapper 和 DB integration 测试覆盖。
 `Stage K Contract` 表示 Execution Gateway Contract Freeze 已完成。
 `Stage K` 表示 Execution Gateway Core 已实现并用 command、repository、adapter boundary 和 replay 测试覆盖。
+`Stage L.2 Contract` 表示 OMS Event Application Contract Freeze 已完成，不表示代码、schema 或 repository 已实现。
+`Stage L.2` 表示 OMS Event Application Core 已实现并用 domain、service、protocol、replay 和 boundary 测试覆盖。
 
 ## Contract Done
 
@@ -245,6 +251,36 @@
 | replay deterministic | Ordered `RawExecutionReport` replay produces deterministic normalized reports。 | Stage L |
 | replay no side effects | Report replay must not call OMS, update Accounting or generate Trade。 | Stage L |
 | no broker dependency | Stage L implementation does not depend on Broker / CTP / SimNow。 | Stage L |
+
+## Stage L.2 OMS Event Application Contract Freeze
+
+| 场景 | 预期 | 状态 |
+|---|---|---|
+| source-of-truth path | OMS 状态变化只能通过 `OrderEventCandidate -> typed OrderEvent -> OMS.apply_order_event`。 | Stage L.2 |
+| allowed inputs | 只消费 `NormalizedExecutionReport`、`OrderEventCandidate`、current OMS `OrderState` 和 typed application context。 | Stage L.2 |
+| forbidden inputs | 不消费 `FeatureSnapshot`、`SignalDecision`、`TradingRiskResult`、`OrderIntent` mutation、`raw_payload` facts、Broker state、Accounting tables、Position tables、Margin / PnL / Settlement。 | Stage L.2 |
+| deterministic event id | `event_id` deterministic from `report_id + order_id + execution_status + cumulative_filled_qty + report_ts`。 | Stage L.2 |
+| no unstable identity | 不使用 UUID、timestamp-now 或 DB id 生成 event identity。 | Stage L.2 |
+| ACK mapping | `ACKED -> ACKED` typed `OrderEvent`。 | Stage L.2 |
+| partial fill mapping | `PARTIALLY_FILLED -> PARTIALLY_FILLED` typed `OrderEvent`。 | Stage L.2 |
+| full fill mapping | `FILLED -> FILLED` typed `OrderEvent`。 | Stage L.2 |
+| reject mapping | `REJECTED -> REJECTED_BY_EXCHANGE` typed `OrderEvent`。 | Stage L.2 |
+| cancel mapping | `CANCELED -> CANCELED` typed `OrderEvent`。 | Stage L.2 |
+| submitted no-op | `SUBMITTED -> NO_OP`，不调用 OMS。 | Stage L.2 |
+| error no event | `ERROR -> REJECTED_NO_EVENT`，不调用 OMS。 | Stage L.2 |
+| OMS apply boundary | 只有 `OMSEventApplicationService` may call `OMSOrderEventApplier.apply_order_event(...)`。 | Stage L.2 |
+| forbidden calls | 不调用 `create_order`、Execution adapter、Broker、Accounting、PositionManager 或 TradeRepository。 | Stage L.2 |
+| same candidate idempotency | same candidate -> same `OrderEvent` -> same OMS transition / no-op。 | Stage L.2 |
+| event id conflict | dry-run and live precheck detect different canonical with same `event_id` as `CONFLICT` before OMS apply。 | Stage L.2 |
+| existing duplicate precheck | existing same canonical returns `DUPLICATE` / no-op before OMS apply。 | Stage L.2 |
+| existing conflict precheck | existing different canonical or missing typed canonical returns `CONFLICT` before OMS apply。 | Stage L.2 |
+| terminal protection | terminal order protection remains owned by OMS state machine。 | Stage L.2 |
+| replay deterministic | same normalized report -> same candidate -> same `OrderEvent`。 | Stage L.2 |
+| replay dry-run default | replay 默认 dry-run first；live apply requires explicit flag。 | Stage L.2 |
+| live replay preflight | live replay completes full batch canonical preflight before any OMS apply；batch conflict performs no OMS apply。 | Stage L.2 |
+| repository decision | 不新增 table / migration，复用 existing `order_events` as OMS event ledger。 | Stage L.2 |
+| no accounting side effects | No Trade ledger、No Fill ledger、No Position update、No Margin / PnL / Settlement update。 | Stage L.2 |
+| no external runtime | No Broker / CTP / SimNow、No Runtime / Kafka / Celery / FastAPI。 | Stage L.2 |
 
 ## Later Phase
 

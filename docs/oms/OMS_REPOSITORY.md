@@ -240,6 +240,20 @@ UNIQUE(order_id, event_source, external_event_id)
 
 如果不迁移，必须要求 `external_event_id` 在 `event_source` 内全局唯一。
 
+## Stage L.2 repository decision
+
+Stage L.2 OMS Event Application Contract Freeze 不新增 table、不新增 migration、不新增独立 OMS event application repository。
+
+Stage L.2 application service must reuse existing `order_events` as the OMS event ledger through the existing `OrderEventRepository` / `UnitOfWork` boundary. If later implementation needs extra audit beyond OMS event ledger, it must be introduced by a separate contract amendment.
+
+For Stage L.2 events, `external_event_id` / `event_id` must be deterministic from `report_id + order_id + execution_status + cumulative_filled_qty + report_ts`。It must not use UUID、timestamp-now or DB id。
+
+Same candidate must map to the same `OrderEvent`; different candidate with the same event identity is a typed conflict. Repository duplicate behavior still follows the current `event_source + external_event_id` contract, and OMS state machine remains responsible for terminal order protection and legal transitions.
+
+Stage L.2 live apply is not allowed to rely on OMS duplicate semantics alone. Before live apply it must use a read-only lookup by `event_source + event_id` and compare typed canonical order-event payload. Existing same canonical returns `DUPLICATE` / no-op before calling OMS. Existing different canonical, or an existing event that does not expose enough typed canonical fields, returns `CONFLICT` before calling OMS. Dry-run remains the default; live apply requires explicit `allow_live_apply=True`。
+
+Stage L.2 live replay must complete full batch canonical preflight before any OMS apply. A same `event_id` + different canonical conflict in the replay input returns `CONFLICT` and performs no OMS apply.
+
 ## orders.version
 
 当前事实：

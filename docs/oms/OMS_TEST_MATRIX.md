@@ -392,6 +392,16 @@ Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界
 | 恢复后继续处理新事件 | 幂等规则仍生效。 |
 | 恢复发现不一致 | 进入 `UNKNOWN`。 |
 
+## Stage L.2 OMS Event Application Cross-Reference
+
+| 场景 | 预期 |
+|---|---|
+| dry-run default | `OMSEventApplicationService` 默认不调用 OMS。 |
+| live flag | live apply 必须显式 `allow_live_apply=True`。 |
+| existing duplicate precheck | Stage L.2 在调用 OMS 前按 deterministic `event_source + event_id` lookup；existing same typed canonical 返回 `DUPLICATE` / no-op。 |
+| existing conflict precheck | existing different canonical 或缺 typed canonical fields 返回 `CONFLICT`，不得调用 OMS。 |
+| live replay preflight | live replay 在任何 OMS apply 前完成全 batch canonical scan；same `event_id` + different canonical 返回 `CONFLICT` 且不调用 OMS。 |
+
 ## 当前允许继续 xfail 的范围
 
 以下仍可留在 Mock Exchange 后续阶段：

@@ -200,6 +200,48 @@ event_source + external_event_id
 - `created_at` 是本地入库时间。
 - 当前 DB `order_events.occurred_at` 是类型化业务事件时间列，不得用 `created_at` 冒充。
 
+## Stage L.2 OMS Event Application Boundary
+
+Stage L.2 已实现 execution report candidate 到 OMS order status 的应用核心，不改变 OMS 状态机。
+
+唯一允许的 source-of-truth path：
+
+```text
+NormalizedExecutionReport
+-> OrderEventCandidate
+-> typed OrderEvent
+-> OMSService.apply_order_event(...)
+-> OMS OrderState transition
+```
+
+Stage L.2 只推进 OMS `OrderStatus`，不得生成 Trade / Fill ledger，不得更新 Position / Accounting / Margin / PnL / Settlement，不得调用 Broker / CTP / SimNow，不得进入 Runtime / Kafka / Celery / FastAPI。
+
+`OrderEvent.external_event_id` / `event_id` 必须 deterministic from `report_id + order_id + execution_status + cumulative_filled_qty + report_ts`。不得使用 UUID、timestamp-now 或 DB id。
+
+Candidate mapping：
+
+| Candidate status | OMS target status |
+|---|---|
+| `ACKED` | `ACKED` |
+| `PARTIALLY_FILLED` | `PARTIALLY_FILLED` |
+| `FILLED` | `FILLED` |
+| `REJECTED` | `REJECTED_BY_EXCHANGE` |
+| `CANCELED` | `CANCELED` |
+| `SUBMITTED` | no-op / no event |
+| `ERROR` | no event |
+
+Only Stage L.2 application service may call `OMSService.apply_order_event(...)` for this path. It must not call `OMSService.create_order(...)`、Execution adapter、Broker、Accounting、PositionManager 或 TradeRepository。
+
+Dry-run is the default. Live apply requires explicit `allow_live_apply=True` and a read-only OMS event lookup boundary.
+
+Before live OMS apply, Stage L.2 must lookup the existing OMS `order_events` entry by deterministic `event_source + event_id` and compare the typed canonical order-event payload. Existing same canonical returns `DUPLICATE` / no-op before calling OMS. Existing different canonical, or an existing event without enough typed canonical fields, returns `CONFLICT` before calling OMS.
+
+Live replay must run a full canonical preflight across the replay batch before any OMS apply. If any batch item has same `event_id` + different canonical payload, replay returns `CONFLICT` and performs no OMS apply.
+
+Stage L normalizer normally emits candidates only for `ACKED`、`PARTIALLY_FILLED`、`FILLED`、`REJECTED` 和 `CANCELED`。Stage L.2 still defensively handles manually supplied `SUBMITTED -> NO_OP` and `ERROR -> REJECTED_NO_EVENT` candidates without calling OMS.
+
+Same candidate must produce the same `OrderEvent` and the same OMS transition / no-op. Different candidate with the same `event_id` must be treated as `CONFLICT` before OMS idempotency handling. Terminal order protection remains owned by this OMS state machine.
+
 ## 乱序事件处理策略
 
 乱序事件按以下优先级处理：
