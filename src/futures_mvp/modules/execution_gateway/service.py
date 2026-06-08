@@ -30,6 +30,7 @@ _TERMINAL_REJECT_STATUSES = frozenset(
         OrderStatus.FILLED,
         OrderStatus.CANCELED,
         OrderStatus.REJECTED_BY_RISK,
+        OrderStatus.SUBMIT_FAILED,
         OrderStatus.REJECTED_BY_EXCHANGE,
         OrderStatus.EXPIRED,
     }

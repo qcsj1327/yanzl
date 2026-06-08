@@ -187,6 +187,8 @@ def test_invalid_order_rejected_without_adapter_call() -> None:
         _order(order_id=""),
         _order(status=OrderStatus.FILLED),
         _order(status=OrderStatus.CANCELED),
+        _order(status=OrderStatus.REJECTED_BY_RISK),
+        _order(status=OrderStatus.SUBMIT_FAILED),
         _order(status=OrderStatus.REJECTED_BY_EXCHANGE),
         _order(status=OrderStatus.EXPIRED),
     ]:
@@ -195,6 +197,25 @@ def test_invalid_order_rejected_without_adapter_call() -> None:
         result = service.submit(order, **_submit_kwargs())
 
         assert result.status is ExecutionGatewayResultStatus.REJECTED_INVALID_ORDER
+        assert repository.commands == {}
+        assert adapter.submitted_commands == []
+
+
+def test_submit_failed_order_rejected_without_command_or_adapter_in_all_submit_modes() -> None:
+    for dry_run in [True, False]:
+        repository = InMemoryExecutionCommandRepository()
+        service, adapter = _service(repository)
+
+        result = service.submit(
+            _order(status=OrderStatus.SUBMIT_FAILED),
+            dry_run=dry_run,
+            **_submit_kwargs(),
+        )
+
+        assert result.status is ExecutionGatewayResultStatus.REJECTED_INVALID_ORDER
+        assert result.command is None
+        assert result.command_result is None
+        assert repository.commands == {}
         assert adapter.submitted_commands == []
 
 
@@ -297,3 +318,24 @@ def test_replay_dry_run_no_adapter_call_and_live_flag_submits() -> None:
     )
     assert live_results[0].status is ExecutionGatewayResultStatus.COMMAND_CREATED
     assert len(adapter.submitted_commands) == 1
+
+
+def test_replay_submit_failed_order_rejected_without_command_or_adapter() -> None:
+    for dry_run, allow_submit in [(True, False), (False, True)]:
+        repository = InMemoryExecutionCommandRepository()
+        service, adapter = _service(repository)
+
+        results = replay_execution_gateway(
+            service,
+            [_order(status=OrderStatus.SUBMIT_FAILED)],
+            symbol="au",
+            trade_instrument_id="au2606",
+            tif="GFD",
+            dry_run=dry_run,
+            allow_submit=allow_submit,
+        )
+
+        assert results[0].status is ExecutionGatewayResultStatus.REJECTED_INVALID_ORDER
+        assert results[0].command is None
+        assert repository.commands == {}
+        assert adapter.submitted_commands == []
