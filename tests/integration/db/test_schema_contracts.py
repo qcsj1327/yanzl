@@ -199,6 +199,10 @@ def test_normalized_execution_reports_match_stage_l_idempotency_contract() -> No
         NormalizedExecutionReport,
         "uq_normalized_execution_reports_report_id",
     ) == ("report_id",)
+    assert _unique_constraint_columns(
+        NormalizedExecutionReport,
+        "uq_normalized_execution_reports_raw_report_id",
+    ) == ("raw_report_id",)
     for column_name in [
         "report_id",
         "raw_report_id",

@@ -18,6 +18,10 @@ class FakeExecutionReportRepository:
         del report_id
         return None
 
+    def get_by_raw_report_id(self, raw_report_id: str) -> NormalizedExecutionReport | None:
+        del raw_report_id
+        return None
+
     def list_by_order_id(self, order_id: str) -> list[NormalizedExecutionReport]:
         del order_id
         return []

@@ -1912,6 +1912,10 @@ class SQLAlchemyExecutionReportRepository:
         self,
         report: NormalizedExecutionReport,
     ) -> NormalizedExecutionReport:
+        existing_raw_report = self.get_by_raw_report_id(report.raw_report_id)
+        if existing_raw_report is not None:
+            return self._existing_report_for_append(existing_raw_report, report)
+
         existing = self.get_by_report_id(report.report_id)
         if existing is not None:
             return self._existing_report_for_append(existing, report)
@@ -1948,6 +1952,9 @@ class SQLAlchemyExecutionReportRepository:
                 self._session.flush()
             return normalized_execution_report_to_domain(report_orm)
         except IntegrityError as exc:
+            existing_raw_after_conflict = self.get_by_raw_report_id(report.raw_report_id)
+            if existing_raw_after_conflict is not None:
+                return self._existing_report_for_append(existing_raw_after_conflict, report)
             existing_after_conflict = self.get_by_report_id(report.report_id)
             if existing_after_conflict is not None:
                 return self._existing_report_for_append(existing_after_conflict, report)
@@ -1959,6 +1966,14 @@ class SQLAlchemyExecutionReportRepository:
         report = self._session.scalar(
             select(NormalizedExecutionReportOrm).where(
                 NormalizedExecutionReportOrm.report_id == report_id
+            )
+        )
+        return normalized_execution_report_to_domain(report) if report else None
+
+    def get_by_raw_report_id(self, raw_report_id: str) -> NormalizedExecutionReport | None:
+        report = self._session.scalar(
+            select(NormalizedExecutionReportOrm).where(
+                NormalizedExecutionReportOrm.raw_report_id == raw_report_id
             )
         )
         return normalized_execution_report_to_domain(report) if report else None

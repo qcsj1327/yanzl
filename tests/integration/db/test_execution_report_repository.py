@@ -9,7 +9,11 @@ from futures_mvp.db.models import Base
 from futures_mvp.db.models import NormalizedExecutionReport as NormalizedExecutionReportOrm
 from futures_mvp.db.repositories import SQLAlchemyExecutionReportRepository
 from futures_mvp.db.unit_of_work import SQLAlchemyExecutionReportUnitOfWork, SQLAlchemyUnitOfWork
-from futures_mvp.domain.enums import ExecutionReportStatus, ExecutionTarget
+from futures_mvp.domain.enums import (
+    ExecutionReportNormalizeResultStatus,
+    ExecutionReportStatus,
+    ExecutionTarget,
+)
 from futures_mvp.domain.models import NormalizedExecutionReport, RawExecutionReport
 from futures_mvp.interfaces.repositories import ExecutionReportConflictError
 from futures_mvp.modules.execution_reports import (
@@ -111,6 +115,11 @@ def test_normalized_execution_reports_schema_contract(session: Session) -> None:
         "ix_normalized_execution_reports_execution_status",
         "ix_normalized_execution_reports_report_ts",
     }.issubset({index.name for index in NormalizedExecutionReportOrm.__table__.indexes})
+    assert {
+        tuple(constraint.columns.keys())
+        for constraint in NormalizedExecutionReportOrm.__table__.constraints
+        if constraint.name == "uq_normalized_execution_reports_raw_report_id"
+    } == {("raw_report_id",)}
 
 
 def test_repository_round_trip_duplicate_conflict_and_queries(session: Session) -> None:
@@ -132,6 +141,7 @@ def test_repository_round_trip_duplicate_conflict_and_queries(session: Session) 
     ) == canonical_normalized_execution_report_payload(duplicate)
     assert first.raw_payload == {"diagnostic": "only"}
     assert repository.get_by_report_id(report.report_id) is not None
+    assert repository.get_by_raw_report_id(report.raw_report_id) is not None
     assert [item.report_id for item in repository.list_by_order_id("order-1")] == [
         report.report_id
     ]
@@ -174,6 +184,31 @@ def test_repository_round_trips_stage_l3_typed_trade_inputs(session: Session) ->
         repository.append_normalized_report(report.model_copy(update={"reason": "changed"}))
 
 
+def test_repository_raw_report_identity_duplicate_and_conflict(session: Session) -> None:
+    repository = SQLAlchemyExecutionReportRepository(session)
+    report = _normalized()
+
+    first = repository.append_normalized_report(report)
+    duplicate = repository.append_normalized_report(
+        report.model_copy(
+            update={
+                "raw_payload": {"diagnostic": "changed"},
+                "normalized_at": NOW + timedelta(minutes=1),
+            }
+        )
+    )
+
+    assert first.report_id == duplicate.report_id
+    existing_raw = repository.get_by_raw_report_id("raw-1")
+    assert existing_raw is not None
+    assert existing_raw.report_id == first.report_id
+
+    changed_raw = _raw(raw_report_id="raw-1", filled_qty=Decimal("1"))
+    with pytest.raises(ExecutionReportConflictError):
+        repository.append_normalized_report(_normalized(changed_raw))
+    assert session.query(NormalizedExecutionReportOrm).count() == 1
+
+
 def test_unit_of_work_exposes_execution_reports(session: Session) -> None:
     with SQLAlchemyUnitOfWork(session=session) as uow:
         report = uow.execution_reports.append_normalized_report(_normalized())
@@ -183,6 +218,7 @@ def test_unit_of_work_exposes_execution_reports(session: Session) -> None:
 
     with SQLAlchemyExecutionReportUnitOfWork(session=session) as uow:
         assert uow.execution_reports.get_by_report_id(report.report_id) is not None
+        assert uow.execution_reports.get_by_raw_report_id(report.raw_report_id) is not None
 
 
 def test_no_stage_l_forbidden_tables_created_by_metadata(session: Session) -> None:
@@ -224,3 +260,20 @@ def test_normalizer_db_round_trip_duplicate_and_conflict(session: Session) -> No
 
     conflict = normalizer.normalize(raw)
     assert conflict.status.name == "CONFLICT"
+
+
+def test_normalizer_db_conflicts_on_same_raw_report_id_different_facts(
+    session: Session,
+) -> None:
+    normalizer = ExecutionReportNormalizer(
+        lambda: SQLAlchemyExecutionReportUnitOfWork(session=session),
+        clock=lambda: NOW + timedelta(seconds=2),
+    )
+
+    first = normalizer.normalize(_raw(raw_report_id="raw-same", report_type="acked"))
+    conflict = normalizer.normalize(_raw(raw_report_id="raw-same", report_type="rejected"))
+
+    assert first.status is ExecutionReportNormalizeResultStatus.NORMALIZED
+    assert conflict.status is ExecutionReportNormalizeResultStatus.CONFLICT
+    assert conflict.reason == "normalized_execution_report_raw_identity_conflict"
+    assert session.query(NormalizedExecutionReportOrm).count() == 1

@@ -50,6 +50,25 @@ class ExecutionReportNormalizer:
 
         candidate = build_order_event_candidate(normalized_report)
         with self._uow_factory() as uow:
+            existing_raw = uow.execution_reports.get_by_raw_report_id(
+                normalized_report.raw_report_id
+            )
+            if existing_raw is not None:
+                if canonical_normalized_execution_report_payload(
+                    existing_raw
+                ) != canonical_normalized_execution_report_payload(normalized_report):
+                    uow.rollback()
+                    return ExecutionReportNormalizeResult(
+                        status=ExecutionReportNormalizeResultStatus.CONFLICT,
+                        normalized_report=existing_raw,
+                        reason="normalized_execution_report_raw_identity_conflict",
+                    )
+                uow.commit()
+                return ExecutionReportNormalizeResult(
+                    status=ExecutionReportNormalizeResultStatus.DUPLICATE,
+                    normalized_report=existing_raw,
+                    reason="duplicate",
+                )
             existing = uow.execution_reports.get_by_report_id(normalized_report.report_id)
             if existing is not None:
                 if canonical_normalized_execution_report_payload(

@@ -683,6 +683,10 @@ class NormalizedExecutionReport(Base):
     __tablename__ = "normalized_execution_reports"
     __table_args__ = (
         UniqueConstraint("report_id", name="uq_normalized_execution_reports_report_id"),
+        UniqueConstraint(
+            "raw_report_id",
+            name="uq_normalized_execution_reports_raw_report_id",
+        ),
         Index("ix_normalized_execution_reports_order_id", "order_id"),
         Index("ix_normalized_execution_reports_command_id", "command_id"),
         Index("ix_normalized_execution_reports_client_order_id", "client_order_id"),

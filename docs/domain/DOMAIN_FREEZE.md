@@ -2737,7 +2737,7 @@ Execution Report Normalizer 禁止消费：
 
 | 字段 | 类型 | 语义 |
 |---|---|---|
-| `raw_report_id` | `str` | adapter report identity；adapter 可提供时 per adapter unique。 |
+| `raw_report_id` | `str` | stable adapter / broker source report identity；required and unique in the normalized report ledger。 |
 | `adapter_name` | `str` | adapter identity。 |
 | `execution_target` | `ExecutionTarget` | execution adapter target。 |
 | `command_id` | `str` | `ExecutionCommand` lineage。 |
@@ -2793,7 +2793,8 @@ Rules：
 
 - `report_id` deterministic。
 - `source_report_hash` from canonical `RawExecutionReport`。
-- same raw report -> same normalized report。
+- same `raw_report_id` + same canonical -> duplicate / no-op。
+- same `raw_report_id` + different canonical -> conflict before a second normalized report persists。
 - no broker raw facts beyond typed raw report。
 - no direct OMS mutation。
 - `raw_payload` diagnostic only。
@@ -2854,14 +2855,16 @@ Normalized filled report
 
 `RawExecutionReport`：
 
-- `raw_report_id` unique per adapter if available。
-- fallback deterministic key：`adapter_name + command_id + report_type + report_ts + cumulative_filled_qty`。
+- `raw_report_id` is the first-class source report identity。
+- Adapter-provided broker source id is preferred。
+- Deterministic mock-derived identity is allowed only when all identity inputs are typed。
+- `raw_report_id` must not be random UUID、timestamp-now、DB id or raw_payload-only。
 
 `NormalizedExecutionReport`：
 
 - `report_id` deterministic。
-- same canonical -> duplicate / no-op。
-- different canonical -> conflict / error。
+- same `raw_report_id` + same canonical -> duplicate / no-op。
+- same `raw_report_id` + different canonical -> conflict / error。
 
 Canonical excludes：
 
@@ -2878,6 +2881,7 @@ Implemented：
 - SQLAlchemy repository。
 - UoW integration through `UnitOfWork.execution_reports` and narrow `ExecutionReportUnitOfWork`。
 - `normalized_execution_reports` table through `0013_stage_l_execution_report_normalization`。
+- Stage N forward fix migration `0016_stage_n_report_identity_conflict.py` adds a unique `raw_report_id` constraint to the existing normalized report ledger only。
 
 Not implemented：
 
@@ -2887,6 +2891,7 @@ Repository methods：
 
 - `append_normalized_report(report)`
 - `get_by_report_id(report_id)`
+- `get_by_raw_report_id(raw_report_id)`
 - `list_by_order_id(order_id)`
 - `list_by_command_id(command_id)`
 - `list_by_status(execution_status, start_ts, end_ts)`
@@ -2894,6 +2899,7 @@ Repository methods：
 Unique：
 
 - `report_id`
+- `raw_report_id`
 
 Indexes：
 
@@ -2908,9 +2914,8 @@ Indexes：
 Report replay：
 
 - consumes ordered `RawExecutionReport`。
-- same raw -> same normalized。
-- same canonical -> duplicate / no-op。
-- different canonical -> conflict。
+- same `raw_report_id` + same canonical -> duplicate / no-op。
+- same `raw_report_id` + different canonical -> conflict。
 - replay must not call OMS。
 - replay must not update Accounting。
 - replay must not generate Trade。
@@ -3920,7 +3925,7 @@ Broker order / trade notifications must be converted to typed `RawExecutionRepor
 
 Required typed report fields when available：
 
-- `raw_report_id` or deterministic broker report fallback key。
+- stable `raw_report_id`；adapter-provided broker source id is preferred，and deterministic mock-derived fallback is allowed only from typed fields。
 - `adapter_name`。
 - `execution_target`。
 - `broker_environment`。
@@ -3947,6 +3952,7 @@ Report rules：
 - Missing `command_id` / OMS lineage must not be invented. Such reports become unresolved typed evidence for reconciliation until lineage is proven。
 - Broker report status is not OMS `OrderStatus`; status mapping remains owned by the existing report normalizer / OMS event application path。
 - Fill-like broker report fields are execution report facts. They become `Trade` facts only through the existing Stage L.3 bridge and its OMS proof gate。
+- Missing stable source report identity must be quarantined；it must not be invented from `raw_payload`、UUID、timestamp-now or DB id。
 
 ### OMS and Broker ownership boundary
 
@@ -4163,6 +4169,54 @@ Readiness rules：
 - Keep live target disabled by default。
 - Test with boundary guards：no OMS/Risk/DB mutation, no secret leakage, command canonical conflict, pre-send failure, post-send uncertain query, reconnect report replay, Decimal report normalization, duplicate callback no-op, query mismatch evidence and missing lineage quarantine。
 - Use Runtime only for lifecycle / wiring / scheduling / health; business transitions must continue through existing application service boundaries。
+
+### Stage N implemented facts
+
+Stage N has implemented a minimal Broker / Adapter Layer Core package at `src/futures_mvp/modules/broker_adapter`。
+
+Implemented adapter objects：
+
+- `MockBrokerAdapter`。
+- `MockBrokerSubmitMode`。
+- `BrokerCallbackEvidence`。
+- `BrokerCallbackTranslationResult`。
+- `BrokerCallbackTranslationStatus`。
+- `InMemoryUnresolvedBrokerCallbackQuarantine`。
+- `QuarantinedBrokerCallback`。
+
+Implemented command boundary：
+
+- `MockBrokerAdapter` implements the existing `ExecutionAdapter.submit(command)` shape by consuming `ExecutionCommand` and returning `ExecutionCommandResult`。
+- Successful submit returns `ExecutionCommandResultStatus.ACCEPTED_BY_ADAPTER` with deterministic `adapter_order_ref` derived from `command_id`。
+- Pre-send timeout returns `ExecutionCommandResultStatus.ERROR` with `reason="pre_send_timeout"` and no `adapter_order_ref`。
+- Post-send uncertain returns `ExecutionCommandResultStatus.ERROR` with `reason="post_send_uncertain"` and deterministic `adapter_order_ref` for later query/recovery evidence。
+- Duplicate same `command_id` + same canonical returns `ExecutionCommandResultStatus.DUPLICATE` and does not append a second submitted command。
+- Same `command_id` + different canonical returns `ExecutionCommandResultStatus.CONFLICT` before any new send effect。
+- `MockBrokerAdapter` does not implement cancel；`ExecutionCommandType.CANCEL_ORDER` remains reserved by current `ExecutionCommand` validation。
+
+Implemented report translation boundary：
+
+- `BrokerCallbackEvidence` is adapter-internal typed callback evidence, not a persisted business fact and not a replacement for `RawExecutionReport`。
+- `translate_callback_to_raw_execution_report(...)` converts callback evidence with complete lineage and stable raw report identity into existing `RawExecutionReport`。
+- `RawExecutionReport` remains the first business pipeline report boundary for Stage N。
+- Missing `command_id`、`order_id`、`client_order_id`、`adapter_order_ref` or stable non-mock `raw_report_id` returns `QUARANTINED_UNRESOLVED_LINEAGE` and does not build `RawExecutionReport`。
+- Unresolved evidence is stored only in `InMemoryUnresolvedBrokerCallbackQuarantine` for Stage N tests；no schema or ledger is added。
+- Decimal fields are preserved as Decimal；`raw_payload` remains diagnostic-only and is not used to recover missing identity。
+- Existing `ExecutionReportNormalizer` handles deterministic `report_id` / `source_report_hash` and now enforces `raw_report_id` source identity duplicate / conflict after translation。
+
+Implemented Runtime / boundary decision：
+
+- Runtime source code was not changed for Stage N。
+- Existing `ServiceGraphDependencies.execution_adapter` remains the injection point for adapter implementations。
+- Runtime does not import `broker_adapter` and does not call Broker directly。
+- Stage N tests assert broker adapter code does not import OMS、Risk、Trade、Position、Accounting repositories or live broker/network dependencies。
+
+Stage N schema decision：
+
+- Stage N core does not introduce a broker ledger. The only schema change is 0016, which strengthens the existing normalized_execution_reports ledger with raw_report_id source identity uniqueness。
+- No broker table。
+- No `BrokerCommand`、`BrokerReport` or `BrokerReportEnvelope` business fact model。
+- No CTP / SimNow / live adapter and no network dependency。
 
 ### feature_snapshots
 

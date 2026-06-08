@@ -572,8 +572,8 @@ Stage F contract freeze：
 - `ExecutionReportStatus`：`SUBMITTED`、`ACKED`、`PARTIALLY_FILLED`、`FILLED`、`REJECTED`、`CANCELED`、`ERROR`；它不是 OMS `OrderStatus`。
 - OMS mapping：`ACKED -> ACKED`、`PARTIALLY_FILLED -> PARTIALLY_FILLED`、`FILLED -> FILLED`、`REJECTED -> REJECTED_BY_EXCHANGE`、`CANCELED -> CANCELED`；Normalizer may create typed `OrderEvent` candidate，但不得直接调用 `OMSService.apply_order_event(...)`。
 - Fill / Trade boundary：fill-like report fields 只是 execution-state facts，不是 Trade facts；Stage L 不创建 Trade ledger、不生成 Fill ledger、不更新 Position、不更新 Margin / PnL / Settlement、不生成 accounting facts。
-- Repository / migration：已实现 `ExecutionReportRepository`、SQLAlchemy repository、UoW integration 和 `normalized_execution_reports` table；未创建 `raw_execution_reports`。Methods 为 `append_normalized_report(report)`、`get_by_report_id(report_id)`、`list_by_order_id(order_id)`、`list_by_command_id(command_id)`、`list_by_status(execution_status, start_ts, end_ts)`；unique `report_id`；indexes `order_id`、`command_id`、`client_order_id`、`execution_status`、`report_ts`。
-- Replay / idempotency：`raw_report_id` per adapter unique if available；fallback key 为 `adapter_name + command_id + report_type + report_ts + cumulative_filled_qty`；`report_id` deterministic；same canonical -> duplicate / no-op；different canonical -> conflict / error；canonical excludes `raw_payload`、`received_at`、`normalized_at`、DB id；report replay consumes ordered `RawExecutionReport` and must not call OMS / Accounting / Trade generation。
+- Repository / migration：已实现 `ExecutionReportRepository`、SQLAlchemy repository、UoW integration 和 `normalized_execution_reports` table；未创建 `raw_execution_reports`。Methods 为 `append_normalized_report(report)`、`get_by_report_id(report_id)`、`get_by_raw_report_id(raw_report_id)`、`list_by_order_id(order_id)`、`list_by_command_id(command_id)`、`list_by_status(execution_status, start_ts, end_ts)`；unique `report_id` and unique `raw_report_id`；indexes `order_id`、`command_id`、`client_order_id`、`execution_status`、`report_ts`。Stage N forward fix migration `0016_stage_n_report_identity_conflict.py` only strengthens the existing `normalized_execution_reports` ledger source identity and does not create broker tables。
+- Replay / idempotency：`raw_report_id` is the first-class source report identity；adapter-provided broker source id is preferred，and deterministic mock-derived identity is allowed only when all identity inputs are typed。`report_id` deterministic；same `raw_report_id` + same canonical -> duplicate / no-op；same `raw_report_id` + different canonical -> conflict before a second normalized report persists；canonical excludes `raw_payload`、`received_at`、`normalized_at`、DB id；report replay consumes ordered `RawExecutionReport` and must not call OMS / Accounting / Trade generation。
 - Tests：Decimal-only raw report、deterministic `report_id`、`source_report_hash`、status mapping、candidate mapping、duplicate same canonical、conflict different canonical、`raw_payload` excluded、replay deterministic、repository round trip、UoW exposure、schema contract、no `OMSService.apply_order_event(...)`、no Trade / Fill / Position / Accounting mutation、no Broker / CTP / SimNow dependency。
 - Explicit non-goals：Broker adapter、CTP / SimNow / live、Trade ledger generation、Fill ledger generation、Position update、Accounting update、OMS direct mutation unless separately scoped、Runtime scheduler、Kafka / FastAPI / Celery。
 - Acceptance criteria：typed adapter report input 可 deterministic normalized；duplicate same canonical no-op；different canonical conflict；candidate-only OMS boundary；no Trade / Fill / Position / Accounting / Broker side effects。
@@ -1096,6 +1096,20 @@ Stage N implementation recommendation：
 - Persist no new broker facts until a separate schema contract is frozen; reuse existing `execution_commands` and `normalized_execution_reports` for business pipeline facts。
 - Add boundary tests for no OMS/Risk/DB mutation, command canonical conflicts, post-send uncertain recovery, report Decimal normalization, duplicate callbacks and query mismatch evidence。
 - Keep live target disabled by default and require Runtime readiness plus future Stage O safety gates before real submit/cancel can be enabled。
+
+Stage N current implementation facts：
+
+- Implemented package：`src/futures_mvp/modules/broker_adapter`。
+- Implemented `MockBrokerAdapter` as an `ExecutionAdapter` implementation for deterministic Stage N tests；it consumes existing `ExecutionCommand` and returns existing `ExecutionCommandResult`。
+- Implemented submit modes：accepted、pre-send timeout、post-send uncertain and duplicate same canonical no-op。
+- Implemented deterministic `adapter_order_ref` from `command_id`；no UUID、timestamp-now or DB id is used as fact identity。
+- Implemented adapter-internal `BrokerCallbackEvidence` and translator to existing `RawExecutionReport`；it is not a business fact ledger and is not persisted。
+- Missing `command_id`、`order_id`、`client_order_id`、`adapter_order_ref` or stable non-mock `raw_report_id` is quarantined in `InMemoryUnresolvedBrokerCallbackQuarantine` for tests only；missing lineage / source identity is not invented from `raw_payload`。
+- Mock callback evidence without broker source id may derive deterministic `raw_report_id` only from typed evidence fields；non-mock evidence must supply stable `raw_report_id`。
+- Valid translated reports enter the existing `RawExecutionReport -> ExecutionReportNormalizer -> NormalizedExecutionReport` pipeline；the normalizer now enforces `raw_report_id` source identity duplicate / conflict before any second normalized report can persist。
+- Runtime code was not changed；adapter remains injectable through existing `ExecutionGatewayService` / `ServiceGraphDependencies.execution_adapter` boundary。
+- Stage N keeps cancel unsupported / deferred；`ExecutionCommandType.CANCEL_ORDER` remains reserved by current domain validation。
+- Stage N core does not introduce a broker ledger. The only schema change is 0016, which strengthens the existing normalized_execution_reports ledger with raw_report_id source identity uniqueness. Stage N adds no broker table, no CTP / SimNow / live adapter, and no network dependency。
 
 ### Stage O: Operations / Safety / Production Readiness
 

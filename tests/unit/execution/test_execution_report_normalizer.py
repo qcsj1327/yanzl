@@ -42,6 +42,16 @@ class InMemoryExecutionReportRepository:
     def get_by_report_id(self, report_id: str) -> NormalizedExecutionReport | None:
         return self.reports.get(report_id)
 
+    def get_by_raw_report_id(self, raw_report_id: str) -> NormalizedExecutionReport | None:
+        return next(
+            (
+                report
+                for report in self.reports.values()
+                if report.raw_report_id == raw_report_id
+            ),
+            None,
+        )
+
     def list_by_order_id(self, order_id: str) -> list[NormalizedExecutionReport]:
         return [report for report in self.reports.values() if report.order_id == order_id]
 
@@ -270,6 +280,81 @@ def test_normalizer_persists_duplicate_noops_and_conflicts_without_oms_apply() -
     repository.reports[existing.report_id] = existing.model_copy(update={"reason": "changed"})
     conflict = service.normalize(raw)
     assert conflict.status is ExecutionReportNormalizeResultStatus.CONFLICT
+
+
+def test_same_raw_report_id_same_canonical_duplicates_before_second_persist() -> None:
+    repository = InMemoryExecutionReportRepository()
+    service = _service(repository)
+    raw = _raw(report_type="partial_fill", filled_qty=Decimal("1"), fill_price=Decimal("500"))
+
+    first = service.normalize(raw)
+    duplicate = service.normalize(
+        raw.model_copy(
+            update={
+                "raw_payload": {"diagnostic": "changed"},
+                "received_at": NOW + timedelta(minutes=1),
+            }
+        )
+    )
+
+    assert first.status is ExecutionReportNormalizeResultStatus.NORMALIZED
+    assert duplicate.status is ExecutionReportNormalizeResultStatus.DUPLICATE
+    assert duplicate.normalized_report == first.normalized_report
+    assert len(repository.reports) == 1
+
+
+def test_same_raw_report_id_different_quantity_conflicts_before_second_persist() -> None:
+    repository = InMemoryExecutionReportRepository()
+    service = _service(repository)
+
+    first = service.normalize(_raw(raw_report_id="raw-same", filled_qty=Decimal("0")))
+    conflict = service.normalize(_raw(raw_report_id="raw-same", filled_qty=Decimal("1")))
+
+    assert first.status is ExecutionReportNormalizeResultStatus.NORMALIZED
+    assert conflict.status is ExecutionReportNormalizeResultStatus.CONFLICT
+    assert conflict.reason == "normalized_execution_report_raw_identity_conflict"
+    assert len(repository.reports) == 1
+
+
+def test_same_raw_report_id_different_report_type_conflicts_before_second_persist() -> None:
+    repository = InMemoryExecutionReportRepository()
+    service = _service(repository)
+
+    first = service.normalize(_raw(raw_report_id="raw-same", report_type="acked"))
+    conflict = service.normalize(_raw(raw_report_id="raw-same", report_type="rejected"))
+
+    assert first.status is ExecutionReportNormalizeResultStatus.NORMALIZED
+    assert conflict.status is ExecutionReportNormalizeResultStatus.CONFLICT
+    assert len(repository.reports) == 1
+
+
+def test_same_raw_report_id_different_report_ts_conflicts_when_canonical() -> None:
+    repository = InMemoryExecutionReportRepository()
+    service = _service(repository)
+
+    first = service.normalize(_raw(raw_report_id="raw-same", report_ts=NOW))
+    conflict = service.normalize(
+        _raw(raw_report_id="raw-same", report_ts=NOW + timedelta(seconds=1))
+    )
+
+    assert first.status is ExecutionReportNormalizeResultStatus.NORMALIZED
+    assert conflict.status is ExecutionReportNormalizeResultStatus.CONFLICT
+    assert len(repository.reports) == 1
+
+
+def test_different_raw_report_id_same_facts_are_independent_reports() -> None:
+    repository = InMemoryExecutionReportRepository()
+    service = _service(repository)
+
+    first = service.normalize(_raw(raw_report_id="raw-1"))
+    second = service.normalize(_raw(raw_report_id="raw-2"))
+
+    assert first.status is ExecutionReportNormalizeResultStatus.NORMALIZED
+    assert second.status is ExecutionReportNormalizeResultStatus.NORMALIZED
+    assert first.normalized_report is not None
+    assert second.normalized_report is not None
+    assert first.normalized_report.report_id != second.normalized_report.report_id
+    assert len(repository.reports) == 2
 
 
 def test_replay_execution_reports_is_deterministic_and_uses_normalizer_path() -> None:
