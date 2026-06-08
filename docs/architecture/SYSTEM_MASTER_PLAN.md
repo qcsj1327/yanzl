@@ -87,7 +87,7 @@
   - Stage L.4 未新增 schema，未创建第二套 position ledger。
   - Stage L.4 不更新 Margin / PnL / Settlement / AccountSnapshot，不进入 Broker / Runtime。
 - Stage L.5 Position-to-Accounting Implementation 已完成。
-  - 当前基线：`stage-l4-trade-to-position-handoff / 6c26cbd`。
+  - 当前基线：`stage-l5-position-to-accounting-handoff / 3f1c5a6`。
   - Stage L.5 已实现 `Trade-applied Position / PositionEvent -> Accounting input snapshot -> MarginEngine / PnLEngine -> MarginSnapshot / PnLSnapshot -> SettlementEngine later` 最小闭环。
   - Stage L.5 新增 migration `0015_stage_l5_position_to_accounting.py`，只扩展 `margin_snapshots` / `pnl_snapshots`；不进入 Broker / Runtime / live。
   - Stage M 仍保留 Runtime / Infrastructure，不占用。
@@ -778,14 +778,179 @@ Stage L.5 explicit non-goals：
 
 ### Stage M: Runtime / Infrastructure
 
-- Goal：通过 port/adapter 引入 runtime/control plane/event bus/task system。
-- Inputs：stable orchestrator、replay framework、accounting source-of-truth。
-- Outputs：FastAPI control plane、Celery task workers、Kafka/Redis adapters、config/secrets provider boundary。
-- Allowed changes：runtime adapter、event envelope、task config、health/readiness endpoints。
-- Forbidden changes：不让 FastAPI/Celery/Kafka/Redis/KMS 污染 Domain、OMS、Risk、mapper；Redis/Kafka payload 不做 source-of-truth。
-- Required tests：API command boundary、consumer idempotency、retry/dead-letter、config version, health/readiness, secret redaction。
-- Acceptance criteria：runtime retry 幂等；core 可在无 runtime adapter 下继续测试。
-- Suggested tag：`stage-m-runtime-infrastructure`。
+- Goal：冻结 Runtime / Infrastructure process lifecycle、startup / shutdown、dependency wiring、scheduler、replay orchestration、health、failure recovery、service ownership 和 source-of-truth boundary。
+- Baseline：`stage-l5-position-to-accounting-handoff / 3f1c5a6`；Strategy -> OMS OrderState、OMS State -> Trade Fact、Trade -> Position、Position -> Accounting 均已闭合。
+- Inputs：已冻结的 Application Services、repositories/UoW ports、typed config、typed replay inputs、health dependency checks。
+- Outputs：Runtime dependency graph、startup order、shutdown order、replay order、health model、failure model、service ownership、Stage M implementation recommendation。
+- Allowed changes：只改文档；冻结 runtime / infra contract。
+- Forbidden changes：不写代码；不改 schema；不改 `src` / `tests`；不让 Runtime 改 Position / Margin / PnL / Settlement / OMS state；不把 Kafka / Redis / scheduler payload 当作业务事实。
+- Acceptance criteria：Runtime 只编排 Market、Feature、Strategy、Workflow、OMS、Execution、Trade、Position、Accounting 应用服务；Runtime 不拥有业务事实；Runtime 只调用应用服务，不直接调用 repository mutation 或 domain engine mutation。
+- Suggested tag：`stage-m-runtime-infrastructure-contract-freeze`。
+
+Stage M runtime dependency graph：
+
+```text
+Runtime Process
+-> Config / Secrets Provider
+-> DB / UoW Factory
+-> MarketDataService
+-> FeatureService
+-> StrategyService / SignalLifecycleService
+-> TradingWorkflowService
+-> OMSBridgeService / OMSService
+-> ExecutionGatewayService
+-> ExecutionReportNormalizer / OMSEventApplicationService
+-> TradeBridgeService
+-> PositionManager
+-> MarginEngine / PnLEngine / SettlementEngine through Accounting application service
+-> Replay Orchestrator
+-> Health / Readiness Reporter
+```
+
+Runtime only orchestrates：
+
+- Market。
+- Feature。
+- Strategy。
+- Workflow。
+- OMS。
+- Execution。
+- Trade。
+- Position。
+- Accounting。
+
+Runtime source-of-truth rule：
+
+- Runtime owns process state only：process id、runtime id、component lifecycle、scheduler trigger status、task attempt、retry metadata、lock ownership、health/readiness state 和 structured logs。
+- Runtime does not own business facts。
+- DB business ledgers remain source-of-truth：market facts、feature snapshots、signals、risk results、order intents、orders / order_events、execution commands、normalized execution reports、trades、positions / position_events、margin snapshots、pnl snapshots、settlement snapshots 和 account snapshots。
+- Kafka / Redis / Celery / FastAPI payloads are transport, cache, task envelope or control input only；they never replace DB facts。
+- Runtime must not recover missing business fields from `raw_payload`、message headers、task kwargs、cache values、logs or metrics。
+
+Startup order：
+
+1. Load typed config and secrets; redact secrets before logging。
+2. Initialize process identity / `runtime_id` for lineage only; it must not enter deterministic business identity。
+3. Initialize DB engine and UoW factory。
+4. Run migration/version compatibility check in read-only mode。
+5. Wire repositories and application service ports。
+6. Wire Market -> Feature -> Strategy -> Workflow -> OMS -> Execution -> Trade -> Position -> Accounting application services。
+7. Initialize replay orchestrator in disabled / explicit-trigger mode。
+8. Initialize scheduler in paused mode。
+9. Initialize health/readiness reporter。
+10. Mark readiness only after dependency checks and service wiring checks pass。
+11. Start scheduler/consumers only after readiness is true and kill switch policy allows execution。
+
+Shutdown order：
+
+1. Stop accepting new API commands, scheduler ticks and consumer messages。
+2. Mark readiness false while liveness can remain true。
+3. Drain in-flight application service calls with timeout。
+4. Stop scheduler and consumers。
+5. Flush structured logs, metrics and audit events。
+6. Close UoW sessions / DB connections。
+7. Release runtime locks。
+8. Mark process terminated。
+
+Scheduler boundary：
+
+- Scheduler may trigger application service methods only。
+- Scheduler may pass typed request/context objects, not raw transport payloads as facts。
+- Scheduler must not directly update `positions`、`margin_snapshots`、`pnl_snapshots`、`settlement_snapshots`、`orders` or `order_events`。
+- Scheduler retries must preserve deterministic idempotency keys already owned by the application service。
+- Scheduler failure does not imply business failure unless the called application service returned a typed business result。
+
+Replay order：
+
+```text
+Market facts
+-> FeatureSnapshot replay
+-> Strategy / Signal replay
+-> Trading Workflow replay
+-> OMS Bridge replay
+-> Execution Gateway replay
+-> Execution Report normalization replay
+-> OMS Event application replay
+-> Trade bridge replay
+-> Position replay
+-> Accounting replay
+```
+
+Replay orchestration rules：
+
+- Runtime may coordinate replay order, batch size, dry-run/live-apply flags and reporting。
+- Runtime must call each stage's existing replay/application boundary。
+- Runtime must not directly mutate OMS state, Trade ledger, Position, Margin, PnL, Settlement or AccountSnapshot。
+- Replay default is dry-run / preview where a stage supports it；live apply requires explicit operator intent and preflight conflict check。
+- Any conflict / divergence stops the dependent downstream replay segment unless an explicit recovery contract says otherwise。
+
+Health model：
+
+- Liveness：process event loop / worker is alive and can report。
+- Readiness：config, DB/UoW, migration compatibility, service wiring, scheduler policy and kill switch state allow work。
+- Dependency health：DB reachable, required queues/brokers reachable if enabled, Redis/Kafka available if configured, secrets provider reachable if configured。
+- Business health：latest successful service call, replay divergence count, idempotency conflict count and pending retry/dead-letter count are reported as metrics/audit, not as business source-of-truth。
+- Health endpoints / probes must not repair business state。
+
+Failure model：
+
+- Startup failure before readiness：fail closed; no scheduler/consumer execution。
+- Dependency failure after readiness：mark readiness false, stop new work, drain or fail typed attempts。
+- Application service typed reject/conflict：preserve result, do not retry blindly, route to replay/recovery report。
+- Runtime exception before service commit：retry only through the same application service idempotency boundary。
+- Runtime exception after service commit but before ack/log：repeat may only become duplicate/no-op through service idempotency；Runtime must not manually patch DB state。
+- Poison message / repeated task failure：dead-letter with redacted envelope and correlation id；business facts remain unchanged unless already committed by an application service。
+- Recovery must be replay/service driven, never direct table mutation。
+
+Service ownership：
+
+- MarketDataService owns market fact ingestion/replay。
+- FeatureService owns FeatureSnapshot generation/replay。
+- StrategyService / SignalLifecycleService own SignalCandidate / SignalDecision and lifecycle events。
+- TradingWorkflowService owns TradingRiskResult / OrderIntent creation。
+- OMSBridgeService owns OrderIntent -> OMS create-order bridge。
+- OMSService owns OMS `orders.status/version` and `order_events` state application。
+- ExecutionGatewayService owns ExecutionCommand creation/dispatch boundary。
+- ExecutionReportNormalizer owns NormalizedExecutionReport and OrderEventCandidate creation。
+- OMSEventApplicationService owns candidate -> typed OrderEvent mapping and guarded OMS event apply。
+- TradeBridgeService owns typed Trade fact creation from eligible report + OMS proof。
+- PositionManager owns Position projection and PositionEvent applied-trade audit。
+- Accounting application service owns calls into MarginEngine、PnLEngine、SettlementEngine and snapshot persistence。
+- Runtime owns process lifecycle, wiring, scheduling, retries, health, metrics, locks and transport envelope only。
+
+Runtime explicitly must not：
+
+- 改 Position quantity、avg price、today/yesterday bucket、frozen qty、version or `position_events`。
+- 改 Margin facts or cached `positions.margin_used`。
+- 改 PnL facts or cached `positions.realized_pnl` / `positions.unrealized_pnl`。
+- 改 Settlement facts、today->yesterday roll 或 AccountSnapshot。
+- 改 OMS `orders.status/version` 或 `order_events`。
+- 直接调用 repository mutation 绕过 application service。
+- 直接调用 pure Domain engine 并自行落库。
+- 通过 Redis/Kafka/Celery/FastAPI payload 补业务事实。
+
+Stage M explicit non-goals：
+
+- Broker / CTP / SimNow / live adapter。
+- Paper / sim / live trading。
+- New business schema。
+- New business domain models。
+- OMS state-machine change。
+- Position / Accounting algorithm change。
+- Settlement calendar automation。
+- Broker reconciliation。
+- Portfolio risk upgrade。
+- Kill switch risk rule implementation；Stage M only wires runtime readiness/stop policy boundary。
+
+Stage M implementation recommendation：
+
+- Implement Stage M as a thin runtime package around existing application services。
+- Start with in-process dependency wiring and CLI/local process lifecycle before FastAPI/Celery/Kafka。
+- Keep scheduler disabled by default and require explicit config to enable each job。
+- Add health/readiness as read-only probes。
+- Add replay orchestrator as dry-run first, with explicit live-apply flags per stage。
+- Add no business tables in Stage M；if runtime task audit is later needed, freeze a separate infrastructure-only contract before migration。
+- Validate with tests that monkeypatch application services and assert Runtime never imports repository implementations for direct mutation and never mutates Position / Margin / PnL / Settlement / OMS state directly。
 
 ### Stage N: Broker / Adapter Layer
 
