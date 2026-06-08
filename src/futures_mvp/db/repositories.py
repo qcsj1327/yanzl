@@ -14,6 +14,7 @@ from futures_mvp.db.models import FeatureSnapshot as FeatureSnapshotOrm
 from futures_mvp.db.models import MarginSnapshot as MarginSnapshotOrm
 from futures_mvp.db.models import MarketBar as MarketBarOrm
 from futures_mvp.db.models import MarketTick as MarketTickOrm
+from futures_mvp.db.models import NormalizedExecutionReport as NormalizedExecutionReportOrm
 from futures_mvp.db.models import Order
 from futures_mvp.db.models import OrderEvent as OrderEventOrm
 from futures_mvp.db.models import OrderIntent as OrderIntentOrm
@@ -30,6 +31,7 @@ from futures_mvp.domain.enums import (
     Direction,
     EventSource,
     ExecutionCommandType,
+    ExecutionReportStatus,
     ExecutionTarget,
     FeatureQualityStatus,
     MarketDataResultStatus,
@@ -50,6 +52,7 @@ from futures_mvp.domain.models import (
     ExecutionCommand,
     FeatureSnapshot,
     MarginSnapshot,
+    NormalizedExecutionReport,
     OrderEvent,
     OrderIntent,
     OrderRequest,
@@ -68,6 +71,7 @@ from futures_mvp.domain.models import (
 from futures_mvp.interfaces.repositories import (
     EventAlreadyExistsError,
     ExecutionCommandConflictError,
+    ExecutionReportConflictError,
     FeatureSnapshotConflictError,
     IdempotencyConflictError,
     MarginSnapshotConflictError,
@@ -85,6 +89,9 @@ from futures_mvp.interfaces.repositories import (
     TradingRiskResultConflictError,
 )
 from futures_mvp.modules.execution_gateway.canonical import canonical_execution_command_payload
+from futures_mvp.modules.execution_reports.canonical import (
+    canonical_normalized_execution_report_payload,
+)
 from futures_mvp.modules.feature.canonical import canonical_feature_snapshot_payload
 from futures_mvp.modules.market.canonical import canonical_bar_payload, canonical_tick_payload
 from futures_mvp.modules.strategy.canonical import (
@@ -268,6 +275,32 @@ def execution_command_to_domain(command: ExecutionCommandOrm) -> ExecutionComman
         command_payload_hash=command.command_payload_hash,
         created_at=command.created_at,
         raw_payload=command.raw_payload,
+    )
+
+
+def normalized_execution_report_to_domain(
+    report: NormalizedExecutionReportOrm,
+) -> NormalizedExecutionReport:
+    return NormalizedExecutionReport(
+        report_id=report.report_id,
+        raw_report_id=report.raw_report_id,
+        adapter_name=report.adapter_name,
+        execution_target=ExecutionTarget(report.execution_target),
+        command_id=report.command_id,
+        order_id=report.order_id,
+        client_order_id=report.client_order_id,
+        adapter_order_ref=report.adapter_order_ref,
+        exchange_order_id=report.exchange_order_id,
+        execution_status=ExecutionReportStatus(report.execution_status),
+        filled_qty=report.filled_qty,
+        fill_price=report.fill_price,
+        cumulative_filled_qty=report.cumulative_filled_qty,
+        remaining_qty=report.remaining_qty,
+        report_ts=report.report_ts,
+        normalized_at=report.normalized_at,
+        reason=report.reason,
+        source_report_hash=report.source_report_hash,
+        raw_payload=report.raw_payload,
     )
 
 
@@ -1823,6 +1856,123 @@ class SQLAlchemyExecutionCommandRepository:
         if existing.command_payload_hash != command.command_payload_hash:
             raise ExecutionCommandConflictError(
                 "execution command payload hash conflict: " f"{command.command_id}"
+            )
+        return existing
+
+
+class SQLAlchemyExecutionReportRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def append_normalized_report(
+        self,
+        report: NormalizedExecutionReport,
+    ) -> NormalizedExecutionReport:
+        existing = self.get_by_report_id(report.report_id)
+        if existing is not None:
+            return self._existing_report_for_append(existing, report)
+
+        try:
+            with self._session.begin_nested():
+                report_orm = NormalizedExecutionReportOrm(
+                    report_id=report.report_id,
+                    raw_report_id=report.raw_report_id,
+                    adapter_name=report.adapter_name,
+                    execution_target=report.execution_target.value,
+                    command_id=report.command_id,
+                    order_id=report.order_id,
+                    client_order_id=report.client_order_id,
+                    adapter_order_ref=report.adapter_order_ref,
+                    exchange_order_id=report.exchange_order_id,
+                    execution_status=report.execution_status.value,
+                    filled_qty=report.filled_qty,
+                    fill_price=report.fill_price,
+                    cumulative_filled_qty=report.cumulative_filled_qty,
+                    remaining_qty=report.remaining_qty,
+                    report_ts=report.report_ts,
+                    source_report_hash=report.source_report_hash,
+                    reason=report.reason,
+                    raw_payload=report.raw_payload,
+                    normalized_at=report.normalized_at,
+                )
+                self._session.add(report_orm)
+                self._session.flush()
+            return normalized_execution_report_to_domain(report_orm)
+        except IntegrityError as exc:
+            existing_after_conflict = self.get_by_report_id(report.report_id)
+            if existing_after_conflict is not None:
+                return self._existing_report_for_append(existing_after_conflict, report)
+            raise RepositoryError(
+                f"normalized execution report append failed: {report.report_id}"
+            ) from exc
+
+    def get_by_report_id(self, report_id: str) -> NormalizedExecutionReport | None:
+        report = self._session.scalar(
+            select(NormalizedExecutionReportOrm).where(
+                NormalizedExecutionReportOrm.report_id == report_id
+            )
+        )
+        return normalized_execution_report_to_domain(report) if report else None
+
+    def list_by_order_id(self, order_id: str) -> list[NormalizedExecutionReport]:
+        reports = self._session.scalars(
+            select(NormalizedExecutionReportOrm)
+            .where(NormalizedExecutionReportOrm.order_id == order_id)
+            .order_by(
+                NormalizedExecutionReportOrm.report_ts.asc(),
+                NormalizedExecutionReportOrm.id.asc(),
+            )
+        ).all()
+        return [normalized_execution_report_to_domain(report) for report in reports]
+
+    def list_by_command_id(self, command_id: str) -> list[NormalizedExecutionReport]:
+        reports = self._session.scalars(
+            select(NormalizedExecutionReportOrm)
+            .where(NormalizedExecutionReportOrm.command_id == command_id)
+            .order_by(
+                NormalizedExecutionReportOrm.report_ts.asc(),
+                NormalizedExecutionReportOrm.id.asc(),
+            )
+        ).all()
+        return [normalized_execution_report_to_domain(report) for report in reports]
+
+    def list_by_status(
+        self,
+        execution_status: ExecutionReportStatus | str,
+        start_ts: datetime | None = None,
+        end_ts: datetime | None = None,
+    ) -> list[NormalizedExecutionReport]:
+        status_value = (
+            execution_status.value
+            if isinstance(execution_status, ExecutionReportStatus)
+            else execution_status
+        )
+        statement = select(NormalizedExecutionReportOrm).where(
+            NormalizedExecutionReportOrm.execution_status == status_value
+        )
+        if start_ts is not None:
+            statement = statement.where(NormalizedExecutionReportOrm.report_ts >= start_ts)
+        if end_ts is not None:
+            statement = statement.where(NormalizedExecutionReportOrm.report_ts <= end_ts)
+        reports = self._session.scalars(
+            statement.order_by(
+                NormalizedExecutionReportOrm.report_ts.asc(),
+                NormalizedExecutionReportOrm.id.asc(),
+            )
+        ).all()
+        return [normalized_execution_report_to_domain(report) for report in reports]
+
+    def _existing_report_for_append(
+        self,
+        existing: NormalizedExecutionReport,
+        report: NormalizedExecutionReport,
+    ) -> NormalizedExecutionReport:
+        if canonical_normalized_execution_report_payload(
+            existing
+        ) != canonical_normalized_execution_report_payload(report):
+            raise ExecutionReportConflictError(
+                "normalized execution report identity reused with different canonical payload: "
+                f"{report.report_id}"
             )
         return existing
 

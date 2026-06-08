@@ -213,38 +213,38 @@
 | no Accounting mutation | Stage K 不更新 Trade / Position / Margin / PnL / Settlement。 | Stage K |
 | no OMS mutation | Stage K 不调用 `OMS.apply_order_event`，不生成 `OrderEvent`。 | Stage K |
 
-## Stage L Execution Report Normalization Contract
+## Stage L Execution Report Normalization Core
 
 | 场景 | 预期 | 状态 |
 |---|---|---|
-| source-of-truth | Execution Report Normalizer 只消费 `ExecutionCommand`、`ExecutionCommandResult`、typed adapter report input、adapter identity、`command_id` / `order_id` / `client_order_id` lineage 和 typed timestamp normalization rule。 | Stage L Contract |
-| forbidden inputs | 不消费 `FeatureSnapshot`、`SignalDecision`、`TradingRiskResult`、`OrderIntent` mutation、Accounting tables、Position tables、Margin / PnL / Settlement、Broker state as source-of-truth 或 `raw_payload` facts。 | Stage L Contract |
-| `RawExecutionReport` fields | 覆盖 `raw_report_id`、`adapter_name`、`execution_target`、`command_id`、`order_id`、`client_order_id`、`adapter_order_ref`、`exchange_order_id`、`report_type`、fill quantities/prices、`report_ts`、`received_at`、diagnostic-only `raw_payload`。 | Stage L Contract |
-| Decimal-only raw report | quantities / prices 必须为 `Decimal`，不得使用 float。 | Stage L Future |
-| timestamp normalization | Adapter must normalize external ms / us / ns timestamps before domain if possible。 | Stage L Contract |
-| `NormalizedExecutionReport` fields | 覆盖 deterministic `report_id`、raw/adapter/command/order lineage、`execution_status`、fill quantities/prices、`report_ts`、`normalized_at`、`reason`、`source_report_hash`。 | Stage L Contract |
-| deterministic report id | same raw report -> same `report_id` / same normalized report。 | Stage L Future |
-| source report hash | `source_report_hash` derives from canonical `RawExecutionReport`。 | Stage L Future |
-| status enum | `ExecutionReportStatus` 只包含 `SUBMITTED` / `ACKED` / `PARTIALLY_FILLED` / `FILLED` / `REJECTED` / `CANCELED` / `ERROR`。 | Stage L Contract |
-| not OMS status | `ExecutionReportStatus` 不是 OMS `OrderStatus`。 | Stage L Contract |
-| ACK mapping | `ACKED -> OMS ACKED event` candidate。 | Stage L Contract |
-| partial fill mapping | `PARTIALLY_FILLED -> OMS PARTIALLY_FILLED event` candidate。 | Stage L Contract |
-| full fill mapping | `FILLED -> OMS FILLED event` candidate。 | Stage L Contract |
-| reject mapping | `REJECTED -> OMS REJECTED_BY_EXCHANGE event` candidate。 | Stage L Contract |
-| cancel mapping | `CANCELED -> OMS CANCELED event` candidate。 | Stage L Contract |
-| no direct OMS apply | Normalizer may create `OrderEvent` candidate but must not call `OMSService.apply_order_event(...)` unless Stage L implementation explicitly includes application service + UoW boundary。 | Stage L Future |
-| fill-like facts boundary | Fill-like fields in report are execution-state facts only, not Trade facts。 | Stage L Contract |
-| no Trade / Position / Accounting mutation | Stage L 不创建 Trade / Fill ledger，不更新 Position，不更新 Margin / PnL / Settlement，不生成 accounting facts。 | Stage L Future |
-| raw identity | `raw_report_id` unique per adapter if available；fallback key is `adapter_name + command_id + report_type + report_ts + cumulative_filled_qty`。 | Stage L Contract |
-| normalized duplicate | same canonical -> duplicate / no-op。 | Stage L Future |
-| normalized conflict | different canonical -> conflict / error。 | Stage L Future |
-| canonical excludes diagnostic fields | canonical excludes `raw_payload`、`received_at`、`normalized_at`、DB id。 | Stage L Future |
-| repository contract | Future `ExecutionReportRepository` methods include append/get/list by order/list by command。 | Stage L Contract |
-| repository uniqueness | Future `normalized_execution_reports` has unique `report_id`。 | Stage L Contract |
-| repository indexes | Future indexes include `order_id`、`command_id`、`client_order_id`、`execution_status`、`report_ts`。 | Stage L Contract |
-| replay deterministic | Ordered `RawExecutionReport` replay produces deterministic normalized reports。 | Stage L Future |
-| replay no side effects | Report replay must not call OMS, update Accounting or generate Trade。 | Stage L Future |
-| no broker dependency | Future Stage L implementation must not depend on Broker / CTP / SimNow。 | Stage L Future |
+| source-of-truth | Execution Report Normalizer 只消费 `ExecutionCommand`、`ExecutionCommandResult`、typed adapter report input、adapter identity、`command_id` / `order_id` / `client_order_id` lineage 和 typed timestamp normalization rule。 | Stage L |
+| forbidden inputs | 不消费 `FeatureSnapshot`、`SignalDecision`、`TradingRiskResult`、`OrderIntent` mutation、Accounting tables、Position tables、Margin / PnL / Settlement、Broker state as source-of-truth 或 `raw_payload` facts。 | Stage L |
+| `RawExecutionReport` fields | 覆盖 `raw_report_id`、`adapter_name`、`execution_target`、`command_id`、`order_id`、`client_order_id`、`adapter_order_ref`、`exchange_order_id`、`report_type`、fill quantities/prices、`report_ts`、`received_at`、diagnostic-only `raw_payload`。 | Stage L |
+| Decimal-only raw report | quantities / prices 必须为 `Decimal`，不得使用 float。 | Stage L |
+| timestamp normalization | Adapter must normalize external ms / us / ns timestamps before domain if possible。 | Stage L |
+| `NormalizedExecutionReport` fields | 覆盖 deterministic `report_id`、raw/adapter/command/order lineage、`execution_status`、fill quantities/prices、`report_ts`、`normalized_at`、`reason`、`source_report_hash`。 | Stage L |
+| deterministic report id | same raw report -> same `report_id` / same normalized report。 | Stage L |
+| source report hash | `source_report_hash` derives from canonical `RawExecutionReport`。 | Stage L |
+| status enum | `ExecutionReportStatus` 只包含 `SUBMITTED` / `ACKED` / `PARTIALLY_FILLED` / `FILLED` / `REJECTED` / `CANCELED` / `ERROR`。 | Stage L |
+| not OMS status | `ExecutionReportStatus` 不是 OMS `OrderStatus`。 | Stage L |
+| ACK mapping | `ACKED -> OMS ACKED event` candidate。 | Stage L |
+| partial fill mapping | `PARTIALLY_FILLED -> OMS PARTIALLY_FILLED event` candidate。 | Stage L |
+| full fill mapping | `FILLED -> OMS FILLED event` candidate。 | Stage L |
+| reject mapping | `REJECTED -> OMS REJECTED_BY_EXCHANGE event` candidate。 | Stage L |
+| cancel mapping | `CANCELED -> OMS CANCELED event` candidate。 | Stage L |
+| no direct OMS apply | Normalizer may create `OrderEvent` candidate but must not call `OMSService.apply_order_event(...)` unless Stage L implementation explicitly includes application service + UoW boundary。 | Stage L |
+| fill-like facts boundary | Fill-like fields in report are execution-state facts only, not Trade facts。 | Stage L |
+| no Trade / Position / Accounting mutation | Stage L 不创建 Trade / Fill ledger，不更新 Position，不更新 Margin / PnL / Settlement，不生成 accounting facts。 | Stage L |
+| raw identity | `raw_report_id` unique per adapter if available；fallback key is `adapter_name + command_id + report_type + report_ts + cumulative_filled_qty`。 | Stage L |
+| normalized duplicate | same canonical -> duplicate / no-op。 | Stage L |
+| normalized conflict | different canonical -> conflict / error。 | Stage L |
+| canonical excludes diagnostic fields | canonical excludes `raw_payload`、`received_at`、`normalized_at`、DB id。 | Stage L |
+| repository contract | `ExecutionReportRepository` methods include append/get/list by order/list by command/list by status。 | Stage L |
+| repository uniqueness | `normalized_execution_reports` has unique `report_id`。 | Stage L |
+| repository indexes | Indexes include `order_id`、`command_id`、`client_order_id`、`execution_status`、`report_ts`。 | Stage L |
+| replay deterministic | Ordered `RawExecutionReport` replay produces deterministic normalized reports。 | Stage L |
+| replay no side effects | Report replay must not call OMS, update Accounting or generate Trade。 | Stage L |
+| no broker dependency | Stage L implementation does not depend on Broker / CTP / SimNow。 | Stage L |
 
 ## Later Phase
 

@@ -2,7 +2,7 @@
 
 本文档是 Execution 的冻结契约。它描述终态 Execution 架构，同时明确 Current facts、Phase 4.1 implementation target、Stage K Execution Gateway contract、Stage L Execution Report Normalization contract、Phase 4.2+ target 和 Later Phase 的落地区分。除非另开契约迁移，后续实现必须以本文档和 `EXECUTION_TEST_MATRIX.md` 为准。
 
-Phase 4.0 只冻结契约。Phase 4.1 按本文档落地 DTO、enum、MappingContext、MappingResult、MappingError 和 pure mapper。Execution Runtime 和 Stage A ApplicationExecutionOrchestrator 已作为后续阶段实现。Stage K 在 `stage-j2-oms-bridge-core / ee4aace` 后实现 OMS Order -> Execution Gateway command boundary；它只支持 `MOCK` target，不实现真实 Broker、CTP、SimNow、Paper、Sim 或 Live。Stage L 在 `stage-k-execution-gateway-core / 94b498e` 后只冻结 Execution Report Normalization contract，不写代码、不改 schema、不实现。
+Phase 4.0 只冻结契约。Phase 4.1 按本文档落地 DTO、enum、MappingContext、MappingResult、MappingError 和 pure mapper。Execution Runtime 和 Stage A ApplicationExecutionOrchestrator 已作为后续阶段实现。Stage K 在 `stage-j2-oms-bridge-core / ee4aace` 后实现 OMS Order -> Execution Gateway command boundary；它只支持 `MOCK` target，不实现真实 Broker、CTP、SimNow、Paper、Sim 或 Live。Stage L 在 `stage-k-execution-gateway-core / 94b498e` 后实现 Execution Report Normalization Core。
 
 ## Final-state Architecture
 
@@ -116,7 +116,7 @@ OMS 是订单状态唯一事实入口：
 - 当前 Stage K 已实现 Execution Gateway Core：`ExecutionCommand`、deterministic `command_id`、canonical payload/hash、`ExecutionCommandRepository`、SQLAlchemy repository、UoW integration、`execution_commands` migration、`ExecutionAdapter` Protocol、deterministic `MockExecutionAdapter`、`ExecutionGatewayService`、dry-run replay 和 tests。
 - 当前 Stage K only supports `MOCK` target；`PAPER` / `SIM` / `LIVE` typed rejected / deferred。
 - 当前 Stage K 不修改 OMS / OMS Bridge / Trading Workflow / Strategy / Risk / Broker / Runtime，不生成 `ExecutionReport` / `OrderEvent`，不生成 Fill / Trade，不修改 Accounting。
-- 当前 Stage L 基线为 `stage-k-execution-gateway-core / 94b498e`。Stage L 本次只冻结 Execution Report Normalization contract；`ExecutionCommandResult` 只表示 adapter accepted / rejected，不表示 exchange accepted、fill 或 trade。
+- 当前 Stage L 基线为 `stage-k-execution-gateway-core / 94b498e`。Stage L 已实现 Execution Report Normalization Core；`ExecutionCommandResult` 只表示 adapter accepted / rejected，不表示 exchange accepted、fill 或 trade。Stage L may build typed `OrderEvent` candidate, but does not call `OMSService.apply_order_event(...)`。
 
 `MockFuturesExchange.run_daily_settlement(trading_day)` 的移除是 intentional interface migration：
 
@@ -382,15 +382,15 @@ Stage K does not implement：
 - runtime scheduler。
 - Kafka / FastAPI / Celery。
 
-## Stage L Execution Report Normalization Contract
+## Stage L Execution Report Normalization Core
 
-Stage L freezes the Execution Report Normalizer boundary. The normalizer converts typed adapter report input into deterministic `NormalizedExecutionReport` facts and may build a typed OMS `OrderEvent` candidate for later application-layer routing. Stage L contract freeze does not write implementation, schema, repositories, migrations or tests.
+Stage L implements the Execution Report Normalizer boundary. The normalizer converts typed adapter report input into deterministic `NormalizedExecutionReport` facts and may build a typed OMS `OrderEvent` candidate for later application-layer routing. Stage L does not apply the candidate to OMS and does not generate Trade / Fill ledger facts.
 
-Recommended Stage L Core implementation boundary：
+Implemented Stage L Core boundary：
 
 1. normalize typed adapter report。
 2. build `OrderEvent` candidate when report status is mappable。
-3. persist `NormalizedExecutionReport` if Stage L implementation includes persistence。
+3. persist `NormalizedExecutionReport`。
 4. do not mutate OMS。
 
 ### Source Of Truth
@@ -562,18 +562,16 @@ Canonical excludes：
 - `normalized_at`
 - DB id
 
-### Repository / Future Migration Contract
+### Repository / Migration Contract
 
-Future repository：
+Implemented repository：
 
 - `ExecutionReportRepository`
-- `raw_execution_reports` table optional。
-- `normalized_execution_reports` table required if Stage L persists reports。
-
-Recommendation：
-
-- Stage L Core should add `normalized_execution_reports`。
-- `raw_execution_reports` is optional; `raw_payload` remains diagnostic only。
+- SQLAlchemy repository。
+- `UnitOfWork.execution_reports`。
+- narrow `ExecutionReportUnitOfWork`。
+- `normalized_execution_reports` table。
+- no `raw_execution_reports` table。
 
 Repository methods：
 
@@ -581,6 +579,7 @@ Repository methods：
 - `get_by_report_id(report_id)`
 - `list_by_order_id(order_id)`
 - `list_by_command_id(command_id)`
+- `list_by_status(execution_status, start_ts, end_ts)`
 
 Unique：
 
@@ -615,20 +614,26 @@ Report replay：
 - Trade ledger：not involved。
 - Broker：not source-of-truth。
 
-### Stage L Future Tests
+### Stage L Tests
 
-Future implementation must cover：
+Stage L tests cover：
 
 - Decimal-only raw report。
 - deterministic `report_id`。
 - `source_report_hash`。
 - status mapping。
+- `OrderEventCandidate` mapping。
+- `SUBMITTED` / `ERROR` no candidate。
 - duplicate same canonical。
 - conflict different canonical。
 - `raw_payload` excluded。
 - replay deterministic。
+- repository round trip。
+- UoW exposes execution reports。
+- `normalized_execution_reports` schema。
+- no `raw_execution_reports` table。
 - no `OMSService.apply_order_event(...)` call。
-- no Trade / Position / Accounting mutation。
+- no Trade / Fill / Position / Accounting mutation。
 - no Broker / CTP / SimNow dependency。
 
 ### Stage L Explicit Non-goals

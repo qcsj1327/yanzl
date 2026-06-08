@@ -3,7 +3,7 @@ from decimal import Decimal
 from types import TracebackType
 from typing import Protocol, runtime_checkable
 
-from futures_mvp.domain.enums import BarTimeframe, EventSource, OrderStatus
+from futures_mvp.domain.enums import BarTimeframe, EventSource, ExecutionReportStatus, OrderStatus
 from futures_mvp.domain.errors import FuturesMvpError
 from futures_mvp.domain.models import (
     AccountSnapshot,
@@ -11,6 +11,7 @@ from futures_mvp.domain.models import (
     ExecutionCommand,
     FeatureSnapshot,
     MarginSnapshot,
+    NormalizedExecutionReport,
     OrderEvent,
     OrderIntent,
     OrderRequest,
@@ -97,6 +98,10 @@ class OrderIntentConflictError(RepositoryError):
 
 class ExecutionCommandConflictError(RepositoryError):
     """Raised when an execution command identity is reused with different facts."""
+
+
+class ExecutionReportConflictError(RepositoryError):
+    """Raised when an execution report identity is reused with different facts."""
 
 
 @runtime_checkable
@@ -439,6 +444,27 @@ class ExecutionCommandRepository(Protocol):
 
 
 @runtime_checkable
+class ExecutionReportRepository(Protocol):
+    def append_normalized_report(
+        self,
+        report: NormalizedExecutionReport,
+    ) -> NormalizedExecutionReport: ...
+
+    def get_by_report_id(self, report_id: str) -> NormalizedExecutionReport | None: ...
+
+    def list_by_order_id(self, order_id: str) -> list[NormalizedExecutionReport]: ...
+
+    def list_by_command_id(self, command_id: str) -> list[NormalizedExecutionReport]: ...
+
+    def list_by_status(
+        self,
+        execution_status: ExecutionReportStatus | str,
+        start_ts: datetime | None = None,
+        end_ts: datetime | None = None,
+    ) -> list[NormalizedExecutionReport]: ...
+
+
+@runtime_checkable
 class UnitOfWork(Protocol):
     orders: OrderRepository
     order_events: OrderEventRepository
@@ -457,6 +483,7 @@ class UnitOfWork(Protocol):
     trading_risk_results: TradingRiskResultRepository
     order_intents: OrderIntentRepository
     execution_commands: ExecutionCommandRepository
+    execution_reports: ExecutionReportRepository
 
     def commit(self) -> None: ...
 
@@ -556,6 +583,24 @@ class ExecutionGatewayUnitOfWork(Protocol):
     def rollback(self) -> None: ...
 
     def __enter__(self) -> "ExecutionGatewayUnitOfWork": ...
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> bool | None: ...
+
+
+@runtime_checkable
+class ExecutionReportUnitOfWork(Protocol):
+    execution_reports: ExecutionReportRepository
+
+    def commit(self) -> None: ...
+
+    def rollback(self) -> None: ...
+
+    def __enter__(self) -> "ExecutionReportUnitOfWork": ...
 
     def __exit__(
         self,

@@ -653,6 +653,40 @@ class ExecutionCommand(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class NormalizedExecutionReport(Base):
+    __tablename__ = "normalized_execution_reports"
+    __table_args__ = (
+        UniqueConstraint("report_id", name="uq_normalized_execution_reports_report_id"),
+        Index("ix_normalized_execution_reports_order_id", "order_id"),
+        Index("ix_normalized_execution_reports_command_id", "command_id"),
+        Index("ix_normalized_execution_reports_client_order_id", "client_order_id"),
+        Index("ix_normalized_execution_reports_execution_status", "execution_status"),
+        Index("ix_normalized_execution_reports_report_ts", "report_ts"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    report_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    raw_report_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    adapter_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    execution_target: Mapped[str] = mapped_column(String(32), nullable=False)
+    command_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    order_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    client_order_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    adapter_order_ref: Mapped[str] = mapped_column(String(128), nullable=False)
+    exchange_order_id: Mapped[str | None] = mapped_column(String(128))
+    execution_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    filled_qty: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    fill_price: Mapped[Decimal | None] = mapped_column(DECIMAL)
+    cumulative_filled_qty: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    remaining_qty: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    report_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source_report_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(512))
+    raw_payload: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    normalized_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class RiskEvent(Base):
     __tablename__ = "risk_events"
 

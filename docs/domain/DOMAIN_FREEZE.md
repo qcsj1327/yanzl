@@ -2672,9 +2672,9 @@ Stage K does not implement：
 - runtime scheduler。
 - Kafka / FastAPI / Celery。
 
-## Stage L Execution Report Normalization Contract
+## Stage L Execution Report Normalization Core Contract
 
-Stage L freezes the Execution Report Normalizer boundary on baseline `stage-k-execution-gateway-core / 94b498e`。This is a documentation-only contract freeze. It does not add code, schema, migrations or tests。
+Stage L implements the Execution Report Normalizer Core on baseline `stage-k-execution-gateway-core / 94b498e`。It adds typed execution report domain objects, deterministic hash / id helpers, explicit status mapping, candidate-only OMS event mapping, repository/UoW persistence, `normalized_execution_reports` migration, replay and tests。
 
 Stage K `ExecutionCommandResult` remains adapter command-result semantics only：adapter accepted / rejected does not mean exchange accepted, filled or traded。
 
@@ -2731,6 +2731,8 @@ Rules：
 - `raw_payload` diagnostic only。
 - Decimal-only for quantities / prices。
 - no float。
+- `filled_qty`、`cumulative_filled_qty`、`remaining_qty` must be non-negative。
+- `fill_price` is required and positive for filled report types。
 
 ### NormalizedExecutionReport contract
 
@@ -2766,6 +2768,7 @@ Rules：
 - same raw report -> same normalized report。
 - no broker raw facts beyond typed raw report。
 - no direct OMS mutation。
+- `raw_payload` diagnostic only。
 
 ### ExecutionReportStatus
 
@@ -2779,11 +2782,11 @@ Rules：
 - `CANCELED`
 - `ERROR`
 
-`ExecutionReportStatus` is not OMS `OrderStatus`。Mapping to OMS `OrderEvent` happens later in application layer / Stage L implementation boundary。
+`ExecutionReportStatus` is not OMS `OrderStatus`。Stage L may build typed `OrderEventCandidate` but does not apply it to OMS。
 
 ### Normalized report to OMS OrderEvent mapping
 
-Future mapping：
+Implemented candidate mapping：
 
 | `ExecutionReportStatus` | OMS `OrderEvent` |
 |---|---|
@@ -2796,8 +2799,8 @@ Future mapping：
 Rules：
 
 - Normalizer may create typed `OrderEvent` candidate。
-- Normalizer must not call `OMSService.apply_order_event(...)` directly unless Stage L implementation explicitly includes application service with Unit-of-Work boundary。
-- Recommended Stage L Core：normalize report；build `OrderEvent` candidate；persist normalized report；do not mutate OMS。
+- Normalizer must not call `OMSService.apply_order_event(...)`。
+- Stage L Core normalizes report；builds optional `OrderEventCandidate`；persists normalized report；does not mutate OMS。
 - OMS apply remains next bridge / application step unless explicitly scoped。
 
 ### Fill / Trade boundary
@@ -2839,18 +2842,18 @@ Canonical excludes：
 - `normalized_at`
 - DB id
 
-### ExecutionReportRepository / future migration contract
+### ExecutionReportRepository / migration contract
 
-Future：
+Implemented：
 
 - `ExecutionReportRepository`。
-- `raw_execution_reports` table optional。
-- `normalized_execution_reports` table required if Stage L persists reports。
+- SQLAlchemy repository。
+- UoW integration through `UnitOfWork.execution_reports` and narrow `ExecutionReportUnitOfWork`。
+- `normalized_execution_reports` table through `0013_stage_l_execution_report_normalization`。
 
-Recommendation：
+Not implemented：
 
-- Stage L Core should add `normalized_execution_reports`。
-- `raw_execution_reports` optional；`raw_payload` only diagnostic。
+- `raw_execution_reports` table。
 
 Repository methods：
 
@@ -2858,6 +2861,7 @@ Repository methods：
 - `get_by_report_id(report_id)`
 - `list_by_order_id(order_id)`
 - `list_by_command_id(command_id)`
+- `list_by_status(execution_status, start_ts, end_ts)`
 
 Unique：
 
@@ -2892,20 +2896,26 @@ Report replay：
 - Trade ledger：not involved。
 - Broker：not source-of-truth。
 
-### Stage L future tests
+### Stage L tests
 
-Future implementation must cover：
+Stage L tests cover：
 
 - Decimal-only raw report。
 - deterministic `report_id`。
 - `source_report_hash`。
 - status mapping。
+- `OrderEventCandidate` mapping。
+- `SUBMITTED` / `ERROR` no candidate。
 - duplicate same canonical。
 - conflict different canonical。
 - `raw_payload` excluded。
 - replay deterministic。
+- repository round trip。
+- UoW exposes normalized reports。
+- `normalized_execution_reports` schema。
+- no `raw_execution_reports` table。
 - no `OMSService.apply_order_event(...)`。
-- no Trade / Position / Accounting mutation。
+- no Trade / Fill / Position / Accounting mutation。
 - no Broker / CTP / SimNow dependency。
 
 ### Stage L explicit non-goals

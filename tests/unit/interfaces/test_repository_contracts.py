@@ -820,6 +820,7 @@ class FakeUnitOfWork:
         self.trading_risk_results = object()
         self.order_intents = object()
         self.execution_commands = object()
+        self.execution_reports = object()
         self.commit_count = 0
         self.rollback_count = 0
 

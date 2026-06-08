@@ -25,6 +25,7 @@ from futures_mvp.db.models import (
     FeatureSnapshot,
     MarketBar,
     MarketTick,
+    NormalizedExecutionReport,
     Order,
     OrderEvent,
     OrderIntent,
@@ -79,6 +80,7 @@ def test_required_tables_are_declared() -> None:
         "risk_results",
         "order_intents",
         "execution_commands",
+        "normalized_execution_reports",
         "risk_events",
     }.issubset(Base.metadata.tables)
 
@@ -165,6 +167,54 @@ def test_execution_commands_match_stage_k_idempotency_contract() -> None:
     }
     assert "ix_execution_commands_execution_target" in {
         index.name for index in ExecutionCommand.__table__.indexes
+    }
+
+
+def test_normalized_execution_reports_match_stage_l_idempotency_contract() -> None:
+    assert _unique_constraint_columns(
+        NormalizedExecutionReport,
+        "uq_normalized_execution_reports_report_id",
+    ) == ("report_id",)
+    for column_name in [
+        "report_id",
+        "raw_report_id",
+        "adapter_name",
+        "execution_target",
+        "command_id",
+        "order_id",
+        "client_order_id",
+        "adapter_order_ref",
+        "exchange_order_id",
+        "execution_status",
+        "filled_qty",
+        "fill_price",
+        "cumulative_filled_qty",
+        "remaining_qty",
+        "report_ts",
+        "source_report_hash",
+        "reason",
+        "raw_payload",
+        "normalized_at",
+        "created_at",
+    ]:
+        assert column_name in NormalizedExecutionReport.__table__.columns
+
+    assert isinstance(NormalizedExecutionReport.__table__.columns["filled_qty"].type, Numeric)
+    assert isinstance(NormalizedExecutionReport.__table__.columns["fill_price"].type, Numeric)
+    assert "ix_normalized_execution_reports_order_id" in {
+        index.name for index in NormalizedExecutionReport.__table__.indexes
+    }
+    assert "ix_normalized_execution_reports_command_id" in {
+        index.name for index in NormalizedExecutionReport.__table__.indexes
+    }
+    assert "ix_normalized_execution_reports_client_order_id" in {
+        index.name for index in NormalizedExecutionReport.__table__.indexes
+    }
+    assert "ix_normalized_execution_reports_execution_status" in {
+        index.name for index in NormalizedExecutionReport.__table__.indexes
+    }
+    assert "ix_normalized_execution_reports_report_ts" in {
+        index.name for index in NormalizedExecutionReport.__table__.indexes
     }
 
 

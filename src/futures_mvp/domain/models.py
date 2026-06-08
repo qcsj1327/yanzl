@@ -17,6 +17,8 @@ from futures_mvp.domain.enums import (
     ExecutionCommandResultStatus,
     ExecutionCommandType,
     ExecutionGatewayResultStatus,
+    ExecutionReportNormalizeResultStatus,
+    ExecutionReportStatus,
     ExecutionTarget,
     FeatureQualityStatus,
     FeatureResultStatus,
@@ -1297,6 +1299,198 @@ class ExecutionGatewayResult(DomainModel):
             ExecutionGatewayResultStatus.DUPLICATE,
         } and self.command is None:
             raise ValueError(f"{self.status.value} requires command")
+        return self
+
+
+_FILLED_REPORT_TYPES = frozenset(
+    {
+        "partial_fill",
+        "partially_filled",
+        "full_fill",
+        "filled",
+    }
+)
+
+
+class RawExecutionReport(DomainModel):
+    raw_report_id: str
+    adapter_name: str
+    execution_target: ExecutionTarget
+    command_id: str
+    order_id: str
+    client_order_id: str
+    adapter_order_ref: str
+    exchange_order_id: str | None = None
+    report_type: str
+    filled_qty: Decimal
+    fill_price: Decimal | None = None
+    cumulative_filled_qty: Decimal
+    remaining_qty: Decimal
+    report_ts: datetime
+    received_at: datetime
+    raw_payload: dict[str, Any] | None = None
+
+    @field_validator(
+        "raw_report_id",
+        "adapter_name",
+        "command_id",
+        "order_id",
+        "client_order_id",
+        "adapter_order_ref",
+        "report_type",
+    )
+    @classmethod
+    def _required_identity(cls, value: str, info: Any) -> str:
+        return require_non_empty_string(value, field_name=info.field_name)
+
+    @field_validator(
+        "filled_qty",
+        "fill_price",
+        "cumulative_filled_qty",
+        "remaining_qty",
+        mode="before",
+    )
+    @classmethod
+    def _decimal_only(cls, value: Any) -> Decimal | None:
+        if value is None:
+            return None
+        return require_decimal(value)
+
+    @field_validator("report_ts", "received_at", mode="before")
+    @classmethod
+    def _datetime_only(cls, value: Any, info: Any) -> datetime:
+        if not isinstance(value, datetime):
+            raise ValueError(f"{info.field_name} must be datetime")
+        return value
+
+    @model_validator(mode="after")
+    def _valid_raw_execution_report(self) -> "RawExecutionReport":
+        require_non_negative_decimal(self.filled_qty, field_name="filled_qty")
+        require_non_negative_decimal(
+            self.cumulative_filled_qty,
+            field_name="cumulative_filled_qty",
+        )
+        require_non_negative_decimal(self.remaining_qty, field_name="remaining_qty")
+        if self.fill_price is not None:
+            require_positive_decimal(self.fill_price, field_name="fill_price")
+        if self.report_type.lower() in _FILLED_REPORT_TYPES and self.fill_price is None:
+            raise ValueError("fill_price is required for filled execution report types")
+        return self
+
+
+class NormalizedExecutionReport(DomainModel):
+    report_id: str
+    raw_report_id: str
+    adapter_name: str
+    execution_target: ExecutionTarget
+    command_id: str
+    order_id: str
+    client_order_id: str
+    adapter_order_ref: str
+    exchange_order_id: str | None = None
+    execution_status: ExecutionReportStatus
+    filled_qty: Decimal
+    fill_price: Decimal | None = None
+    cumulative_filled_qty: Decimal
+    remaining_qty: Decimal
+    report_ts: datetime
+    normalized_at: datetime
+    reason: str | None = None
+    source_report_hash: str
+    raw_payload: dict[str, Any] | None = None
+
+    @field_validator(
+        "report_id",
+        "raw_report_id",
+        "adapter_name",
+        "command_id",
+        "order_id",
+        "client_order_id",
+        "adapter_order_ref",
+        "source_report_hash",
+    )
+    @classmethod
+    def _required_identity(cls, value: str, info: Any) -> str:
+        return require_non_empty_string(value, field_name=info.field_name)
+
+    @field_validator(
+        "filled_qty",
+        "fill_price",
+        "cumulative_filled_qty",
+        "remaining_qty",
+        mode="before",
+    )
+    @classmethod
+    def _decimal_only(cls, value: Any) -> Decimal | None:
+        if value is None:
+            return None
+        return require_decimal(value)
+
+    @field_validator("report_ts", "normalized_at", mode="before")
+    @classmethod
+    def _datetime_only(cls, value: Any, info: Any) -> datetime:
+        if not isinstance(value, datetime):
+            raise ValueError(f"{info.field_name} must be datetime")
+        return value
+
+    @model_validator(mode="after")
+    def _valid_normalized_execution_report(self) -> "NormalizedExecutionReport":
+        require_non_negative_decimal(self.filled_qty, field_name="filled_qty")
+        require_non_negative_decimal(
+            self.cumulative_filled_qty,
+            field_name="cumulative_filled_qty",
+        )
+        require_non_negative_decimal(self.remaining_qty, field_name="remaining_qty")
+        if self.fill_price is not None:
+            require_positive_decimal(self.fill_price, field_name="fill_price")
+        if (
+            self.execution_status
+            in {ExecutionReportStatus.PARTIALLY_FILLED, ExecutionReportStatus.FILLED}
+            and self.fill_price is None
+        ):
+            raise ValueError("fill_price is required for filled execution reports")
+        return self
+
+
+class OrderEventCandidate(DomainModel):
+    normalized_report_id: str
+    order_id: str
+    new_status: OrderStatus
+    event_source: EventSource = EventSource.EXCHANGE
+    external_event_id: str
+    occurred_at: datetime
+    raw_payload: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("normalized_report_id", "order_id", "external_event_id")
+    @classmethod
+    def _required_identity(cls, value: str, info: Any) -> str:
+        return require_non_empty_string(value, field_name=info.field_name)
+
+    def to_order_event(self, previous_status: OrderStatus | None = None) -> OrderEvent:
+        return OrderEvent(
+            order_id=self.order_id,
+            previous_status=previous_status,
+            new_status=self.new_status,
+            event_source=self.event_source,
+            external_event_id=self.external_event_id,
+            raw_payload=self.raw_payload,
+            occurred_at=self.occurred_at,
+        )
+
+
+class ExecutionReportNormalizeResult(DomainModel):
+    status: ExecutionReportNormalizeResultStatus
+    normalized_report: NormalizedExecutionReport | None = None
+    order_event_candidate: OrderEventCandidate | None = None
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def _valid_normalize_result(self) -> "ExecutionReportNormalizeResult":
+        if self.status in {
+            ExecutionReportNormalizeResultStatus.NORMALIZED,
+            ExecutionReportNormalizeResultStatus.DUPLICATE,
+        } and self.normalized_report is None:
+            raise ValueError(f"{self.status.value} requires normalized_report")
         return self
 
 

@@ -262,6 +262,24 @@ class ExecutionGatewayResultStatus(StrEnum):
     ERROR = "ERROR"
 
 
+class ExecutionReportStatus(StrEnum):
+    SUBMITTED = "SUBMITTED"
+    ACKED = "ACKED"
+    PARTIALLY_FILLED = "PARTIALLY_FILLED"
+    FILLED = "FILLED"
+    REJECTED = "REJECTED"
+    CANCELED = "CANCELED"
+    ERROR = "ERROR"
+
+
+class ExecutionReportNormalizeResultStatus(StrEnum):
+    NORMALIZED = "NORMALIZED"
+    DUPLICATE = "DUPLICATE"
+    CONFLICT = "CONFLICT"
+    REJECTED_INVALID_REPORT = "REJECTED_INVALID_REPORT"
+    ERROR = "ERROR"
+
+
 class BarTimeframe(StrEnum):
     M1 = "M1"
     M5 = "M5"
