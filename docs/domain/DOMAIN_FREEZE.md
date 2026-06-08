@@ -4218,11 +4218,11 @@ Stage N schema decision：
 - No `BrokerCommand`、`BrokerReport` or `BrokerReportEnvelope` business fact model。
 - No CTP / SimNow / live adapter and no network dependency。
 
-## Stage O Operations / Safety / Production Readiness Contract Freeze
+## Stage O Operations / Safety / Production Readiness
 
-Stage O freezes the Operations / Safety / Production Readiness contract on baseline `stage-n-broker-adapter-core / a32b810`。
+Stage O freezes the Operations / Safety / Production Readiness contract on baseline `stage-n-broker-adapter-core / a32b810` and implements the typed safety core on baseline `stage-o-safety-readiness-contract-freeze / fcd2b0f`。
 
-This is a documentation-only freeze. It does not add code, schema, Alembic revisions, source/tests changes, deployment automation, external monitoring integrations or live trading enablement.
+Stage O implementation adds code and tests only for typed operations safety gates. It does not add schema, Alembic revisions, deployment automation, external monitoring integrations or live trading enablement.
 
 Stage O purpose：
 
@@ -4549,20 +4549,84 @@ After incident：
 - No Kubernetes / systemd deployment。
 - No remote server deployment。
 - No automatic self-healing trade repair。
-- No code implementation。
 - No schema migration。
-- No source/test changes。
 - No broker ledger。
 - No direct DB repair flow beyond documented operator procedure contract。
 
-### Stage O implementation recommendation
+### Stage O implemented facts
 
-- Implement first as a small runtime/ops safety gate around existing Runtime config、health、scheduler、replay coordinator and broker adapter injection points。
-- Keep safety inputs typed and read-only；do not infer from `raw_payload` or broker transport strings。
-- Add explicit config models for environment、dry-run/live flags、scheduler/replay pause、kill switches and broker enablement。
-- Add migration compatibility check before scheduler start and before broker live enablement。
-- Add structured observability reports before external monitoring integrations。
-- Add recovery playbook tests before any Stage P paper/sim/live rollout work。
+Implemented package：
+
+- `src/futures_mvp/modules/ops_safety`。
+
+Implemented config：
+
+- `SafetyConfig` is mounted on `RuntimeConfig.safety`。
+- `KillSwitchConfig` freezes `global_kill_switch`、`per_stage_kill_switches`、`scheduler_paused` and `replay_paused`。
+- `LiveGateConfig` freezes `broker_enabled`、`live_submit_enabled`、`explicit_live_flag` and `broker_credentials_handle`。
+- `MigrationReadinessConfig` freezes read-only migration compatibility requirements。
+- `ObservabilityConfig` freezes typed in-memory observability enablement。
+- Unknown environment is rejected。
+- `production` requires explicit production flags。
+- Broker and live submit remain disabled by default。
+
+Implemented kill switch / pause evaluator：
+
+- `evaluate_scheduler_gate(...)` blocks scheduler start/run when global kill switch or scheduler pause is active。
+- `evaluate_replay_gate(...)` blocks replay when global kill switch or replay pause is active。
+- `evaluate_stage_gate(...)` blocks the named stage when per-stage kill switch is active。
+- `evaluate_broker_gate(...)` blocks broker flow when broker is disabled or credentials handle is absent。
+- All gate evaluators return typed `OpsGateDecision` and do not mutate business facts。
+
+Implemented live gate：
+
+- `OperatorApproval` captures environment、account、adapter target、allowed stage、command surface、approval time and decision/operator identity。
+- `validate_live_submit_gate(...)` requires explicit live flag、broker enabled、live submit enabled、broker credentials handle、compatible migration and matching operator approval。
+- Missing approval、missing credentials、broker disabled、migration mismatch or approval mismatch reject fail-closed。
+- Config typo / unknown environment cannot enable live。
+
+Implemented migration readiness：
+
+- `MigrationReadinessChecker` reads `SELECT version_num FROM alembic_version` only。
+- It compares current revision against expected / compatible revisions。
+- Incompatible or unreadable migration state returns `compatible=False` with a typed reason。
+- If migration readiness is enabled and no checker is injected into Runtime lifecycle, startup returns `FAILED` with `migration_readiness_checker_missing` and scheduler does not start。
+- Disabled-compatible migration report is allowed only when migration readiness is disabled。
+- It does not run upgrade、downgrade or any schema mutation。
+
+Implemented incident / observability：
+
+- `OpsIncidentState` contains `READY`、`DEGRADED`、`FAILED`、`PAUSED` and `KILLED`。
+- `RuntimeHealthStatus` remains `READY`、`DEGRADED` and `FAILED`；Stage O does not replace it。
+- `OpsHealthReport` combines runtime health、ops incident state、migration readiness and safety gate decisions。
+- `OpsEvent`、`ReplaySummary`、`SchedulerStatus` and `OpsCounters` are typed in-memory objects only。
+- No external monitoring stack, log sink, metrics backend or persistence table is introduced。
+
+Implemented Runtime integration：
+
+- `RuntimeLifecycleManager` accepts optional `safety_config` and `migration_readiness_check`。
+- Before scheduler start, lifecycle rejects incompatible migration as `FAILED` and active global kill switch as incident `KILLED`。
+- When `SafetyConfig.migration_readiness.enabled=True`, lifecycle requires an injected checker；missing checker is fail-closed and never treated as disabled/no-op。
+- `ApplicationServiceScheduler` accepts optional `safety_config` and returns typed `RuntimeSchedulerRunResult` when scheduler pause、global kill switch or per-job stage kill switch blocks execution。
+- `RuntimeReplayCoordinator` accepts optional `safety_config`；global kill switch / replay pause returns no stage calls, and per-stage kill switch blocks the named stage plus downstream replay fail-closed。
+- Existing Stage M dry-run and live allowlist behavior is preserved。
+
+Stage O boundary facts：
+
+- No Alembic revision。
+- No schema migration。
+- No broker ledger。
+- No CTP / SimNow / live adapter。
+- No external monitoring dependency。
+- No FastAPI / Celery / Kafka dependency。
+- No OMS / Trade / Position / Accounting business service mutation。
+- No `raw_payload` source-of-truth path。
+- Stage P remains Paper / Sim / Live Rollout and is not implemented by Stage O。
+
+### Stage O forward recommendation
+
+- Add any future operator checklist validator as a separate typed helper, not as DB state。
+- Add any future recovery code helper as read-only summary / preflight first；repair remains documented operator procedure。
 - Keep Stage P as Paper / Sim / Live Rollout and do not treat Stage O as live enablement。
 
 ### feature_snapshots

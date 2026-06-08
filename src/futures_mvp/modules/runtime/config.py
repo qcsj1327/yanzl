@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from futures_mvp.modules.ops_safety.config import SafetyConfig
+
 
 class RuntimeConfigError(ValueError):
     """Raised when runtime configuration would not fail closed."""
@@ -49,6 +51,7 @@ class RuntimeConfig:
     shutdown_drain_timeout_seconds: int = 30
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     replay: ReplayConfig = field(default_factory=ReplayConfig)
+    safety: SafetyConfig = field(default_factory=SafetyConfig)
 
     def __post_init__(self) -> None:
         if not self.runtime_id:
@@ -63,3 +66,7 @@ class RuntimeConfig:
             raise RuntimeConfigError("enable_scheduler must match scheduler.enabled")
         if self.enable_replay != self.replay.enabled:
             raise RuntimeConfigError("enable_replay must match replay.enabled")
+        try:
+            self.safety.validate_environment(self.environment)
+        except ValueError as exc:
+            raise RuntimeConfigError(str(exc)) from exc

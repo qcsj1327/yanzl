@@ -1114,12 +1114,13 @@ Stage N current implementation facts：
 ### Stage O: Operations / Safety / Production Readiness
 
 - Goal：冻结 Operations / Safety / Production Readiness 契约，使 Runtime、Scheduler、Replay、Broker Adapter 和后续 rollout 只能在明确安全门禁下运行。
-- Baseline：`stage-n-broker-adapter-core / a32b810`。
+- Contract baseline：`stage-n-broker-adapter-core / a32b810`。
+- Implementation baseline：`stage-o-safety-readiness-contract-freeze / fcd2b0f`。
 - Inputs：runtime health、typed config、scheduler state、replay report、application service status、DB migration state、operator decision。
 - Outputs：safety source-of-truth、kill switch contract、dry-run/live gate、config validation、migration readiness、observability、recovery playbook、incident states、operator checklist 和 Stage P rollout preflight contract。
-- Allowed changes：documentation-only contract freeze for this stage；后续实现可在 ops/runtime/config/readiness/preflight/logging/test 层落地该契约。
-- Forbidden changes：Stage O freeze 不写代码、不改 schema、不改 src/tests、不直接改业务事实；kill switch 不塞进 OMS 状态机；secret 不进入业务事件；不得把 `raw_payload`、broker rumor、manual DB edits 或 runtime guessing 当作 safety truth。
-- Required tests for later implementation：kill switch gate、dry-run/live gate、config fail-closed、migration readiness before scheduler start、structured observability、replay/conflict/broker uncertain recovery、incident state transitions、secret redaction 和 operator checklist preflight。
+- Implemented changes：`ops_safety` typed package、`RuntimeConfig.safety`、kill switch / pause evaluator、live gate validator、read-only migration readiness checker、ops incident / observability models、Runtime lifecycle safety readiness integration、Scheduler safety gate、ReplayCoordinator safety gate and unit / boundary tests。
+- Forbidden changes：Stage O 不新增 schema、不直接改业务事实；kill switch 不塞进 OMS 状态机；secret 不进入业务事件；不得把 `raw_payload`、broker rumor、manual DB edits 或 runtime guessing 当作 safety truth。
+- Tests：kill switch gate、dry-run/live gate、config fail-closed、migration readiness before scheduler start、structured observability、incident state transitions、scheduler/replay pause、per-stage kill switch、no schema、no business mutation、no Broker/CTP/SimNow/live/network/external monitoring dependency。
 - Acceptance criteria：Runtime / Replay / Scheduler / Broker live flow 默认 fail closed；live submit 必须显式 operator approval；DB migration 不兼容时 app 不得 READY；Stage P 只能在 Stage O readiness、kill switch、observability、runbook 和 operator checklist 全部满足后进入。
 - Suggested tag：`stage-o-operations-safety-readiness`。
 
@@ -1152,6 +1153,20 @@ Stage O readiness / observability / recovery：
 - Required observability：structured logs、health status、replay summary、scheduler status、last successful stage and conflict/error counters。
 - Recovery playbook must cover replay recovery、conflict recovery、broker post-send uncertain recovery、unresolved callback quarantine handling and documented operator-only DB repair procedure。
 - Incident states are `READY`、`DEGRADED`、`FAILED`、`PAUSED` and `KILLED`。
+
+Stage O current implementation facts：
+
+- Implemented package：`src/futures_mvp/modules/ops_safety`。
+- Implemented config objects：`SafetyConfig`、`KillSwitchConfig`、`LiveGateConfig`、`MigrationReadinessConfig` and `ObservabilityConfig`。
+- `RuntimeConfig` now carries `safety: SafetyConfig` and rejects unknown environments；`production` requires explicit production flags。
+- Kill switch / pause evaluator is pure and returns typed `OpsGateDecision` without mutating business facts。
+- `RuntimeLifecycleManager` can run read-only migration readiness and safety readiness before scheduler start；incompatible migration returns `FAILED` and active global kill switch returns incident `KILLED` through `OpsHealthReport`。
+- `ApplicationServiceScheduler` blocks `run_once` when scheduler pause / global kill switch / per-job stage kill switch is active and returns typed `RuntimeSchedulerRunResult`。
+- `RuntimeReplayCoordinator` blocks all replay when global kill switch / replay pause is active；per-stage kill switch blocks the named stage and stops downstream replay fail-closed。
+- Live submit gate requires explicit live flag、broker enabled、live submit enabled、broker credentials handle、compatible migration and typed `OperatorApproval`。
+- Migration readiness checker reads only `alembic_version.version_num` and never runs upgrade / downgrade；when migration readiness is enabled, missing checker is `FAILED` with `migration_readiness_checker_missing`。
+- Observability is typed in-memory only：`OpsEvent`、`OpsHealthReport`、`ReplaySummary`、`SchedulerStatus` and `OpsCounters`；no external monitoring stack is introduced。
+- Stage O does not add Alembic/schema, broker ledger, CTP / SimNow / live adapter, external monitoring dependency or business fact mutation path。
 
 ### Stage P: Paper / Sim / Live Rollout
 

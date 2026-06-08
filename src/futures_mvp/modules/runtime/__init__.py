@@ -29,6 +29,8 @@ from futures_mvp.modules.runtime.scheduler import (
     DisabledRuntimeScheduler,
     RuntimeJob,
     RuntimeScheduler,
+    RuntimeSchedulerRunResult,
+    RuntimeSchedulerRunStatus,
     build_scheduler,
 )
 from futures_mvp.modules.runtime.service_graph import (
@@ -61,6 +63,8 @@ __all__ = [
     "RuntimeLifecycleState",
     "RuntimeReplayCoordinator",
     "RuntimeScheduler",
+    "RuntimeSchedulerRunResult",
+    "RuntimeSchedulerRunStatus",
     "RuntimeServiceGraph",
     "RuntimeServiceGraphBuilder",
     "SchedulerConfig",
