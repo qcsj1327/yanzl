@@ -21,6 +21,7 @@ from futures_mvp.domain.enums import (
     MarketDataEventType,
     MarketDataResultStatus,
     Offset,
+    OMSBridgeResultStatus,
     OrderStatus,
     OrderType,
     PnLPriceBasis,
@@ -102,6 +103,10 @@ class OrderState(DomainModel):
     filled_quantity: Decimal = Field(default=Decimal("0"))
     reject_reason: str | None = None
     version: int = 0
+    bridge_payload_hash: str | None = None
+    intent_id: str | None = None
+    risk_result_id: str | None = None
+    signal_id: str | None = None
 
     @field_validator("filled_quantity", mode="before")
     @classmethod
@@ -1157,6 +1162,56 @@ class TradingWorkflowResult(DomainModel):
     risk_result: TradingRiskResult | None = None
     order_intent: OrderIntent | None = None
     reason: str | None = None
+
+
+class OMSBridgeContext(DomainModel):
+    order_intent: OrderIntent
+    trading_risk_result: TradingRiskResult
+    account_id: str
+    order_source: str = "oms_bridge"
+    bridge_config: dict[str, Any] | None = None
+
+    @field_validator("account_id", "order_source")
+    @classmethod
+    def _required_identity(cls, value: str, info: Any) -> str:
+        return require_non_empty_string(value, field_name=info.field_name)
+
+    @field_validator("bridge_config")
+    @classmethod
+    def _bridge_config_diagnostic_only(
+        cls,
+        value: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if value is not None and "raw_payload" in value:
+            raise ValueError("bridge_config must not contain raw_payload facts")
+        return value
+
+    @model_validator(mode="after")
+    def _valid_oms_bridge_context(self) -> "OMSBridgeContext":
+        if self.order_intent.risk_result_id != self.trading_risk_result.risk_result_id:
+            raise ValueError("OMSBridgeContext risk_result_id mismatch")
+        return self
+
+
+class OMSBridgeResult(DomainModel):
+    status: OMSBridgeResultStatus
+    intent_id: str
+    client_order_id: str
+    order_id: str | None = None
+    bridge_payload_hash: str
+    reason: str | None = None
+    bridge_ts: datetime
+
+    @field_validator("intent_id", "client_order_id", "bridge_payload_hash")
+    @classmethod
+    def _required_identity(cls, value: str, info: Any) -> str:
+        return require_non_empty_string(value, field_name=info.field_name)
+
+    @model_validator(mode="after")
+    def _valid_oms_bridge_result(self) -> "OMSBridgeResult":
+        if self.status is OMSBridgeResultStatus.CREATED and self.order_id is None:
+            raise ValueError("CREATED OMSBridgeResult requires order_id")
+        return self
 
 
 _MARKET_DATA_REJECTED_STATUSES = frozenset(

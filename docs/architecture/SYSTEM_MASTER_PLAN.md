@@ -139,7 +139,7 @@
 7. 只有 `ACCEPT` / `REDUCE` 进入 `OrderIntentBuilder`；`REJECT` / `BLOCK` / `UNKNOWN` 不创建 `OrderIntent`，不调用 OMS。
 8. `OrderIntentBuilder` 生成 deterministic `OrderIntent` 和 `intent_id`。
 9. Stage J 持久化 `OrderIntent`；`OrderIntent` 不是 Order，不承载 OMS state。
-10. Future Stage J.2 / OMS bridge adapter 通过显式验收后，才可把 `OrderIntent` 转入 OMS 创建订单。
+10. Stage J.2 OMS bridge adapter 可在显式调用时把 `OrderIntent` 转入 OMS 创建订单。
 11. Application Execution Orchestrator 对可提交订单发起 submit。
 11. Orchestrator 先通过 OMS 事件让订单进入 `SUBMITTING`，再调用 EMS command port。
 12. EMS 调用 Mock / paper / SimNow / live broker adapter 的 command port。
@@ -466,6 +466,29 @@ Stage F contract freeze：
 - Acceptance criteria：Trading Workflow Core 可 deterministic 生成并持久化 `TradingRiskResult` / `OrderIntent`，可 replay，且不越过 OMS / Execution / Broker 边界。
 - Suggested tag：`stage-j-trading-workflow-core`。
 
+### Stage J.2: OMS Bridge Core
+
+- Goal：实现 `OrderIntent -> OMS.create_order` bridge；本阶段只进入 OMS create-order boundary，不进入 Execution / Broker / Runtime，不改 schema。
+- Baseline：`stage-j-trading-workflow-core / 2558e55`；Stage J 已持久化 `TradingRiskResult` / `OrderIntent`，OMS Core 已存在 `create_order` / `apply_order_event` / `recover_order`，Stage J 本身仍不调用 OMS。
+- Implemented changes：`OMSBridgeResultStatus`、`OMSBridgeContext`、`OMSBridgeResult`、deterministic `client_order_id`、bridge canonical payload/hash、`OMSOrderCreator` / `OMSOrderLookup` Protocol、`OMSBridgeService`、dry-run `replay_oms_bridge`、unit/integration/boundary tests 和 docs update。
+- Source-of-truth inputs：`OrderIntent`、`TradingRiskResult` reference / `risk_result_id`、从 `OrderIntent` 复制的 Strategy / Signal identity、从 `OrderIntent` 复制的 instrument identity、application layer 提供的 typed account / order config。
+- Forbidden inputs：不得直接消费 `FeatureSnapshot`、不得直接消费 `SignalDecision`（除非经 `OrderIntent` lineage）、不得调用 concrete `RiskEngine`、不得消费 `raw_payload`、Broker state、`ExchangeReport`、`OrderEvent`、`ExecutionResult` 或 Accounting tables。
+- Outputs：OMS `create_order` input / `OrderRequest` adapter object、`OMSService.create_order(...)` result、`OMSBridgeResult`。
+- Forbidden outputs / effects：不得调用 Execution，不得调用 Broker，不得 submit order to exchange，不得修改 Accounting，不得 recompute Risk，不得 mutate Strategy / Signal / Trading Workflow facts。
+- Mapping：`OrderIntent.intent_id` deterministic 派生 `client_order_id`；`account_id` 来自 application context / order config；`instrument_id`、`trade_instrument_id`、`exchange`、`side`、`offset`、`quantity`、`price`、`order_type`、`tif` 来自 `OrderIntent`；bridge payload 固定 `source = "oms_bridge"`，`external_ref` / `intent_ref = intent_id`，metadata 仅 diagnostic。
+- Idempotency：同一 `intent_id` + same canonical bridge payload -> duplicate/no-op 并返回 existing OMS order reference；同一 `intent_id` + different canonical bridge payload -> typed conflict/error。Duplicate/conflict 判断优先使用 existing bridge `bridge_payload_hash`，hash 缺失时使用 `client_order_id` / `intent_id` / `risk_result_id` lineage + OMS request canonical fallback，不得只比较 OMS request equality。`client_order_id` 必须 deterministic from `intent_id`，不得使用 random UUID 或 timestamp。
+- Risk gate boundary：Bridge 必须验证 `OrderIntent` 引用 `ACCEPT` / `REDUCE` 的 `TradingRiskResult`、`risk_result_id` present、`quantity > 0`，且如果未来 `OrderIntent` 存在 status，不得接受 rejected / blocked / unknown intent。Bridge 不得 call RiskEngine、不 rerun risk、不 override approved quantity、不 increase quantity、不修改 side/price 绕过风险。
+- OMS boundary：Bridge 只允许调用 `OMSService.create_order`。不得调用 `apply_order_event`、不得调用 Execution / Broker；`apply_risk_result` 也不属于 bridge 常规路径，除非未来 OMS create-order design 明确要求并通过单独验收。Bridge 调用 OMS 时输入已是 upstream risk accepted / reduced，不在本阶段修改 OMS state machine。
+- `OMSBridgeResultStatus`：冻结为 `CREATED`、`DUPLICATE`、`REJECTED_INVALID_INTENT`、`REJECTED_RISK_NOT_ACCEPTED`、`CONFLICT`、`ERROR`。
+- `OMSBridgeResult`：字段冻结为 `status`、`intent_id`、`client_order_id`、`order_id | None`、`reason`、`bridge_payload_hash`、可选 `created_at` / `bridge_ts` audit。
+- Audit / repository：V1 不新增 `OMSBridgeEventRepository` / `OMSBridgeAuditRepository`，不新增 `oms_bridge_events` table，不新增 migration。Bridge 依赖 OMS `orders.client_order_id` 幂等、Order lookup out-of-band bridge lineage metadata 和 `OMSBridgeResult.bridge_payload_hash`；未来如 audit gap 明确，可单独增加 bridge audit repository/table。
+- Replay：Bridge replay 消费 ordered `OrderIntent`；same intent -> same `client_order_id`；same canonical -> no-op；different canonical -> typed conflict。Replay 不调用 Execution/Broker，不修改 Accounting；默认应为 dry-run。任何 live replay 调用 OMS 都必须由后续显式 flag / gate 冻结。
+- Boundaries：Strategy 不参与；Risk 已在 upstream 完成；TradingWorkflow 只创建 `OrderIntent`；OMS Bridge 只转换并调用 OMS create-order；OMS 在 create-order 后 owns order lifecycle；Execution、Broker、Accounting 不参与。
+- Tests：deterministic `client_order_id`、field mapping、missing `risk_result_id` reject、risk not accepted reject、`quantity <= 0` reject、duplicate same canonical no-op、duplicate different OMS payload conflict、OMS creator error -> controlled `ERROR`、no RiskEngine call、no Execution/Broker call、no Accounting mutation、replay dry-run deterministic、`raw_payload` excluded、no bridge migration/table。
+- Explicit non-goals：Execution submit、Broker adapter、Paper / Sim / Live、Exchange connectivity、OMS state machine redesign、Risk recalculation、Accounting mutation、Portfolio optimization、Runtime scheduling。
+- Acceptance criteria：Bridge 可 deterministic 将 valid `OrderIntent` 映射为 OMS `OrderRequest` 并通过 `OMSOrderCreator` 调用 `create_order`；duplicate same OMS payload no-op；conflict/error typed 返回；dry-run replay 默认不调用 OMS；Execution / Broker / Runtime / Accounting / Risk recalculation 全部出界。
+- Suggested tag：`stage-j2-oms-bridge-core`。
+
 ### Stage K: Recovery / Replay Framework
 
 - Goal：统一订单、执行、成交、持仓、行情、结算的重放与对账。
@@ -734,17 +757,17 @@ FastAPI、Celery、Kafka、Redis、async runtime、cloud、KMS 是后续 Runtime
 下一步不是进入 Broker / Runtime，而是先做：
 
 ```text
-Stage J acceptance review / Stage J.2 OMS bridge adapter planning
+Stage J.2 OMS bridge acceptance review / Stage K planning
 ```
 
-Stage J.2 前必须确认：
+Stage J.2 acceptance review 前必须确认：
 
 - Stage J `TradingWorkflowService` 只生成并持久化 `TradingRiskResult` / `OrderIntent`。
 - Stage J replay 不调用 OMS / Execution / Accounting。
 - Stage J 没有写 `orders` / `order_events`。
-- `OrderIntent -> OMS.create_order` bridge deferred 到 future Stage J.2 / OMS bridge adapter review。
+- Stage J.2 OMS Bridge Core 已实现 `OrderIntent -> OMS.create_order` bridge，V1 不新增 bridge table / migration。
 
 Stage J acceptance review 通过后：
 
-- 可规划 Stage J.2 OMS bridge adapter 或进入 Stage K: Recovery / Replay Framework。
+- 可进入 Stage J.2 acceptance review，随后规划 Stage K: Recovery / Replay Framework。
 - 不应直接跳到 broker adapter 或 runtime infrastructure。

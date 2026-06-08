@@ -224,6 +224,15 @@ class TradingWorkflowResultStatus(StrEnum):
     ERROR = "ERROR"
 
 
+class OMSBridgeResultStatus(StrEnum):
+    CREATED = "CREATED"
+    DUPLICATE = "DUPLICATE"
+    REJECTED_INVALID_INTENT = "REJECTED_INVALID_INTENT"
+    REJECTED_RISK_NOT_ACCEPTED = "REJECTED_RISK_NOT_ACCEPTED"
+    CONFLICT = "CONFLICT"
+    ERROR = "ERROR"
+
+
 class BarTimeframe(StrEnum):
     M1 = "M1"
     M5 = "M5"
