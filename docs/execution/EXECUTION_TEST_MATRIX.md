@@ -14,6 +14,7 @@
 - `Stage K`
 - `Stage L.2 Contract`
 - `Stage L.2`
+- `Stage L.3`
 - `Phase 4.2+`
 - `Later Phase`
 
@@ -25,6 +26,7 @@
 `Stage K` 表示 Execution Gateway Core 已实现并用 command、repository、adapter boundary 和 replay 测试覆盖。
 `Stage L.2 Contract` 表示 OMS Event Application Contract Freeze 已完成，不表示代码、schema 或 repository 已实现。
 `Stage L.2` 表示 OMS Event Application Core 已实现并用 domain、service、protocol、replay 和 boundary 测试覆盖。
+`Stage L.3` 表示 OMS-to-Trade Bridge Core 已实现，只到 typed Trade fact + `TradeRepository` persistence，不表示 Position / Accounting / Runtime 已进入。
 
 ## Contract Done
 
@@ -281,6 +283,42 @@
 | repository decision | 不新增 table / migration，复用 existing `order_events` as OMS event ledger。 | Stage L.2 |
 | no accounting side effects | No Trade ledger、No Fill ledger、No Position update、No Margin / PnL / Settlement update。 | Stage L.2 |
 | no external runtime | No Broker / CTP / SimNow、No Runtime / Kafka / Celery / FastAPI。 | Stage L.2 |
+
+## Stage L.3 OMS-to-Trade Bridge Core
+
+| 场景 | 预期 | 状态 |
+|---|---|---|
+| source-of-truth path | `NormalizedExecutionReport / applied OMS OrderEvent proof -> typed Trade fact -> TradeRepository`。 | Stage L.3 |
+| allowed inputs | 只消费 filled `NormalizedExecutionReport`、applied OMS `OrderEvent` 或 compatible `OrderState` proof、typed order/instrument/account identity、typed fee/trade identity when available。 | Stage L.3 |
+| forbidden inputs | 不消费 `raw_payload` facts、Broker state as truth、FeatureSnapshot、SignalDecision、TradingRiskResult、OrderIntent mutation、Position/Margin/PnL/Settlement 或 Runtime。 | Stage L.3 |
+| ACKED no trade | `ACKED` report 不创建 Trade，返回 `REJECTED_NOT_FILLED`。 | Stage L.3 |
+| SUBMITTED no trade | `SUBMITTED` report 不创建 Trade，返回 `REJECTED_NOT_FILLED`。 | Stage L.3 |
+| rejected/canceled/error no trade | `REJECTED` / `CANCELED` / `ERROR` 不创建 Trade。 | Stage L.3 |
+| adapter accepted only no trade | adapter accepted only 不表示 exchange filled，不创建 Trade。 | Stage L.3 |
+| partially filled trade created | `PARTIALLY_FILLED` + applied OMS proof + positive qty/price + stable identity 创建 typed Trade。 | Stage L.3 |
+| filled trade created | `FILLED` + applied OMS proof + positive qty/price + stable identity 创建 typed Trade。 | Stage L.3 |
+| un-applied candidate rejected | 未应用 `OrderEventCandidate` 不创建 Trade，返回 `REJECTED_OMS_NOT_APPLIED`。 | Stage L.3 |
+| OMS lineage mismatch rejected | report、OMS proof 和 order identity 的 `order_id` / `client_order_id` 不匹配时返回 `REJECTED_LINEAGE_MISMATCH`。 | Stage L.3 |
+| applied event proof binds current report | applied OMS `OrderEvent` proof 的 `event_source`、`report_id`、`execution_status` / mapped OMS status、`filled_qty`、`fill_price`、`cumulative_filled_qty`、`report_ts` 必须与当前 report 一致。 | Stage L.3 |
+| compatible state proof quantity check | 无 applied event 时，compatible `OrderState` 必须有状态兼容且 `filled_quantity >= cumulative_filled_qty`。 | Stage L.3 |
+| missing stable identity rejected | 缺少 `exchange_trade_id` 且无法证明 deterministic fallback 稳定时返回 `REJECTED_MISSING_TRADE_IDENTITY`。 | Stage L.3 |
+| exchange trade id path | exchange-provided `exchange_trade_id` 使用 `identity_source=exchange_trade_id`。 | Stage L.3 |
+| derived fallback deterministic | fallback identity 使用 `account_id + exchange + order_id + report_id + cumulative_filled_qty + fill_price + report_ts`，并标记 `identity_source=derived_from_report`。 | Stage L.3 |
+| no unstable identity | 不使用 UUID、timestamp-now、DB id 或 raw-payload-only identity。 | Stage L.3 |
+| trade fields | Trade fact 覆盖 account/exchange/order/instrument/symbol/direction/offset/price/quantity/fee/time/source proof 字段。 | Stage L.3 |
+| normalized report typed inputs | `NormalizedExecutionReport` 支持 optional typed `exchange_trade_id`、`fill_id`、`fee_amount`、`fee_currency`、`fee_source`。 | Stage L.3 |
+| decimal-only economics | `price`、`quantity`、present `fee_amount` 必须为 Decimal。 | Stage L.3 |
+| fee unknown vs zero | `fee_amount is None` 表示 unknown，`Decimal("0")` 表示 known zero；known fee 必须有 currency 和 typed source。 | Stage L.3 |
+| duplicate same canonical no-op | same trade identity + same canonical 返回 `DUPLICATE` / no-op。 | Stage L.3 |
+| duplicate different canonical conflict | same trade identity + different canonical 返回 `CONFLICT`。 | Stage L.3 |
+| raw_payload excluded | `raw_payload` 只诊断，不参与 source-of-truth 或 canonical equality。 | Stage L.3 |
+| schema gap closure | migration `0014_stage_l3_oms_to_trade_bridge.py` 扩展 existing `trades` / `normalized_execution_reports`；不创建第二套 trade ledger。 | Stage L.3 |
+| repository bridge surface | `TradeRepository` 支持 `append_trade`、`get_by_trade_identity`、`list_by_order_id`，canonical 覆盖 L.3 字段。 | Stage L.3 |
+| OMS read-only boundary | Bridge 只能 read OMS proof；不得调用 `OMS.apply_order_event` / `OMS.create_order` 或修改 order status。 | Stage L.3 |
+| no OMS status-only economics | 不得只凭 OMS status 推导成交价格/数量；economics 来自 `NormalizedExecutionReport`。 | Stage L.3 |
+| no Position/Accounting mutation | 不调用 `PositionManager.apply_trade`，不更新 Position、Margin、PnL、Settlement 或 account snapshot。 | Stage L.3 |
+| replay deterministic | ordered eligible reports + applied OMS proof -> same Trade；same canonical duplicate；different canonical conflict。 | Stage L.3 |
+| no runtime/broker scope | 不进入 Broker / CTP / SimNow / live，不进入 Kafka / FastAPI / Celery。 | Stage L.3 |
 
 ## Later Phase
 

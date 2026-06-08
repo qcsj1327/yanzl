@@ -20,6 +20,8 @@ from futures_mvp.domain.enums import (
     PnLResultStatus,
     PositionManagerResultStatus,
     SettlementResultStatus,
+    TradeBridgeResultStatus,
+    TradeIdentitySource,
 )
 from futures_mvp.domain.errors import DecimalRequiredError
 from futures_mvp.domain.models import (
@@ -51,6 +53,7 @@ from futures_mvp.domain.models import (
     Signal,
     Tick,
     Trade,
+    TradeBridgeResult,
     UnrealizedPnL,
 )
 
@@ -100,6 +103,26 @@ def test_oms_event_apply_result_status_complete_contract() -> None:
         "REJECTED_INVALID_CANDIDATE",
         "REJECTED_NO_EVENT",
         "ERROR",
+    ]
+
+
+def test_trade_bridge_result_status_complete_contract() -> None:
+    assert [status.value for status in TradeBridgeResultStatus] == [
+        "CREATED",
+        "DUPLICATE",
+        "REJECTED_NOT_FILLED",
+        "REJECTED_OMS_NOT_APPLIED",
+        "REJECTED_MISSING_TRADE_IDENTITY",
+        "REJECTED_LINEAGE_MISMATCH",
+        "CONFLICT",
+        "ERROR",
+    ]
+
+
+def test_trade_identity_source_complete_contract() -> None:
+    assert [source.value for source in TradeIdentitySource] == [
+        "exchange_trade_id",
+        "derived_from_report",
     ]
 
 
@@ -928,8 +951,12 @@ def test_trade_identity_uses_account_exchange_and_exchange_trade_id() -> None:
         account_id="acct-1",
         exchange="SHFE",
         exchange_trade_id="trade-1",
+        identity_source=TradeIdentitySource.EXCHANGE_TRADE_ID,
         order_id="order-1",
+        client_order_id="client-1",
         instrument_id="rb2610",
+        trade_instrument_id="rb2610",
+        symbol="rb",
         direction=Direction.BUY,
         offset=Offset.OPEN,
         price=Decimal("3500"),
@@ -994,7 +1021,10 @@ def test_trade_decimal_contract_and_stage_b_fields() -> None:
         exchange="SHFE",
         exchange_trade_id="trade-1",
         order_id="order-1",
+        client_order_id="client-1",
         instrument_id="rb2610",
+        trade_instrument_id="rb2610",
+        symbol="rb",
         direction=Direction.BUY,
         offset=Offset.OPEN,
         price=Decimal("3500"),
@@ -1004,14 +1034,51 @@ def test_trade_decimal_contract_and_stage_b_fields() -> None:
         fee_source=None,
         trade_time=datetime.now(UTC),
         trading_day=date(2026, 1, 1),
+        source_report_id="report-1",
         source_exchange_report_id="report-1",
+        source_order_event_id="event-1",
         raw_payload={"diagnostic": True},
     )
 
     assert trade.price == Decimal("3500")
     assert trade.quantity == Decimal("1")
     assert trade.fee_amount is None
+    assert trade.identity_source is TradeIdentitySource.EXCHANGE_TRADE_ID
+    assert trade.client_order_id == "client-1"
+    assert trade.trade_instrument_id == "rb2610"
+    assert trade.symbol == "rb"
+    assert trade.source_report_id == "report-1"
     assert trade.source_exchange_report_id == "report-1"
+    assert trade.source_order_event_id == "event-1"
+
+
+def test_trade_bridge_result_requires_trade_for_success_status() -> None:
+    trade = Trade(
+        account_id="acct-1",
+        exchange="SHFE",
+        exchange_trade_id="trade-1",
+        order_id="order-1",
+        instrument_id="rb2610",
+        direction=Direction.BUY,
+        offset=Offset.OPEN,
+        price=Decimal("3500"),
+        quantity=Decimal("1"),
+        trade_time=datetime.now(UTC),
+    )
+
+    result = TradeBridgeResult(
+        status=TradeBridgeResultStatus.CREATED,
+        trade=trade,
+        source_report_id="report-1",
+    )
+
+    assert result.trade == trade
+
+    with pytest.raises(ValueError):
+        TradeBridgeResult(
+            status=TradeBridgeResultStatus.CREATED,
+            source_report_id="report-1",
+        )
 
 
 def test_trade_rejects_float_facts() -> None:

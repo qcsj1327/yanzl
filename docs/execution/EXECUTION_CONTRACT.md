@@ -1,8 +1,8 @@
 # Execution 终态契约
 
-本文档是 Execution 的冻结契约。它描述终态 Execution 架构，同时明确 Current facts、Phase 4.1 implementation target、Stage K Execution Gateway contract、Stage L Execution Report Normalization contract、Stage L.2 OMS Event Application contract、Phase 4.2+ target 和 Later Phase 的落地区分。除非另开契约迁移，后续实现必须以本文档和 `EXECUTION_TEST_MATRIX.md` 为准。
+本文档是 Execution 的冻结契约。它描述终态 Execution 架构，同时明确 Current facts、Phase 4.1 implementation target、Stage K Execution Gateway contract、Stage L Execution Report Normalization contract、Stage L.2 OMS Event Application contract、Stage L.3 OMS-to-Trade Bridge contract、Phase 4.2+ target 和 Later Phase 的落地区分。除非另开契约迁移，后续实现必须以本文档和 `EXECUTION_TEST_MATRIX.md` 为准。
 
-Phase 4.0 只冻结契约。Phase 4.1 按本文档落地 DTO、enum、MappingContext、MappingResult、MappingError 和 pure mapper。Execution Runtime 和 Stage A ApplicationExecutionOrchestrator 已作为后续阶段实现。Stage K 在 `stage-j2-oms-bridge-core / ee4aace` 后实现 OMS Order -> Execution Gateway command boundary；它只支持 `MOCK` target，不实现真实 Broker、CTP、SimNow、Paper、Sim 或 Live。Stage L 在 `stage-k-execution-gateway-core / 94b498e` 后实现 Execution Report Normalization Core。Stage L.2 在 `stage-l-execution-report-normalization-core / 37cad40` 后冻结 OMS event application contract。
+Phase 4.0 只冻结契约。Phase 4.1 按本文档落地 DTO、enum、MappingContext、MappingResult、MappingError 和 pure mapper。Execution Runtime 和 Stage A ApplicationExecutionOrchestrator 已作为后续阶段实现。Stage K 在 `stage-j2-oms-bridge-core / ee4aace` 后实现 OMS Order -> Execution Gateway command boundary；它只支持 `MOCK` target，不实现真实 Broker、CTP、SimNow、Paper、Sim 或 Live。Stage L 在 `stage-k-execution-gateway-core / 94b498e` 后实现 Execution Report Normalization Core。Stage L.2 在 `stage-l-execution-report-normalization-core / 37cad40` 后实现 OMS event application core。Stage L.3 在 `stage-l2-oms-event-application-core / 54d6fc8` 后实现 OMS-to-Trade Bridge core，不进入 Runtime。
 
 ## Final-state Architecture
 
@@ -105,8 +105,8 @@ OMS 是订单状态唯一事实入口：
 - 当前没有 report stream、callback、polling 或返回 report 的接口。
 - 当前 `src/futures_mvp/modules/execution/` 已实现 Phase 4.1 DTO / enum / MappingContext / MappingResult / MappingError / pure mapper。
 - 当前 EMS / MockFuturesExchange / Application Execution Orchestrator 已有本地测试实现和 staged runtime surface；它们仍不代表真实 Broker / CTP / SimNow / Paper / Sim / Live。
-- 当前 Stage L.2 已实现 `OrderEventCandidate -> typed OrderEvent -> OMSService.apply_order_event(...)` 的 OMS event application boundary；除此之外仍没有 Trade / Fill / Position / Accounting integration。
-- 当前不修改 OMS / Risk / DB / schema / Domain 字段事实。
+- 当前 Stage L.2 已实现 `OrderEventCandidate -> typed OrderEvent -> OMSService.apply_order_event(...)` 的 OMS event application boundary。
+- 当前 Stage L.3 已实现 `NormalizedExecutionReport / applied OMS proof -> typed Trade fact -> TradeRepository` 的 OMS-to-Trade Bridge core，并通过 migration `0014_stage_l3_oms_to_trade_bridge.py` 扩展 existing `trades` / `normalized_execution_reports`。
 - 当前 Phase 4 Execution Contract / pure mapper 阶段不接真实交易接口、CTP、SimNow 或 broker adapter；这些属于后续 Adapter 阶段。
 - 当前不进入 Position / Margin / PnL / Settlement。
 - 当前 `stage-j2-oms-bridge-core / ee4aace` 已实现 `OrderIntent -> OMSService.create_order` bridge；OMS 已能创建订单记录。
@@ -116,6 +116,7 @@ OMS 是订单状态唯一事实入口：
 - 当前 Stage K 不修改 OMS / OMS Bridge / Trading Workflow / Strategy / Risk / Broker / Runtime，不生成 `ExecutionReport` / `OrderEvent`，不生成 Fill / Trade，不修改 Accounting。
 - 当前 Stage L 基线为 `stage-l-execution-report-normalization-core / 37cad40`。Stage L 已实现 Execution Report Normalization Core；`ExecutionCommandResult` 只表示 adapter accepted / rejected，不表示 exchange accepted、fill 或 trade。Stage L may build typed `OrderEvent` candidate, but does not call `OMSService.apply_order_event(...)`。
 - 当前 Stage L.2 已实现 `OrderEventCandidate -> typed OrderEvent -> OMSService.apply_order_event(...)` 应用核心。Stage L.2 只推进 OMS `OrderStatus`，不生成 Trade / Fill ledger，不更新 Position / Accounting，不调用 Broker，不进入 Runtime，不新增 schema。
+- 当前 Stage L.3 只创建并持久化 typed Trade fact。Stage L.3 不更新 Position / Accounting，不调用 Broker，不进入 Runtime。
 
 `MockFuturesExchange.run_daily_settlement(trading_day)` 的移除是 intentional interface migration：
 
@@ -793,6 +794,244 @@ Stage L.2 does not implement：
 - Margin / PnL / Settlement update。
 - Broker / CTP / SimNow。
 - Runtime / Kafka / Celery / FastAPI。
+
+## Stage L.3 OMS-to-Trade Bridge Core
+
+Stage L.3 implements the boundary that turns OMS-confirmed filled reports into typed `Trade` facts and persists them through the existing `TradeRepository`.
+
+Migration `0014_stage_l3_oms_to_trade_bridge.py` extends only existing bridge inputs / outputs：`trades` gets `identity_source`、`client_order_id`、`trade_instrument_id`、`symbol`、`source_report_id`、`source_order_event_id`；`normalized_execution_reports` gets optional typed `exchange_trade_id`、`fill_id`、`fee_amount`、`fee_currency`、`fee_source`。No second trade ledger is created.
+
+Source-of-truth flow：
+
+```text
+NormalizedExecutionReport / OrderEventCandidate / applied OMS OrderEvent
+-> OMS-to-Trade Bridge
+-> typed Trade fact
+-> TradeRepository persistence
+-> PositionManager handoff later
+```
+
+### Stage L.3 Source Of Truth
+
+Allowed inputs：
+
+- `NormalizedExecutionReport` with `execution_status` in `PARTIALLY_FILLED` / `FILLED`。
+- applied OMS `OrderEvent` or OMS `OrderState` proving OMS accepted the compatible filled status。
+- existing OMS `OrderState` / order identity。
+- typed instrument/account identity。
+- typed fee input if available。
+- `exchange_trade_id` / fill identity from typed report fields if available。
+
+Forbidden inputs：
+
+- `raw_payload` facts。
+- Broker state as truth。
+- `FeatureSnapshot`。
+- `SignalDecision`。
+- `TradingRiskResult`。
+- `OrderIntent` mutation。
+- Position table。
+- Margin / PnL / Settlement。
+- Runtime / Kafka / Celery / FastAPI。
+
+### Stage L.3 Required Gate
+
+Trade fact may be created only if：
+
+- normalized report status is `PARTIALLY_FILLED` or `FILLED`。
+- corresponding OMS `OrderEvent` has been applied and binds to the current report, or OMS `OrderState` confirms a compatible filled state with typed filled quantity proof。
+- `order_id` / `client_order_id` lineage matches。
+- `filled_qty > 0`。
+- `fill_price > 0`。
+- trade identity is stable。
+
+Applied OMS `OrderEvent` proof must match current `NormalizedExecutionReport` on `event_source == EXECUTION_REPORT_NORMALIZER`、`order_id`、`report_id`、`execution_status` and mapped OMS `new_status`、`filled_qty`、`fill_price`、`cumulative_filled_qty` and `report_ts`。Missing typed proof fields are rejected conservatively; Stage L.3 must not recover proof from `raw_payload`。
+
+Compatible `OrderState` proof without applied event is allowed only when `FILLED` report maps to `FILLED` state, `PARTIALLY_FILLED` report maps to `PARTIALLY_FILLED` or `FILLED` state, and `OrderState.filled_quantity >= NormalizedExecutionReport.cumulative_filled_qty`。State-only proof confirms eligibility, not event identity, so `source_order_event_id` must be absent / `None` unless a matching applied OMS `OrderEvent` proof exists。
+
+No Trade may be created from：
+
+- `ACKED`。
+- `SUBMITTED`。
+- `REJECTED`。
+- `CANCELED`。
+- `ERROR`。
+- adapter accepted only。
+- un-applied `OrderEventCandidate`。
+
+### Stage L.3 Trade Identity
+
+Preferred identity：
+
+- `account_id + exchange + exchange_trade_id`。
+
+If `exchange_trade_id` is unavailable：
+
+- must not invent random id。
+- may use fallback only if deterministic and collision-safe：
+  `account_id + exchange + order_id + report_id + cumulative_filled_qty + fill_price + report_ts`。
+- fallback must be explicitly marked `identity_source=derived_from_report`。
+- if fallback identity cannot be proven stable, bridge must return typed reject。
+
+Forbidden identity sources：
+
+- UUID。
+- timestamp-now。
+- DB id。
+- raw-payload-only field。
+
+### Stage L.3 Trade Fields
+
+Trade fact must include：
+
+- `trade_id` or `id`。
+- `account_id`。
+- `exchange`。
+- `exchange_trade_id` or deterministic fallback identity。
+- `identity_source`。
+- `order_id`。
+- `client_order_id`。
+- `instrument_id`。
+- `trade_instrument_id`。
+- `symbol`。
+- `side` / `direction`。
+- `offset`。
+- Decimal `price`。
+- Decimal `quantity`。
+- `fee_amount | None`。
+- `fee_currency | None`。
+- `fee_source | None`。
+- `trade_time`。
+- `trading_day | None`。
+- `source_report_id`。
+- `source_order_event_id`。
+- diagnostic-only `raw_payload`。
+
+Fee semantics：
+
+- `fee_amount is None` means unknown。
+- `fee_amount == Decimal("0")` means known zero。
+- if `fee_amount is not None`, `fee_currency` and typed `fee_source` are required。
+- Stage L.3 does not compute fee。
+
+### Stage L.3 TradeBridgeResult
+
+`TradeBridgeResultStatus` is frozen as：
+
+- `CREATED`。
+- `DUPLICATE`。
+- `REJECTED_NOT_FILLED`。
+- `REJECTED_OMS_NOT_APPLIED`。
+- `REJECTED_MISSING_TRADE_IDENTITY`。
+- `REJECTED_LINEAGE_MISMATCH`。
+- `CONFLICT`。
+- `ERROR`。
+
+`TradeBridgeResult` fields：
+
+- `status`。
+- `trade | None`。
+- `source_report_id`。
+- `source_order_event_id | None`。
+- `reason | None`。
+
+### Stage L.3 Repository And Canonical
+
+Stage L.3 reuses existing `TradeRepository`. It must not create a second trade ledger.
+
+Required repository behavior：
+
+- same trade identity + same canonical -> duplicate / no-op。
+- same trade identity + different canonical -> `CONFLICT`。
+- `raw_payload` excluded from canonical。
+- fees included in canonical with unknown vs zero distinction。
+
+Current `Trade` / `trades` schema supports the implemented L.3 boundary directly：basic Trade facts, fees, `trading_day`, `source_exchange_report_id`, diagnostic `raw_payload`, `UNIQUE(account_id, exchange, exchange_trade_id)`, plus `identity_source`、`client_order_id`、`trade_instrument_id`、`symbol`、`source_report_id` and `source_order_event_id`。
+
+`TradeRepository` keeps `create_or_get_trade(trade)` and adds `append_trade(trade)`、`get_by_trade_identity(account_id, exchange, exchange_trade_id)` and `list_by_order_id(order_id)` for the bridge and replay surface.
+
+Trade canonical includes：
+
+- `account_id`。
+- `exchange`。
+- `exchange_trade_id` or fallback identity。
+- `identity_source`。
+- `order_id`。
+- `client_order_id`。
+- `instrument_id`。
+- `trade_instrument_id`。
+- `symbol`。
+- `side` / `direction`。
+- `offset`。
+- `price`。
+- `quantity`。
+- `fee_amount`。
+- `fee_currency`。
+- `fee_source`。
+- `trade_time`。
+- `trading_day`。
+- `source_report_id`。
+- `source_order_event_id`。
+
+Trade canonical excludes：
+
+- `raw_payload`。
+- `created_at`。
+- `updated_at`。
+- DB id。
+
+### Stage L.3 OMS Boundary
+
+OMS-to-Trade Bridge may read OMS `OrderState` / applied `OrderEvent` through typed read-only ports.
+
+It must not：
+
+- call `OMS.apply_order_event`。
+- call `OMS.create_order`。
+- mutate OMS state。
+- alter order status。
+- infer fills from OMS status alone without normalized report quantity / price。
+
+OMS status confirms eligibility. `NormalizedExecutionReport` provides fill economics.
+
+### Stage L.3 Position / Accounting Boundary
+
+Stage L.3 must not：
+
+- call `PositionManager.apply_trade`。
+- update positions。
+- update margin。
+- update pnl。
+- update settlement。
+- update account snapshot。
+
+It may emit typed Trade fact for later PositionManager handoff.
+
+### Stage L.3 Replay And Idempotency
+
+Replay：
+
+- consumes ordered eligible normalized reports + applied OMS event proof。
+- same input -> same Trade。
+- same canonical -> duplicate / no-op。
+- different canonical -> `CONFLICT`。
+- does not update Position / Accounting。
+- does not mutate OMS。
+
+### Stage L.3 Explicit Non-goals
+
+Stage L.3 does not implement：
+
+- Position update。
+- Margin update。
+- PnL update。
+- Settlement update。
+- broker reconciliation。
+- runtime scheduling。
+- Kafka / FastAPI / Celery。
+- CTP / SimNow / live broker。
+- fee calculation。
+- trade correction / cancel flows。
 
 ## Phase 4.1 Implementation Target
 

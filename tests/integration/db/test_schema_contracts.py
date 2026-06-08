@@ -129,6 +129,29 @@ def test_trades_have_stage_b_typed_fact_fields() -> None:
         assert column_name in Trade.__table__.columns
 
 
+def test_trades_have_stage_l3_oms_to_trade_bridge_fields() -> None:
+    for column_name in [
+        "client_order_id",
+        "trade_instrument_id",
+        "symbol",
+        "identity_source",
+        "source_report_id",
+        "source_order_event_id",
+    ]:
+        assert column_name in Trade.__table__.columns
+
+
+def test_normalized_execution_reports_have_stage_l3_typed_trade_inputs() -> None:
+    for column_name in [
+        "exchange_trade_id",
+        "fill_id",
+        "fee_amount",
+        "fee_currency",
+        "fee_source",
+    ]:
+        assert column_name in NormalizedExecutionReport.__table__.columns
+
+
 def test_execution_commands_match_stage_k_idempotency_contract() -> None:
     assert _unique_constraint_columns(
         ExecutionCommand,

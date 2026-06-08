@@ -75,6 +75,12 @@
   - 已实现 `OMSEventApplyResultStatus`、`OMSEventApplyResult`、`OMSEventApplyContext`、deterministic `event_id`、canonical payload、candidate -> typed `OrderEvent` mapper、`OMSOrderEventApplier` Protocol、`OMSEventApplicationService`、dry-run default replay 和 tests。
   - Stage L.2 只推进 OMS `OrderStatus`；不生成 Trade，不生成 Fill ledger，不更新 Position / Accounting / Margin / PnL / Settlement，不调用 Broker，不进入 Runtime。
   - Stage L.2 不新增 schema；OMS event ledger 继续使用现有 `order_events`。
+- OMS-to-Trade Bridge Core 已完成。
+  - 当前基线：`stage-l2-oms-event-application-core / 54d6fc8`。
+  - Stage L.3 已实现 `NormalizedExecutionReport / applied OMS OrderEvent proof -> typed Trade fact -> TradeRepository` 桥接边界。
+  - 已新增 migration `0014_stage_l3_oms_to_trade_bridge.py`，只扩展 `trades` 和 `normalized_execution_reports` 的 L.3 typed lineage / identity / fee input 字段；未创建第二套 trade ledger。
+  - 已实现 deterministic trade identity、`TradeBridgeResult`、OMS-to-Trade bridge service、replay、TradeRepository L.3 aliases 和 canonical conflict checks。
+  - Stage L.3 不更新 Position / Margin / PnL / Settlement，不做 broker reconciliation，不进入 Runtime。
 
 当前尚未实现为业务能力的部分：
 
@@ -169,8 +175,8 @@
 15. ExecutionReportHandler 调用 pure mapper，得到 typed `MappingResult`。
 16. 对 `MAPPED_ORDER_EVENT`，Orchestrator 将 `OrderEvent` 交回 `OMSService.apply_order_event(...)`。
 17. OMS 根据状态机、幂等、乱序、终态保护和 UNKNOWN 规则应用或拒绝事件。
-18. 当回报包含真实成交事实时，必须先经 Fill / Trade domain migration 形成 typed `Fill` / `Trade`。
-19. Trade ledger 去重后作为 Position Manager 的唯一输入事实。
+18. 当 OMS 已应用 `PARTIALLY_FILLED` / `FILLED` 状态且 normalized report 提供成交价格、数量和稳定成交身份时，Stage L.3 OMS-to-Trade Bridge 才能创建 typed `Trade` fact。
+19. `TradeRepository` 幂等持久化 Trade ledger；same identity + same canonical no-op，same identity + different canonical conflict。
 20. Position Manager 更新 live `positions`，处理开仓、平今、平昨和 today/yesterday bucket，并写入 `position_events` 作为 applied-trade audit。
 21. Margin Engine 基于 Position、instrument rules、account context 计算保证金。
 22. PnL Engine 基于 Trade、Position、last price、settlement price 计算 realized / unrealized PnL。
@@ -579,6 +585,31 @@ Stage F contract freeze：
 - Acceptance criteria：application boundary 能 deterministic 把 mappable candidate 应用到 OMS；no-op status 不调用 OMS；duplicate same candidate no-op；same `event_id` different payload typed conflict；所有非 OMS 状态副作用均出界。
 - Suggested tag：`stage-l2-oms-event-application-core`。
 
+### Stage L.3: OMS-to-Trade Bridge Core
+
+- Goal：实现 OMS confirmed filled event / `NormalizedExecutionReport` -> typed `Trade` fact 的桥接边界，只到 `TradeRepository` persistence。
+- Baseline：`stage-l2-oms-event-application-core / 54d6fc8`；Stage L.2 已闭合 Strategy -> OMS OrderState，但 Strategy -> Trade / Accounting 尚未闭环。
+- Migration：`0014_stage_l3_oms_to_trade_bridge.py`（revision `0014_stage_l3_oms_trade_bridge`）只扩展 existing `trades` ledger 和 `normalized_execution_reports` typed report input；不新增第二套 trade ledger，不改 OMS / Position / Margin / PnL / Settlement schema。
+- Source-of-truth flow：`NormalizedExecutionReport / OrderEventCandidate / applied OMS OrderEvent -> OMS-to-Trade Bridge -> typed Trade fact -> TradeRepository persistence -> PositionManager handoff later`。
+- Allowed inputs：`PARTIALLY_FILLED` / `FILLED` 的 `NormalizedExecutionReport`、已应用 OMS `OrderEvent` 或兼容 `OrderState` proof、existing OMS order identity、typed instrument/account identity、typed fee input if available、typed `exchange_trade_id` / fill identity if available。
+- Forbidden inputs：`raw_payload` facts、Broker state as truth、`FeatureSnapshot`、`SignalDecision`、`TradingRiskResult`、`OrderIntent` mutation、Position table、Margin / PnL / Settlement、Runtime / Kafka / Celery / FastAPI。
+- Required gate：只有 normalized report status 是 `PARTIALLY_FILLED` / `FILLED`、OMS proof 与当前 report 严格绑定或 `OrderState` 可证明兼容 filled state、`order_id` / `client_order_id` lineage 匹配、`filled_qty > 0`、`fill_price > 0` 且 trade identity 稳定时，才允许创建 Trade；`ACKED`、`SUBMITTED`、`REJECTED`、`CANCELED`、`ERROR`、adapter accepted only 和 un-applied candidate 都不得创建 Trade。
+- OMS proof binding：applied `OrderEvent` proof 必须来自 `EXECUTION_REPORT_NORMALIZER`，且 `report_id`、`execution_status` 映射后的 OMS status、`filled_qty`、`fill_price`、`cumulative_filled_qty`、`report_ts` 和 `order_id` 必须与当前 `NormalizedExecutionReport` 一致；typed proof 字段缺失时拒绝，不从 `raw_payload` 补事实。
+- Compatible `OrderState` proof：无 applied event 时，只允许 typed `OrderState` 证明 eligibility，不证明具体 `source_order_event_id`。`source_order_event_id` 必须 absent / `None`，且只能从 matching applied OMS event proof 填充。`FILLED` report 必须对应 `FILLED` state；`PARTIALLY_FILLED` report 可对应 `PARTIALLY_FILLED` / `FILLED` state；`order_state.filled_quantity` 必须大于等于 report `cumulative_filled_qty`，否则拒绝。
+- Trade identity：优先 `account_id + exchange + exchange_trade_id`，`identity_source=exchange_trade_id`。无 `exchange_trade_id` 时使用 deterministic fallback `derived_` identity，payload 为 `account_id + exchange + order_id + report_id + cumulative_filled_qty + fill_price + report_ts`，并设置 `identity_source=derived_from_report`；无法构造稳定 fallback 时 typed reject。禁止 UUID、timestamp-now、DB id 或 raw-payload-only identity。
+- Trade fields：implemented `Trade` fact 包含 `id`、`account_id`、`exchange`、`exchange_trade_id` 或 fallback identity、`identity_source`、`order_id`、`client_order_id`、`instrument_id`、`trade_instrument_id`、`symbol`、`direction`、`offset`、Decimal `price` / `quantity`、`fee_amount | None`、`fee_currency | None`、`fee_source | None`、`trade_time`、`trading_day | None`、`source_report_id`、兼容字段 `source_exchange_report_id`、`source_order_event_id` 和 diagnostic-only `raw_payload`。
+- Fee semantics：`fee_amount is None` 表示 unknown；`fee_amount == Decimal("0")` 表示 known zero；`fee_amount is not None` 时必须有 `fee_currency` 和 typed `fee_source`。Stage L.3 不计算 fee。
+- Result contract：`TradeBridgeResultStatus` 已实现为 `CREATED`、`DUPLICATE`、`REJECTED_NOT_FILLED`、`REJECTED_OMS_NOT_APPLIED`、`REJECTED_MISSING_TRADE_IDENTITY`、`REJECTED_LINEAGE_MISMATCH`、`CONFLICT`、`ERROR`；`TradeBridgeResult` 字段为 `status`、`trade | None`、`source_report_id`、`source_order_event_id | None`、`reason | None`。
+- Repository / schema：复用 existing `TradeRepository`，未创建第二套 trade ledger。`trades` 已扩展 `identity_source`、`client_order_id`、`trade_instrument_id`、`symbol`、`source_report_id`、`source_order_event_id`；`normalized_execution_reports` 已扩展 typed `exchange_trade_id`、`fill_id`、`fee_amount`、`fee_currency`、`fee_source`。Existing `UNIQUE(account_id, exchange, exchange_trade_id)` 继续作为 exchange id 和 fallback id 的 trade identity 约束。
+- Repository API：保留 `create_or_get_trade(trade)`；新增 `append_trade(trade)`、`get_by_trade_identity(account_id, exchange, exchange_trade_id)` 和 `list_by_order_id(order_id)`，用于 L.3 bridge / replay。
+- Canonical payload：包含 account/exchange/trade identity、`identity_source`、order lineage、instrument identity、direction、offset、price、quantity、fee fields、trade time、trading day、`source_report_id`、`source_order_event_id`；排除 `raw_payload`、`created_at`、`updated_at` 和 DB id。Fees 参与 canonical，并区分 unknown vs zero。
+- Replay / idempotency：ordered eligible normalized reports + applied OMS proof -> same Trade；same canonical duplicate/no-op；different canonical conflict；replay 不 mutate OMS，不更新 Position / Accounting。
+- OMS boundary：Stage L.3 只能通过 typed read-only port 读取 OMS `OrderState` / applied `OrderEvent` proof；不得调用 `OMS.apply_order_event`、`OMS.create_order`、修改订单状态，或只凭 OMS status 推导 fill economics。
+- Position / Accounting boundary：Stage L.3 不调用 `PositionManager.apply_trade`，不更新 positions、margin、pnl、settlement 或 account snapshot；只允许产出 typed Trade fact 供后续 PositionManager handoff。
+- Explicit non-goals：Position update、Margin update、PnL update、Settlement update、broker reconciliation、runtime scheduling、Kafka / FastAPI / Celery、CTP / SimNow / live broker、fee calculation、trade correction / cancel flows。
+- Acceptance criteria：eligible filled report + OMS proof 可 deterministic 创建 typed Trade；same canonical duplicate/no-op；different canonical conflict；fallback identity deterministic；raw_payload excluded；fee unknown vs zero preserved；replay deterministic；无 OMS / Position / Accounting / Broker / Runtime side effects。
+- Suggested tag：`stage-l3-oms-to-trade-bridge-core`。
+
 ### Stage M: Runtime / Infrastructure
 
 - Goal：通过 port/adapter 引入 runtime/control plane/event bus/task system。
@@ -645,7 +676,8 @@ Stage I + Stage C + Stage D + Stage F -> Stage J
 Stage J.2 -> Stage K
 Stage K -> Stage L
 Stage L -> Stage L.2
-Stage L.2 -> Stage M
+Stage L.2 -> Stage L.3
+Stage L.3 -> Stage M
 Stage M -> Stage N
 Stage N -> Stage O
 Stage O -> Stage P
@@ -659,7 +691,8 @@ Stage O -> Stage P
 - Stage J.2 实现 OMS Bridge Core，只到 `OrderIntent -> OMS.create_order`；不接 Execution / Broker。
 - Stage K 实现 Execution Gateway command boundary，只消费 OMS Order / `OrderState` 和 typed execution config，只输出 `ExecutionCommand` / `ExecutionCommandResult`，只支持 `MOCK` target，不提交真实 broker。
 - Stage L 实现 Execution Report Normalization Core，只生成 persisted `NormalizedExecutionReport` 和 optional `OrderEventCandidate`，不调用 OMS。
-- Stage L.2 冻结 OMS event application contract，只允许 application service 将 `OrderEventCandidate` 映射为 typed `OrderEvent` 后调用 `OMSService.apply_order_event(...)`，并只推进 OMS OrderStatus。
+- Stage L.2 实现 OMS event application core，只允许 application service 将 `OrderEventCandidate` 映射为 typed `OrderEvent` 后调用 `OMSService.apply_order_event(...)`，并只推进 OMS OrderStatus。
+- Stage L.3 实现 OMS-to-Trade Bridge core，只允许已成交 normalized report 加已应用 OMS proof 创建 typed Trade fact 并持久化到 existing `TradeRepository`；不更新 Position / Accounting，不进入 Runtime。
 - Risk Context / Portfolio Risk Upgrade 依赖 Position、Margin、Accounting、Market Data、FeatureSnapshot、Strategy / Signal，不应提前硬接 broker state 或 raw payload。
 - Recovery / Replay 依赖订单、执行命令、成交、持仓、结算、行情、Strategy / Signal 和 Trading Workflow 语义。
 - Broker / Adapter 必须在 Execution Gateway、Recovery / Replay 和 Runtime 边界稳定后进入。
@@ -816,7 +849,7 @@ FastAPI、Celery、Kafka、Redis、async runtime、cloud、KMS 是后续 Runtime
 
 1. Stage A 先稳定 application execution boundary。
 2. Stage K 已先冻结并实现 Execution Gateway command boundary，确保 OMS Order -> ExecutionCommand 的 source-of-truth、idempotency 和 dry-run replay 稳定。
-3. Stage L 稳定 execution report normalization 后，Stage M 引入 event envelope、task boundary、control plane、config/secrets provider。
+3. Stage L.2 稳定 OMS event application 且 Stage L.3 稳定 OMS-to-Trade Bridge core 后，Stage M 才引入 event envelope、task boundary、control plane、config/secrets provider。
 4. Kafka 只传输 typed events，不替代 DB source-of-truth。
 5. Celery 只调度任务，不承载领域判断。
 6. Redis 只做 cache/lock/pubsub/临时状态，不做事实来源。
@@ -842,21 +875,21 @@ FastAPI、Celery、Kafka、Redis、async runtime、cloud、KMS 是后续 Runtime
 
 本总方案没有发现 P0/P1 blocker。
 
-下一步不是进入 Broker / Runtime，而是先完成：
+下一步不是进入 Broker / Runtime，而是先审查并实现 Trade -> Position handoff：
 
 ```text
-Stage L.2 OMS Event Application P1 forward fix acceptance
+Trade -> Position handoff review / implementation
 ```
 
-Stage L.2 acceptance review 前必须确认：
+Trade -> Position handoff 前必须确认：
 
 - Stage L 已持久化 `NormalizedExecutionReport` 并可 deterministic 构造 `OrderEventCandidate`。
-- Stage L normalizer 仍不调用 `OMSService.apply_order_event(...)`。
-- Stage L.2 不新增 table / migration，复用 OMS `order_events` ledger。
-- Stage L.2 只推进 OMS OrderStatus，不生成 Trade / Fill，不更新 Position / Accounting。
+- Stage L.2 已通过 OMS event application boundary 推进 OMS OrderStatus。
+- Stage L.3 已只消费 eligible filled report + applied OMS proof，不从 raw payload 或 broker state 补事实。
+- Stage L.3 已只生成 / 持久化 typed Trade fact，未调用 Position / Accounting。
 
-Stage L.2 acceptance review 通过后：
+Trade -> Position handoff 必须保持：
 
-- 后续可进入 normalized report -> OMS apply integration review，确认 live apply flag、idempotency 和 OMS terminal protection 行为。
-- Replay 必须继续默认 dry-run；只有显式 live apply flag 才允许调用 OMS。
+- PositionManager 只消费去重后的 Trade ledger。
+- Replay 必须不 mutate OMS，不更新 Position / Accounting。
 - 不应直接跳到 broker adapter 或 runtime infrastructure。

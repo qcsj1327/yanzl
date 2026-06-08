@@ -242,6 +242,24 @@ Stage L normalizer normally emits candidates only for `ACKED`、`PARTIALLY_FILLE
 
 Same candidate must produce the same `OrderEvent` and the same OMS transition / no-op. Different candidate with the same `event_id` must be treated as `CONFLICT` before OMS idempotency handling. Terminal order protection remains owned by this OMS state machine.
 
+## Stage L.3 OMS-to-Trade Bridge Read-Only Boundary
+
+Stage L.3 implements the read-only OMS proof boundary for creating typed Trade facts after OMS has accepted a filled status. It does not change this OMS state machine.
+
+Allowed read path：
+
+```text
+NormalizedExecutionReport
+-> applied OMS OrderEvent or compatible OMS OrderState proof
+-> typed Trade fact
+```
+
+Stage L.3 may read OMS `OrderState` / applied `OrderEvent` proof through typed read-only bridge context to prove `PARTIALLY_FILLED` / `FILLED` eligibility and order lineage. Applied `OrderEvent` proof must bind to the current normalized report through typed `report_id`、status、quantity、price and timestamp fields. State-only proof must have compatible status and `filled_quantity >= report.cumulative_filled_qty`，and must leave `source_order_event_id` absent because it does not prove a specific event identity。
+
+Stage L.3 must not call `OMSService.apply_order_event(...)`、`OMSService.create_order(...)`、mutate OMS state、alter order status, or infer fill quantity / price from OMS status alone. OMS status only confirms eligibility; `NormalizedExecutionReport` provides fill economics.
+
+Stage L.3 must not update Position / Margin / PnL / Settlement / account snapshot and must not enter Broker / Runtime / Kafka / Celery / FastAPI.
+
 ## 乱序事件处理策略
 
 乱序事件按以下优先级处理：

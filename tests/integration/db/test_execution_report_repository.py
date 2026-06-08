@@ -40,11 +40,16 @@ def _raw(**updates: object) -> RawExecutionReport:
         "client_order_id": "client-1",
         "adapter_order_ref": "adapter-order-1",
         "exchange_order_id": "exchange-order-1",
+        "exchange_trade_id": None,
+        "fill_id": None,
         "report_type": "acked",
         "filled_qty": Decimal("0"),
         "fill_price": None,
         "cumulative_filled_qty": Decimal("0"),
         "remaining_qty": Decimal("2"),
+        "fee_amount": None,
+        "fee_currency": None,
+        "fee_source": None,
         "report_ts": NOW,
         "received_at": NOW + timedelta(seconds=1),
         "raw_payload": {"diagnostic": "only"},
@@ -66,11 +71,16 @@ def _normalized(raw: RawExecutionReport | None = None):
         client_order_id=raw.client_order_id,
         adapter_order_ref=raw.adapter_order_ref,
         exchange_order_id=raw.exchange_order_id,
+        exchange_trade_id=raw.exchange_trade_id,
+        fill_id=raw.fill_id,
         execution_status=ExecutionReportStatus.ACKED,
         filled_qty=raw.filled_qty,
         fill_price=raw.fill_price,
         cumulative_filled_qty=raw.cumulative_filled_qty,
         remaining_qty=raw.remaining_qty,
+        fee_amount=raw.fee_amount,
+        fee_currency=raw.fee_currency,
+        fee_source=raw.fee_source,
         report_ts=raw.report_ts,
         normalized_at=NOW + timedelta(seconds=2),
         reason=None,
@@ -88,6 +98,11 @@ def test_normalized_execution_reports_schema_contract(session: Session) -> None:
     assert "fills" not in inspector.get_table_names()
     assert "report_id" in NormalizedExecutionReportOrm.__table__.columns
     assert "source_report_hash" in NormalizedExecutionReportOrm.__table__.columns
+    assert "exchange_trade_id" in NormalizedExecutionReportOrm.__table__.columns
+    assert "fill_id" in NormalizedExecutionReportOrm.__table__.columns
+    assert "fee_amount" in NormalizedExecutionReportOrm.__table__.columns
+    assert "fee_currency" in NormalizedExecutionReportOrm.__table__.columns
+    assert "fee_source" in NormalizedExecutionReportOrm.__table__.columns
     assert "raw_payload" in NormalizedExecutionReportOrm.__table__.columns
     assert {
         "ix_normalized_execution_reports_order_id",
@@ -127,6 +142,33 @@ def test_repository_round_trip_duplicate_conflict_and_queries(session: Session) 
         item.report_id
         for item in repository.list_by_status(ExecutionReportStatus.ACKED, NOW, NOW)
     ] == [report.report_id]
+
+
+def test_repository_round_trips_stage_l3_typed_trade_inputs(session: Session) -> None:
+    repository = SQLAlchemyExecutionReportRepository(session)
+    raw = _raw(
+        report_type="partial_fill",
+        filled_qty=Decimal("1"),
+        fill_price=Decimal("3500"),
+        cumulative_filled_qty=Decimal("1"),
+        remaining_qty=Decimal("1"),
+        exchange_trade_id="exchange-trade-1",
+        fill_id="fill-1",
+        fee_amount=Decimal("0"),
+        fee_currency="CNY",
+        fee_source="EXCHANGE_REPORT",
+    )
+    report = _normalized(raw).model_copy(
+        update={"execution_status": ExecutionReportStatus.PARTIALLY_FILLED}
+    )
+
+    persisted = repository.append_normalized_report(report)
+
+    assert persisted.exchange_trade_id == "exchange-trade-1"
+    assert persisted.fill_id == "fill-1"
+    assert persisted.fee_amount == Decimal("0")
+    assert persisted.fee_currency == "CNY"
+    assert persisted.fee_source == "EXCHANGE_REPORT"
 
     with pytest.raises(ExecutionReportConflictError):
         repository.append_normalized_report(report.model_copy(update={"reason": "changed"}))

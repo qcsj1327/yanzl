@@ -235,6 +235,11 @@ def _trade(
     fee_amount: Decimal | None = Decimal("1.2"),
     fee_currency: str | None = "CNY",
     source_exchange_report_id: str = "report-1",
+    source_report_id: str | None = "report-1",
+    source_order_event_id: str | None = "event-1",
+    client_order_id: str | None = "client-order-1",
+    trade_instrument_id: str | None = "rb2601",
+    symbol: str | None = "rb",
     raw_payload: dict[str, object] | None = None,
 ) -> Trade:
     return Trade(
@@ -242,7 +247,10 @@ def _trade(
         exchange="SHFE",
         exchange_trade_id=exchange_trade_id,
         order_id=order_id,
+        client_order_id=client_order_id,
         instrument_id="rb2601",
+        trade_instrument_id=trade_instrument_id,
+        symbol=symbol,
         direction=direction,
         offset=offset,
         price=price,
@@ -252,7 +260,9 @@ def _trade(
         fee_source="EXCHANGE_REPORT" if fee_amount is not None else None,
         trade_time=datetime(2026, 1, 1, 9, 1, tzinfo=UTC),
         trading_day=date(2026, 1, 1),
+        source_report_id=source_report_id,
         source_exchange_report_id=source_exchange_report_id,
+        source_order_event_id=source_order_event_id,
         raw_payload=raw_payload or {"diagnostic": True},
     )
 
@@ -1152,7 +1162,12 @@ def test_trade_repository_create_and_get_by_exchange_trade_id(
     assert loaded.fee_currency == "CNY"
     assert loaded.fee_source == "EXCHANGE_REPORT"
     assert loaded.trading_day == date(2026, 1, 1)
+    assert loaded.client_order_id == "client-order-1"
+    assert loaded.trade_instrument_id == "rb2601"
+    assert loaded.symbol == "rb"
+    assert loaded.source_report_id == "report-1"
     assert loaded.source_exchange_report_id == "report-1"
+    assert loaded.source_order_event_id == "event-1"
     assert loaded.raw_payload == {"diagnostic": True}
 
 
@@ -1202,6 +1217,33 @@ def test_trade_repository_duplicate_different_payload_raises_controlled_error(
 
         with pytest.raises(TradeIdempotencyConflictError):
             repository.create_or_get_trade(_trade(order_id, price=Decimal("3501")))
+
+
+def test_trade_repository_stage_l3_aliases_and_order_query(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        order_id = _create_order(session)
+        repository = SQLAlchemyTradeRepository(session)
+        created = repository.append_trade(_trade(order_id))
+        loaded = repository.get_by_trade_identity("account-1", "SHFE", "trade-1")
+        listed = repository.list_by_order_id(order_id)
+
+    assert loaded is not None
+    assert loaded.id == created.id
+    assert [trade.id for trade in listed] == [created.id]
+
+
+def test_trade_repository_stage_l3_canonical_conflict(
+    db_session_factory: sessionmaker[Session],
+) -> None:
+    with db_session_factory.begin() as session:
+        order_id = _create_order(session)
+        repository = SQLAlchemyTradeRepository(session)
+        repository.append_trade(_trade(order_id))
+
+        with pytest.raises(TradeIdempotencyConflictError):
+            repository.append_trade(_trade(order_id, source_order_event_id="event-2"))
 
 
 def test_trade_repository_unique_conflict_does_not_leak_integrity_error(

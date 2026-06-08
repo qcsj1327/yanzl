@@ -34,11 +34,16 @@ def _raw(**updates: object) -> RawExecutionReport:
         "client_order_id": "client-1",
         "adapter_order_ref": "adapter-order-1",
         "exchange_order_id": "exchange-order-1",
+        "exchange_trade_id": None,
+        "fill_id": None,
         "report_type": "partial_fill",
         "filled_qty": Decimal("1"),
         "fill_price": Decimal("500"),
         "cumulative_filled_qty": Decimal("1"),
         "remaining_qty": Decimal("1"),
+        "fee_amount": None,
+        "fee_currency": None,
+        "fee_source": None,
         "report_ts": NOW,
         "received_at": NOW + timedelta(seconds=1),
         "raw_payload": {"diagnostic": "only"},
@@ -60,11 +65,16 @@ def _normalized(**updates: object) -> NormalizedExecutionReport:
         "client_order_id": raw.client_order_id,
         "adapter_order_ref": raw.adapter_order_ref,
         "exchange_order_id": raw.exchange_order_id,
+        "exchange_trade_id": raw.exchange_trade_id,
+        "fill_id": raw.fill_id,
         "execution_status": ExecutionReportStatus.PARTIALLY_FILLED,
         "filled_qty": raw.filled_qty,
         "fill_price": raw.fill_price,
         "cumulative_filled_qty": raw.cumulative_filled_qty,
         "remaining_qty": raw.remaining_qty,
+        "fee_amount": raw.fee_amount,
+        "fee_currency": raw.fee_currency,
+        "fee_source": raw.fee_source,
         "report_ts": raw.report_ts,
         "normalized_at": NOW + timedelta(seconds=2),
         "reason": None,
@@ -103,6 +113,32 @@ def test_normalized_execution_report_validation() -> None:
             execution_status=ExecutionReportStatus.FILLED,
             fill_price=None,
         )
+
+
+def test_execution_report_stage_l3_typed_trade_inputs_and_fee_semantics() -> None:
+    raw = _raw(
+        exchange_trade_id="exchange-trade-1",
+        fill_id="fill-1",
+        fee_amount=Decimal("0"),
+        fee_currency="CNY",
+        fee_source="EXCHANGE_REPORT",
+    )
+    normalized = _normalized(
+        exchange_trade_id=raw.exchange_trade_id,
+        fill_id=raw.fill_id,
+        fee_amount=raw.fee_amount,
+        fee_currency=raw.fee_currency,
+        fee_source=raw.fee_source,
+    )
+
+    assert raw.exchange_trade_id == "exchange-trade-1"
+    assert normalized.fill_id == "fill-1"
+    assert normalized.fee_amount == Decimal("0")
+
+    with pytest.raises(ValidationError):
+        _raw(fee_amount=Decimal("1"), fee_currency="CNY", fee_source=None)
+    with pytest.raises(ValidationError):
+        _normalized(fee_amount=Decimal("1"), fee_currency=None, fee_source="EXCHANGE_REPORT")
 
 
 def test_source_report_hash_is_deterministic_and_excludes_diagnostics() -> None:

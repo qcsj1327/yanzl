@@ -254,6 +254,28 @@ Stage L.2 live apply is not allowed to rely on OMS duplicate semantics alone. Be
 
 Stage L.2 live replay must complete full batch canonical preflight before any OMS apply. A same `event_id` + different canonical conflict in the replay input returns `CONFLICT` and performs no OMS apply.
 
+## Stage L.3 OMS-to-Trade read-only proof boundary
+
+Stage L.3 OMS-to-Trade Bridge Core does not add an OMS table, repository, migration or write path.
+
+Stage L.3 reads existing OMS `orders` / `order_events` through typed read-only proof carried in bridge context to prove that a filled `NormalizedExecutionReport` has a corresponding applied OMS event or compatible `OrderState`.
+
+Applied `OrderEvent` proof must bind to the current normalized report through typed fields：`event_source`、`order_id`、`report_id`、`execution_status` / mapped OMS status、`filled_qty`、`fill_price`、`cumulative_filled_qty` and `report_ts`。Missing or mismatched typed proof fields reject Trade creation; Stage L.3 must not recover proof from `raw_payload`。
+
+Compatible `OrderState` proof without an applied event is sufficient only when the order status is compatible with the report status and `orders.filled_quantity` is at least the report `cumulative_filled_qty`。It confirms eligibility only; it must not populate `source_order_event_id` because no typed applied event identity is proven.
+
+Stage L.3 must not：
+
+- call `OMSService.apply_order_event(...)`。
+- call `OMSService.create_order(...)`。
+- append `order_events`。
+- update `orders.status` or `orders.version`。
+- rely on OMS status alone for fill price or fill quantity。
+
+OMS proof only confirms eligibility and lineage. `NormalizedExecutionReport` provides the fill economics used by the typed Trade fact.
+
+Stage L.3 may hand a typed Trade fact to existing `TradeRepository`, but it must not create a second trade ledger and must not update Position / Margin / PnL / Settlement / account snapshots.
+
 ## orders.version
 
 当前事实：

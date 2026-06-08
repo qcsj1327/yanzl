@@ -402,6 +402,21 @@ Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界
 | existing conflict precheck | existing different canonical 或缺 typed canonical fields 返回 `CONFLICT`，不得调用 OMS。 |
 | live replay preflight | live replay 在任何 OMS apply 前完成全 batch canonical scan；same `event_id` + different canonical 返回 `CONFLICT` 且不调用 OMS。 |
 
+## Stage L.3 OMS-to-Trade Bridge Cross-Reference
+
+| 场景 | 预期 |
+|---|---|
+| read-only OMS proof | Stage L.3 只能通过 typed read-only bridge context 读取 applied `OrderEvent` / compatible `OrderState` proof。 |
+| no OMS apply | Stage L.3 不调用 `OMSService.apply_order_event(...)`。 |
+| no OMS create | Stage L.3 不调用 `OMSService.create_order(...)`。 |
+| no OMS mutation | Stage L.3 不 append `order_events`，不更新 `orders.status` / `orders.version`。 |
+| no status-only economics | OMS status 只确认 eligibility；成交价格和数量必须来自 `NormalizedExecutionReport`。 |
+| lineage proof | report、OMS proof 和 order identity 的 `order_id` / `client_order_id` 不匹配时必须返回 typed rejection。 |
+| applied event report binding | applied `OrderEvent` proof 的 `report_id`、status、quantity、price 和 timestamp typed fields 必须绑定当前 `NormalizedExecutionReport`。 |
+| state proof quantity compatibility | 无 applied event 时，compatible `OrderState` 必须满足 status compatibility 和 `filled_quantity >= report.cumulative_filled_qty`。 |
+| state proof no event id | 无 applied event 时，`source_order_event_id` 必须 absent / `None`；state proof 不证明具体 event identity。 |
+| no accounting mutation | Stage L.3 不更新 Position / Margin / PnL / Settlement / account snapshot。 |
+
 ## 当前允许继续 xfail 的范围
 
 以下仍可留在 Mock Exchange 后续阶段：

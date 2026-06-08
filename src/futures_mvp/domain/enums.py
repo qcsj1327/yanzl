@@ -292,6 +292,22 @@ class OMSEventApplyResultStatus(StrEnum):
     ERROR = "ERROR"
 
 
+class TradeIdentitySource(StrEnum):
+    EXCHANGE_TRADE_ID = "exchange_trade_id"
+    DERIVED_FROM_REPORT = "derived_from_report"
+
+
+class TradeBridgeResultStatus(StrEnum):
+    CREATED = "CREATED"
+    DUPLICATE = "DUPLICATE"
+    REJECTED_NOT_FILLED = "REJECTED_NOT_FILLED"
+    REJECTED_OMS_NOT_APPLIED = "REJECTED_OMS_NOT_APPLIED"
+    REJECTED_MISSING_TRADE_IDENTITY = "REJECTED_MISSING_TRADE_IDENTITY"
+    REJECTED_LINEAGE_MISMATCH = "REJECTED_LINEAGE_MISMATCH"
+    CONFLICT = "CONFLICT"
+    ERROR = "ERROR"
+
+
 class BarTimeframe(StrEnum):
     M1 = "M1"
     M5 = "M5"

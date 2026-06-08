@@ -45,6 +45,7 @@ from futures_mvp.domain.enums import (
     SignalLifecycleStatus,
     SignalPositionSide,
     SignalSide,
+    TradeIdentitySource,
 )
 from futures_mvp.domain.models import (
     AccountSnapshot,
@@ -291,11 +292,16 @@ def normalized_execution_report_to_domain(
         client_order_id=report.client_order_id,
         adapter_order_ref=report.adapter_order_ref,
         exchange_order_id=report.exchange_order_id,
+        exchange_trade_id=report.exchange_trade_id,
+        fill_id=report.fill_id,
         execution_status=ExecutionReportStatus(report.execution_status),
         filled_qty=report.filled_qty,
         fill_price=report.fill_price,
         cumulative_filled_qty=report.cumulative_filled_qty,
         remaining_qty=report.remaining_qty,
+        fee_amount=report.fee_amount,
+        fee_currency=report.fee_currency,
+        fee_source=report.fee_source,
         report_ts=report.report_ts,
         normalized_at=report.normalized_at,
         reason=report.reason,
@@ -310,8 +316,14 @@ def trade_to_domain(trade: TradeOrm) -> Trade:
         account_id=trade.account_id,
         exchange=trade.exchange,
         exchange_trade_id=trade.exchange_trade_id,
+        identity_source=TradeIdentitySource(
+            trade.identity_source or TradeIdentitySource.EXCHANGE_TRADE_ID
+        ),
         order_id=str(trade.order_id),
+        client_order_id=trade.client_order_id,
         instrument_id=trade.instrument_id,
+        trade_instrument_id=trade.trade_instrument_id,
+        symbol=trade.symbol,
         direction=Direction(trade.direction),
         offset=Offset(trade.offset),
         price=trade.price,
@@ -321,7 +333,9 @@ def trade_to_domain(trade: TradeOrm) -> Trade:
         fee_source=trade.fee_source,
         trade_time=trade.trade_time,
         trading_day=trade.trading_day,
+        source_report_id=trade.source_report_id,
         source_exchange_report_id=trade.source_exchange_report_id,
+        source_order_event_id=trade.source_order_event_id,
         raw_payload=trade.raw_payload or {},
     )
 
@@ -594,8 +608,12 @@ def _canonical_trade_payload_from_domain(trade: Trade) -> tuple[object, ...]:
         trade.account_id,
         trade.exchange,
         trade.exchange_trade_id,
+        trade.identity_source.value,
         trade.order_id,
+        trade.client_order_id,
         trade.instrument_id,
+        trade.trade_instrument_id,
+        trade.symbol,
         trade.direction.value,
         trade.offset.value,
         trade.price,
@@ -605,7 +623,8 @@ def _canonical_trade_payload_from_domain(trade: Trade) -> tuple[object, ...]:
         trade.fee_source,
         trade.trade_time,
         trade.trading_day,
-        trade.source_exchange_report_id,
+        trade.source_report_id or trade.source_exchange_report_id,
+        trade.source_order_event_id,
     )
 
 
@@ -614,8 +633,12 @@ def _canonical_trade_payload_from_orm(trade: TradeOrm) -> tuple[object, ...]:
         trade.account_id,
         trade.exchange,
         trade.exchange_trade_id,
+        trade.identity_source or TradeIdentitySource.EXCHANGE_TRADE_ID.value,
         str(trade.order_id),
+        trade.client_order_id,
         trade.instrument_id,
+        trade.trade_instrument_id,
+        trade.symbol,
         trade.direction,
         trade.offset,
         trade.price,
@@ -625,7 +648,8 @@ def _canonical_trade_payload_from_orm(trade: TradeOrm) -> tuple[object, ...]:
         trade.fee_source,
         trade.trade_time,
         trade.trading_day,
-        trade.source_exchange_report_id,
+        trade.source_report_id or trade.source_exchange_report_id,
+        trade.source_order_event_id,
     )
 
 
@@ -1884,11 +1908,16 @@ class SQLAlchemyExecutionReportRepository:
                     client_order_id=report.client_order_id,
                     adapter_order_ref=report.adapter_order_ref,
                     exchange_order_id=report.exchange_order_id,
+                    exchange_trade_id=report.exchange_trade_id,
+                    fill_id=report.fill_id,
                     execution_status=report.execution_status.value,
                     filled_qty=report.filled_qty,
                     fill_price=report.fill_price,
                     cumulative_filled_qty=report.cumulative_filled_qty,
                     remaining_qty=report.remaining_qty,
+                    fee_amount=report.fee_amount,
+                    fee_currency=report.fee_currency,
+                    fee_source=report.fee_source,
                     report_ts=report.report_ts,
                     source_report_hash=report.source_report_hash,
                     reason=report.reason,
@@ -2180,6 +2209,9 @@ class SQLAlchemyTradeRepository:
                 ) from exc
             return self._existing_trade_for_create(existing_after_conflict, trade)
 
+    def append_trade(self, trade: Trade) -> Trade:
+        return self.create_or_get_trade(trade)
+
     def get_by_exchange_trade_id(
         self,
         account_id: str,
@@ -2189,13 +2221,34 @@ class SQLAlchemyTradeRepository:
         trade = self._get_orm_by_exchange_trade_id(account_id, exchange, exchange_trade_id)
         return trade_to_domain(trade) if trade else None
 
+    def get_by_trade_identity(
+        self,
+        account_id: str,
+        exchange: str,
+        exchange_trade_id: str,
+    ) -> Trade | None:
+        return self.get_by_exchange_trade_id(account_id, exchange, exchange_trade_id)
+
+    def list_by_order_id(self, order_id: str) -> list[Trade]:
+        db_order_id = parse_order_id(order_id)
+        trades = self._session.scalars(
+            select(TradeOrm)
+            .where(TradeOrm.order_id == db_order_id)
+            .order_by(TradeOrm.trade_time.asc(), TradeOrm.id.asc())
+        )
+        return [trade_to_domain(trade) for trade in trades]
+
     def _new_trade(self, trade: Trade) -> TradeOrm:
         return TradeOrm(
             account_id=trade.account_id,
             exchange=trade.exchange,
             exchange_trade_id=trade.exchange_trade_id,
+            identity_source=trade.identity_source.value,
             order_id=parse_order_id(trade.order_id),
+            client_order_id=trade.client_order_id,
             instrument_id=trade.instrument_id,
+            trade_instrument_id=trade.trade_instrument_id,
+            symbol=trade.symbol,
             direction=trade.direction.value,
             offset=trade.offset.value,
             price=trade.price,
@@ -2205,7 +2258,9 @@ class SQLAlchemyTradeRepository:
             fee_source=trade.fee_source,
             trade_time=trade.trade_time,
             trading_day=trade.trading_day,
+            source_report_id=trade.source_report_id,
             source_exchange_report_id=trade.source_exchange_report_id,
+            source_order_event_id=trade.source_order_event_id,
             raw_payload=trade.raw_payload,
         )
 

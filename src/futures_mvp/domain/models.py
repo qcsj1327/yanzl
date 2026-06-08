@@ -43,6 +43,8 @@ from futures_mvp.domain.enums import (
     SignalResultStatus,
     SignalSide,
     StrategyResultStatus,
+    TradeBridgeResultStatus,
+    TradeIdentitySource,
     TradingWorkflowResultStatus,
 )
 
@@ -1328,11 +1330,16 @@ class RawExecutionReport(DomainModel):
     client_order_id: str
     adapter_order_ref: str
     exchange_order_id: str | None = None
+    exchange_trade_id: str | None = None
+    fill_id: str | None = None
     report_type: str
     filled_qty: Decimal
     fill_price: Decimal | None = None
     cumulative_filled_qty: Decimal
     remaining_qty: Decimal
+    fee_amount: Decimal | None = None
+    fee_currency: str | None = None
+    fee_source: str | None = None
     report_ts: datetime
     received_at: datetime
     raw_payload: dict[str, Any] | None = None
@@ -1355,6 +1362,7 @@ class RawExecutionReport(DomainModel):
         "fill_price",
         "cumulative_filled_qty",
         "remaining_qty",
+        "fee_amount",
         mode="before",
     )
     @classmethod
@@ -1382,6 +1390,14 @@ class RawExecutionReport(DomainModel):
             require_positive_decimal(self.fill_price, field_name="fill_price")
         if self.report_type.lower() in _FILLED_REPORT_TYPES and self.fill_price is None:
             raise ValueError("fill_price is required for filled execution report types")
+        if self.fee_amount is not None and self.fee_currency is None:
+            raise ValueError("fee_currency is required when fee_amount is not None")
+        if self.fee_amount is not None and self.fee_source is None:
+            raise ValueError("fee_source is required when fee_amount is not None")
+        if self.fee_amount is None and self.fee_currency is not None:
+            raise ValueError("fee_currency requires fee_amount")
+        if self.fee_amount is None and self.fee_source is not None:
+            raise ValueError("fee_source requires fee_amount")
         return self
 
 
@@ -1395,11 +1411,16 @@ class NormalizedExecutionReport(DomainModel):
     client_order_id: str
     adapter_order_ref: str
     exchange_order_id: str | None = None
+    exchange_trade_id: str | None = None
+    fill_id: str | None = None
     execution_status: ExecutionReportStatus
     filled_qty: Decimal
     fill_price: Decimal | None = None
     cumulative_filled_qty: Decimal
     remaining_qty: Decimal
+    fee_amount: Decimal | None = None
+    fee_currency: str | None = None
+    fee_source: str | None = None
     report_ts: datetime
     normalized_at: datetime
     reason: str | None = None
@@ -1425,6 +1446,7 @@ class NormalizedExecutionReport(DomainModel):
         "fill_price",
         "cumulative_filled_qty",
         "remaining_qty",
+        "fee_amount",
         mode="before",
     )
     @classmethod
@@ -1456,6 +1478,14 @@ class NormalizedExecutionReport(DomainModel):
             and self.fill_price is None
         ):
             raise ValueError("fill_price is required for filled execution reports")
+        if self.fee_amount is not None and self.fee_currency is None:
+            raise ValueError("fee_currency is required when fee_amount is not None")
+        if self.fee_amount is not None and self.fee_source is None:
+            raise ValueError("fee_source is required when fee_amount is not None")
+        if self.fee_amount is None and self.fee_currency is not None:
+            raise ValueError("fee_currency requires fee_amount")
+        if self.fee_amount is None and self.fee_source is not None:
+            raise ValueError("fee_source requires fee_amount")
         return self
 
 
@@ -1612,8 +1642,12 @@ class Trade(DomainModel):
     account_id: str
     exchange: str
     exchange_trade_id: str
+    identity_source: TradeIdentitySource = TradeIdentitySource.EXCHANGE_TRADE_ID
     order_id: str
+    client_order_id: str | None = None
     instrument_id: str
+    trade_instrument_id: str | None = None
+    symbol: str | None = None
     direction: Direction
     offset: Offset
     price: Decimal
@@ -1623,7 +1657,9 @@ class Trade(DomainModel):
     fee_source: str | None = None
     trade_time: datetime
     trading_day: date | None = None
+    source_report_id: str | None = None
     source_exchange_report_id: str | None = None
+    source_order_event_id: str | None = None
     raw_payload: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("price", "quantity", "fee_amount", mode="before")
@@ -1644,6 +1680,48 @@ class Trade(DomainModel):
             raise ValueError("fee_currency is required when fee_amount is not None")
         if self.fee_amount is None and self.fee_currency is not None:
             raise ValueError("fee_currency requires fee_amount")
+        if self.fee_amount is None and self.fee_source is not None:
+            raise ValueError("fee_source requires fee_amount")
+        if self.fee_amount is not None and self.fee_source is None:
+            raise ValueError("fee_source is required when fee_amount is not None")
+        return self
+
+
+class TradeBridgeContext(DomainModel):
+    normalized_report: NormalizedExecutionReport
+    order_state: OrderState
+    symbol: str
+    trade_instrument_id: str
+    applied_order_event: OrderEvent | None = None
+    source_order_event_id: str | None = None
+    trading_day: date | None = None
+    raw_payload: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("symbol", "trade_instrument_id")
+    @classmethod
+    def _required_identity(cls, value: str, info: Any) -> str:
+        return require_non_empty_string(value, field_name=info.field_name)
+
+
+class TradeBridgeResult(DomainModel):
+    status: TradeBridgeResultStatus
+    trade: Trade | None = None
+    source_report_id: str
+    source_order_event_id: str | None = None
+    reason: str | None = None
+
+    @field_validator("source_report_id")
+    @classmethod
+    def _required_report_id(cls, value: str, info: Any) -> str:
+        return require_non_empty_string(value, field_name=info.field_name)
+
+    @model_validator(mode="after")
+    def _valid_trade_bridge_result(self) -> "TradeBridgeResult":
+        if self.status in {
+            TradeBridgeResultStatus.CREATED,
+            TradeBridgeResultStatus.DUPLICATE,
+        } and self.trade is None:
+            raise ValueError(f"{self.status.value} TradeBridgeResult requires trade")
         return self
 
 

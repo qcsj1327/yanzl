@@ -138,6 +138,8 @@ class OrderEventRepository(Protocol):
 
 @runtime_checkable
 class TradeRepository(Protocol):
+    def append_trade(self, trade: Trade) -> Trade: ...
+
     def create_or_get_trade(self, trade: Trade) -> Trade: ...
 
     def get_by_exchange_trade_id(
@@ -146,6 +148,15 @@ class TradeRepository(Protocol):
         exchange: str,
         exchange_trade_id: str,
     ) -> Trade | None: ...
+
+    def get_by_trade_identity(
+        self,
+        account_id: str,
+        exchange: str,
+        exchange_trade_id: str,
+    ) -> Trade | None: ...
+
+    def list_by_order_id(self, order_id: str) -> list[Trade]: ...
 
 
 @runtime_checkable

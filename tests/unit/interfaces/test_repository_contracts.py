@@ -365,6 +365,9 @@ class FakeTradeRepository:
         self.trades.setdefault(key, trade)
         return self.trades[key]
 
+    def append_trade(self, trade: Trade) -> Trade:
+        return self.create_or_get_trade(trade)
+
     def get_by_exchange_trade_id(
         self,
         account_id: str,
@@ -372,6 +375,17 @@ class FakeTradeRepository:
         exchange_trade_id: str,
     ) -> Trade | None:
         return self.trades.get((account_id, exchange, exchange_trade_id))
+
+    def get_by_trade_identity(
+        self,
+        account_id: str,
+        exchange: str,
+        exchange_trade_id: str,
+    ) -> Trade | None:
+        return self.get_by_exchange_trade_id(account_id, exchange, exchange_trade_id)
+
+    def list_by_order_id(self, order_id: str) -> list[Trade]:
+        return [trade for trade in self.trades.values() if trade.order_id == order_id]
 
 
 class FakePositionRepository:
