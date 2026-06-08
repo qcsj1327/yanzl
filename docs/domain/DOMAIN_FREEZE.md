@@ -2672,6 +2672,256 @@ Stage K does not implement：
 - runtime scheduler。
 - Kafka / FastAPI / Celery。
 
+## Stage L Execution Report Normalization Contract
+
+Stage L freezes the Execution Report Normalizer boundary on baseline `stage-k-execution-gateway-core / 94b498e`。This is a documentation-only contract freeze. It does not add code, schema, migrations or tests。
+
+Stage K `ExecutionCommandResult` remains adapter command-result semantics only：adapter accepted / rejected does not mean exchange accepted, filled or traded。
+
+### Execution Report Normalizer source-of-truth
+
+Execution Report Normalizer 只能消费：
+
+- `ExecutionCommand`。
+- `ExecutionCommandResult`。
+- typed adapter report input。
+- adapter identity。
+- `command_id` / `order_id` / `client_order_id` lineage。
+- typed timestamp normalization rule。
+
+Execution Report Normalizer 禁止消费：
+
+- `FeatureSnapshot`。
+- `SignalDecision`。
+- `TradingRiskResult`。
+- `OrderIntent` mutation。
+- Accounting tables。
+- Position tables。
+- Margin / PnL / Settlement。
+- Broker state as source-of-truth。
+- `raw_payload` as facts。
+
+### RawExecutionReport contract
+
+`RawExecutionReport` 是 typed raw adapter input。Adapter 必须尽量在进入 domain 前把外部 ms / us / ns timestamp normalize 为 `datetime`。
+
+字段冻结：
+
+| 字段 | 类型 | 语义 |
+|---|---|---|
+| `raw_report_id` | `str` | adapter report identity；adapter 可提供时 per adapter unique。 |
+| `adapter_name` | `str` | adapter identity。 |
+| `execution_target` | `ExecutionTarget` | execution adapter target。 |
+| `command_id` | `str` | `ExecutionCommand` lineage。 |
+| `order_id` | `str` | OMS order lineage。 |
+| `client_order_id` | `str` | OMS client order lineage。 |
+| `adapter_order_ref` | `str` | adapter-local order reference。 |
+| `exchange_order_id` | `str \| None` | external exchange order id。 |
+| `report_type` | `str` | adapter-normalized report type。 |
+| `filled_qty` | `Decimal` | report-level filled quantity。 |
+| `fill_price` | `Decimal \| None` | fill price when applicable。 |
+| `cumulative_filled_qty` | `Decimal` | cumulative filled quantity。 |
+| `remaining_qty` | `Decimal` | remaining quantity。 |
+| `report_ts` | `datetime` | normalized report event time。 |
+| `received_at` | `datetime` | local receive time；excluded from canonical equality。 |
+| `raw_payload` | `dict[str, Any]` | diagnostic only。 |
+
+Rules：
+
+- `raw_payload` diagnostic only。
+- Decimal-only for quantities / prices。
+- no float。
+
+### NormalizedExecutionReport contract
+
+`NormalizedExecutionReport` 是 normalizer 输出的 deterministic execution report fact。
+
+字段冻结：
+
+| 字段 | 类型 | 语义 |
+|---|---|---|
+| `report_id` | `str` | deterministic normalized report identity。 |
+| `raw_report_id` | `str` | raw report lineage。 |
+| `adapter_name` | `str` | adapter identity。 |
+| `execution_target` | `ExecutionTarget` | execution adapter target。 |
+| `command_id` | `str` | `ExecutionCommand` lineage。 |
+| `order_id` | `str` | OMS order lineage。 |
+| `client_order_id` | `str` | OMS client order lineage。 |
+| `adapter_order_ref` | `str` | adapter-local order reference。 |
+| `exchange_order_id` | `str \| None` | external exchange order id。 |
+| `execution_status` | `ExecutionReportStatus` | normalized execution status。 |
+| `filled_qty` | `Decimal` | report-level filled quantity。 |
+| `fill_price` | `Decimal \| None` | fill price when applicable。 |
+| `cumulative_filled_qty` | `Decimal` | cumulative filled quantity。 |
+| `remaining_qty` | `Decimal` | remaining quantity。 |
+| `report_ts` | `datetime` | normalized report event time。 |
+| `normalized_at` | `datetime` | local normalization time；excluded from canonical equality。 |
+| `reason` | `str \| None` | typed reason / diagnostic summary。 |
+| `source_report_hash` | `str` | hash of canonical `RawExecutionReport`。 |
+
+Rules：
+
+- `report_id` deterministic。
+- `source_report_hash` from canonical `RawExecutionReport`。
+- same raw report -> same normalized report。
+- no broker raw facts beyond typed raw report。
+- no direct OMS mutation。
+
+### ExecutionReportStatus
+
+`ExecutionReportStatus` 冻结为：
+
+- `SUBMITTED`
+- `ACKED`
+- `PARTIALLY_FILLED`
+- `FILLED`
+- `REJECTED`
+- `CANCELED`
+- `ERROR`
+
+`ExecutionReportStatus` is not OMS `OrderStatus`。Mapping to OMS `OrderEvent` happens later in application layer / Stage L implementation boundary。
+
+### Normalized report to OMS OrderEvent mapping
+
+Future mapping：
+
+| `ExecutionReportStatus` | OMS `OrderEvent` |
+|---|---|
+| `ACKED` | OMS `ACKED` event |
+| `PARTIALLY_FILLED` | OMS `PARTIALLY_FILLED` event |
+| `FILLED` | OMS `FILLED` event |
+| `REJECTED` | OMS `REJECTED_BY_EXCHANGE` event |
+| `CANCELED` | OMS `CANCELED` event |
+
+Rules：
+
+- Normalizer may create typed `OrderEvent` candidate。
+- Normalizer must not call `OMSService.apply_order_event(...)` directly unless Stage L implementation explicitly includes application service with Unit-of-Work boundary。
+- Recommended Stage L Core：normalize report；build `OrderEvent` candidate；persist normalized report；do not mutate OMS。
+- OMS apply remains next bridge / application step unless explicitly scoped。
+
+### Fill / Trade boundary
+
+Stage L must not：
+
+- create Trade ledger directly。
+- update Position。
+- update Margin / PnL / Settlement。
+- generate accounting facts。
+
+Fill-like fields in report are execution-state facts only, not Trade facts yet。
+
+Trade creation remains later：
+
+```text
+Normalized filled report
+-> OMS OrderEvent
+-> Trade/Fills ledger adapter later
+```
+
+### Execution report idempotency
+
+`RawExecutionReport`：
+
+- `raw_report_id` unique per adapter if available。
+- fallback deterministic key：`adapter_name + command_id + report_type + report_ts + cumulative_filled_qty`。
+
+`NormalizedExecutionReport`：
+
+- `report_id` deterministic。
+- same canonical -> duplicate / no-op。
+- different canonical -> conflict / error。
+
+Canonical excludes：
+
+- `raw_payload`
+- `received_at`
+- `normalized_at`
+- DB id
+
+### ExecutionReportRepository / future migration contract
+
+Future：
+
+- `ExecutionReportRepository`。
+- `raw_execution_reports` table optional。
+- `normalized_execution_reports` table required if Stage L persists reports。
+
+Recommendation：
+
+- Stage L Core should add `normalized_execution_reports`。
+- `raw_execution_reports` optional；`raw_payload` only diagnostic。
+
+Repository methods：
+
+- `append_normalized_report(report)`
+- `get_by_report_id(report_id)`
+- `list_by_order_id(order_id)`
+- `list_by_command_id(command_id)`
+
+Unique：
+
+- `report_id`
+
+Indexes：
+
+- `order_id`
+- `command_id`
+- `client_order_id`
+- `execution_status`
+- `report_ts`
+
+### Execution report replay
+
+Report replay：
+
+- consumes ordered `RawExecutionReport`。
+- same raw -> same normalized。
+- same canonical -> duplicate / no-op。
+- different canonical -> conflict。
+- replay must not call OMS。
+- replay must not update Accounting。
+- replay must not generate Trade。
+
+### Stage L boundary split
+
+- Execution Gateway：creates commands。
+- Execution Report Normalizer：normalizes adapter reports。
+- OMS：owns order state。
+- Accounting：not involved。
+- Trade ledger：not involved。
+- Broker：not source-of-truth。
+
+### Stage L future tests
+
+Future implementation must cover：
+
+- Decimal-only raw report。
+- deterministic `report_id`。
+- `source_report_hash`。
+- status mapping。
+- duplicate same canonical。
+- conflict different canonical。
+- `raw_payload` excluded。
+- replay deterministic。
+- no `OMSService.apply_order_event(...)`。
+- no Trade / Position / Accounting mutation。
+- no Broker / CTP / SimNow dependency。
+
+### Stage L explicit non-goals
+
+Stage L does not implement：
+
+- Broker adapter。
+- CTP / SimNow / live。
+- Trade ledger generation。
+- Fill ledger generation。
+- Position update。
+- Accounting update。
+- OMS direct mutation unless separately scoped。
+- Runtime scheduler。
+- Kafka / FastAPI / Celery。
+
 ### feature_snapshots
 
 Stage H 已新增 `feature_snapshots` 表作为 FeatureSnapshot derived facts ledger。

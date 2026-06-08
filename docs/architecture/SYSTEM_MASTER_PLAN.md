@@ -62,10 +62,14 @@
   - 已实现 `OrderIntent -> OMSService.create_order` bridge；OMS 已能创建订单记录。
   - Stage J.2 未进入 Execution / Broker / Paper / Sim / Live，不新增 schema。
 - Execution Gateway Core 已完成。
-  - 当前基线：`stage-k-execution-gateway-core`。
+  - 当前基线：`stage-k-execution-gateway-core / 94b498e`。
   - 已实现 `ExecutionCommand`、deterministic `command_id`、canonical payload/hash、`ExecutionCommandRepository`、SQLAlchemy repository、UoW integration、`execution_commands` migration、`ExecutionAdapter` Protocol、deterministic `MockExecutionAdapter`、`ExecutionGatewayService`、dry-run replay 和 tests。
   - Stage K only supports `MOCK` target；`PAPER` / `SIM` / `LIVE` typed rejected / deferred。
   - Stage K 不实现 Broker / Exchange / Fill / Trade / Accounting mutation / OMS mutation / ExecutionReport / OrderEvent。
+- Execution Report Normalization Contract 已冻结。
+  - 当前基线：`stage-k-execution-gateway-core / 94b498e`。
+  - 已冻结 `RawExecutionReport`、`NormalizedExecutionReport`、`ExecutionReportStatus`、normalized report -> OMS `OrderEvent` candidate mapping、repository / future migration contract、replay / idempotency contract 和边界。
+  - Stage L contract freeze 不写代码、不改 schema、不修改 `src/` / `tests/`，不直接 mutate OMS，不生成 Trade / Fill ledger，不更新 Position / Accounting。
 
 当前尚未实现为业务能力的部分：
 
@@ -533,16 +537,25 @@ Stage F contract freeze：
 - Acceptance criteria：Execution Gateway contract 可从 eligible OMS Order deterministic 生成 `ExecutionCommand`，可通过 repository 幂等持久化，adapter result 仅为 typed diagnostic/dispatch result，且不越过 OMS / Accounting / Broker / Strategy / Risk 边界。
 - Suggested tag：`stage-k-execution-gateway-contract-freeze`。
 
-### Stage L: Recovery / Replay Framework
+### Stage L: Execution Report Normalization Contract Freeze
 
-- Goal：统一订单、执行命令、执行回报、成交、持仓、行情、结算的重放与对账。
-- Inputs：order_events、execution_commands、exchange reports、trades、positions、market events、settlement snapshots、UNKNOWN 语义。
-- Outputs：replay runner、divergence reports、reconciliation events、recovery workflow。
-- Allowed changes：replay services、fixtures、regression tests。
-- Forbidden changes：不静默覆盖事实；不手工 SQL 改 OMS 状态；不通过 raw_payload 补账；replay 默认不得 submit broker / adapter。
-- Required tests：order replay、execution command replay、trade replay、position replay、market replay、settlement replay、divergence detection、duplicate event idempotency。
-- Acceptance criteria：replay 与 source-of-truth 一致；分歧被 typed report 捕获；dry-run replay 不触发外部提交。
-- Suggested tag：`stage-l-recovery-replay-framework`。
+- Goal：冻结 Execution Report Normalizer 契约；把 typed adapter report input 归一化为 deterministic `NormalizedExecutionReport`，并定义后续 OMS `OrderEvent` candidate mapping。
+- Baseline：`stage-k-execution-gateway-core / 94b498e`；Execution Gateway Core 已完成，Stage K only supports `MOCK` target，`ExecutionCommandResult` 只表示 adapter accepted / rejected，不表示 exchange accepted / fill / trade。
+- Allowed changes：仅文档；`docs/architecture/SYSTEM_MASTER_PLAN.md`、`docs/domain/DOMAIN_FREEZE.md`、`docs/execution/*`。
+- Forbidden changes：不改 `src/`、`tests/`、`alembic/`、schema、OMS implementation、Execution Gateway implementation、Trading Workflow implementation、Accounting、Broker / Runtime。
+- Source-of-truth inputs：`ExecutionCommand`、`ExecutionCommandResult`、typed adapter report input、adapter identity、`command_id` / `order_id` / `client_order_id` lineage、typed timestamp normalization rule。
+- Forbidden inputs：不得消费 `FeatureSnapshot`、`SignalDecision`、`TradingRiskResult`、`OrderIntent` mutation、Accounting tables、Position tables、Margin / PnL / Settlement、Broker state as source-of-truth、`raw_payload` as facts。
+- RawExecutionReport：冻结 `raw_report_id`、`adapter_name`、`execution_target`、`command_id`、`order_id`、`client_order_id`、`adapter_order_ref`、`exchange_order_id | None`、`report_type`、Decimal `filled_qty`、Decimal `fill_price | None`、Decimal `cumulative_filled_qty`、Decimal `remaining_qty`、`report_ts`、`received_at`、diagnostic-only `raw_payload`；adapter must normalize external ms / us / ns timestamps before domain if possible；no float。
+- NormalizedExecutionReport：冻结 deterministic `report_id`、`raw_report_id`、`adapter_name`、`execution_target`、`command_id`、`order_id`、`client_order_id`、`adapter_order_ref`、`exchange_order_id | None`、`execution_status`、Decimal fill fields、`report_ts`、`normalized_at`、`reason | None`、`source_report_hash`。
+- `ExecutionReportStatus`：`SUBMITTED`、`ACKED`、`PARTIALLY_FILLED`、`FILLED`、`REJECTED`、`CANCELED`、`ERROR`；它不是 OMS `OrderStatus`。
+- OMS mapping：`ACKED -> ACKED`、`PARTIALLY_FILLED -> PARTIALLY_FILLED`、`FILLED -> FILLED`、`REJECTED -> REJECTED_BY_EXCHANGE`、`CANCELED -> CANCELED`；Normalizer may create typed `OrderEvent` candidate，但不得直接调用 `OMSService.apply_order_event(...)`，除非后续 Stage L implementation 明确包含 application service + UoW boundary。
+- Fill / Trade boundary：fill-like report fields 只是 execution-state facts，不是 Trade facts；Stage L 不创建 Trade ledger、不生成 Fill ledger、不更新 Position、不更新 Margin / PnL / Settlement、不生成 accounting facts。
+- Repository / future migration：future `ExecutionReportRepository`；`normalized_execution_reports` table required if Stage L persists reports；`raw_execution_reports` optional；methods 为 `append_normalized_report(report)`、`get_by_report_id(report_id)`、`list_by_order_id(order_id)`、`list_by_command_id(command_id)`；unique `report_id`；indexes `order_id`、`command_id`、`client_order_id`、`execution_status`、`report_ts`。
+- Replay / idempotency：`raw_report_id` per adapter unique if available；fallback key 为 `adapter_name + command_id + report_type + report_ts + cumulative_filled_qty`；`report_id` deterministic；same canonical -> duplicate / no-op；different canonical -> conflict / error；canonical excludes `raw_payload`、`received_at`、`normalized_at`、DB id；report replay consumes ordered `RawExecutionReport` and must not call OMS / Accounting / Trade generation。
+- Required future tests：Decimal-only raw report、deterministic `report_id`、`source_report_hash`、status mapping、duplicate same canonical、conflict different canonical、`raw_payload` excluded、replay deterministic、no `OMSService.apply_order_event(...)`、no Trade / Position / Accounting mutation、no Broker / CTP / SimNow dependency。
+- Explicit non-goals：Broker adapter、CTP / SimNow / live、Trade ledger generation、Fill ledger generation、Position update、Accounting update、OMS direct mutation unless separately scoped、Runtime scheduler、Kafka / FastAPI / Celery。
+- Acceptance criteria：契约文档明确 Source-of-truth、Raw / Normalized report、status mapping、OMS boundary、Fill / Trade boundary、repository / future migration、replay / idempotency、explicit non-goals；不产生 implementation / schema diff。
+- Suggested tag：`stage-l-execution-report-normalization-contract-freeze`。
 
 ### Stage M: Runtime / Infrastructure
 
