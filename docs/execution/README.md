@@ -1,10 +1,10 @@
 # 执行文档
 
-Phase 4.0 Exchange / Execution Contract Gate 已冻结执行契约。Phase 4.1 已实现 DTO、MappingContext、MappingResult、MappingError 和 pure ExchangeReport mapper；Execution Command/Report Runtime Layer 已实现本地 in-memory report surface、EMS command boundary、ConfigurableMockFuturesExchange skeleton 和 mapper wrapper。Stage A 已实现 ApplicationExecutionOrchestrator，负责 OMS pre-event、EMS command、report collection、handler mapping、MappingResult routing 和 `MAPPED_ORDER_EVENT` -> OMS apply。Stage K 已实现 Execution Gateway Core：OMS Order / `OrderState` -> deterministic `ExecutionCommand` -> typed `ExecutionCommandResult`。Stage K only supports `MOCK` target，不连接真实交易接口。Stage L 已实现 Execution Report Normalization Core：typed adapter report input -> deterministic `NormalizedExecutionReport` -> optional OMS `OrderEvent` candidate。
+Phase 4.0 Exchange / Execution Contract Gate 已冻结执行契约。Phase 4.1 已实现 DTO、MappingContext、MappingResult、MappingError 和 pure ExchangeReport mapper；Execution Command/Report Runtime Layer 已实现本地 in-memory report surface、EMS command boundary、ConfigurableMockFuturesExchange skeleton 和 mapper wrapper。Stage A 已实现 ApplicationExecutionOrchestrator，负责 OMS pre-event、EMS command、report collection、handler mapping、MappingResult routing 和 `MAPPED_ORDER_EVENT` -> OMS apply。Stage K 已实现 Execution Gateway Core：OMS Order / `OrderState` -> deterministic `ExecutionCommand` -> typed `ExecutionCommandResult`。Stage K only supports `MOCK` target，不连接真实交易接口。Stage L 已实现 Execution Report Normalization Core：typed adapter report input -> deterministic `NormalizedExecutionReport` -> optional OMS `OrderEvent` candidate。Stage L.2 已实现 OMS event application core：`OrderEventCandidate -> typed OrderEvent -> OMSService.apply_order_event(...)`。
 
 ## 文档入口
 
-- `EXECUTION_CONTRACT.md`：EMS、MockFuturesExchange command port、exchange report、OrderEvent 映射、Execution Gateway command、Execution Report Normalization 和执行回报语义。
+- `EXECUTION_CONTRACT.md`：EMS、MockFuturesExchange command port、exchange report、OrderEvent 映射、Execution Gateway command、Execution Report Normalization、Stage L.2 OMS Event Application 和执行回报语义。
 - `EXECUTION_TEST_MATRIX.md`：Execution 契约测试矩阵和后续阶段范围。
 
 Execution 只维护上述两份主文档。后续新增执行设计优先合并进这两份文档，不为 submit、cancel、fill、reject 等单独新增文档。
@@ -23,7 +23,10 @@ Execution 只维护上述两份主文档。后续新增执行设计优先合并�
 - Stage L 已实现 `RawExecutionReport`、`NormalizedExecutionReport`、`ExecutionReportStatus`、`ExecutionReportNormalizeResult`、`OrderEventCandidate`、normalized report -> OMS `OrderEvent` candidate mapping、`ExecutionReportRepository`、`normalized_execution_reports` migration、replay / idempotency 和边界。
 - Execution Report Normalizer 只能消费 `ExecutionCommand`、`ExecutionCommandResult`、typed adapter report input、adapter identity、command/order lineage 和 typed timestamp normalization rule。
 - Execution Report Normalizer 不得消费 `FeatureSnapshot`、`SignalDecision`、`TradingRiskResult`、`OrderIntent` mutation、Accounting / Position / Margin / PnL / Settlement、Broker state 或 `raw_payload` facts。
-- Normalizer may create typed `OrderEvent` candidate，但不得直接调用 `OMSService.apply_order_event(...)`。
+- Normalizer may create typed `OrderEvent` candidate for `ACKED` / `PARTIALLY_FILLED` / `FILLED` / `REJECTED` / `CANCELED`，但不得直接调用 `OMSService.apply_order_event(...)`。`SUBMITTED` / `ERROR` normally produce no candidate。
+- Stage L.2 只允许 application service 将 `OrderEventCandidate` 映射为 typed `OrderEvent` 后调用 `OMSService.apply_order_event(...)`，并只推进 OMS `OrderStatus`。
+- Stage L.2 已实现 `OMSEventApplicationService`、`OMSOrderEventApplier` / `OMSOrderEventLookup` Protocol、deterministic `event_id`、typed canonical precheck 和 dry-run default replay。Live apply requires explicit `allow_live_apply=True` and must pass canonical duplicate/conflict precheck before OMS apply。
+- Stage L.2 不生成 Trade，不生成 Fill ledger，不更新 Position / Accounting / Margin / PnL / Settlement，不调用 Broker，不进入 Runtime，不新增 schema。
 - Fill-like report fields are execution-state facts only；Stage L 不创建 Trade / Fill ledger，不更新 Position，不更新 Accounting。
 - 当前 `MockFuturesExchange` Protocol 只承载 submit / cancel command port，方法返回 `None`；report surface 通过独立 `ExecutionReportSink` 承载。
 - `ExecutionReportSink` 是当前 local / in-memory report surface，不是 Kafka / Redis / Celery，也不是生产事件总线；后续 runtime/infra event bus 必须另开 adapter。

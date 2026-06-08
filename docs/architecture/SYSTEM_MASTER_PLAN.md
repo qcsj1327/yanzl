@@ -67,9 +67,14 @@
   - Stage K only supports `MOCK` target；`PAPER` / `SIM` / `LIVE` typed rejected / deferred。
   - Stage K 不实现 Broker / Exchange / Fill / Trade / Accounting mutation / OMS mutation / ExecutionReport / OrderEvent。
 - Execution Report Normalization Core 已完成。
-  - 当前基线：`stage-k-execution-gateway-core / 94b498e`。
+  - 当前基线：`stage-l-execution-report-normalization-core / 37cad40`。
   - 已实现 `RawExecutionReport`、`NormalizedExecutionReport`、`ExecutionReportStatus`、`ExecutionReportNormalizeResult`、`OrderEventCandidate`、deterministic `source_report_hash` / `report_id`、explicit status mapping、candidate builder、`ExecutionReportRepository`、SQLAlchemy repository、UoW integration、`normalized_execution_reports` migration、`ExecutionReportNormalizer`、deterministic replay 和 tests。
   - Stage L may build typed `OrderEvent` candidate；仍不调用 `OMSService.apply_order_event(...)`，不生成 Trade / Fill ledger，不更新 Position / Accounting，不调用 Broker / CTP / SimNow。
+- OMS Event Application Core 已完成。
+  - 当前基线：`stage-l-execution-report-normalization-core / 37cad40`。
+  - 已实现 `OMSEventApplyResultStatus`、`OMSEventApplyResult`、`OMSEventApplyContext`、deterministic `event_id`、canonical payload、candidate -> typed `OrderEvent` mapper、`OMSOrderEventApplier` Protocol、`OMSEventApplicationService`、dry-run default replay 和 tests。
+  - Stage L.2 只推进 OMS `OrderStatus`；不生成 Trade，不生成 Fill ledger，不更新 Position / Accounting / Margin / PnL / Settlement，不调用 Broker，不进入 Runtime。
+  - Stage L.2 不新增 schema；OMS event ledger 继续使用现有 `order_events`。
 
 当前尚未实现为业务能力的部分：
 
@@ -556,6 +561,24 @@ Stage F contract freeze：
 - Acceptance criteria：typed adapter report input 可 deterministic normalized；duplicate same canonical no-op；different canonical conflict；candidate-only OMS boundary；no Trade / Fill / Position / Accounting / Broker side effects。
 - Suggested tag：`stage-l-execution-report-normalization-core`。
 
+### Stage L.2: OMS Event Application Core
+
+- Goal：实现 `OrderEventCandidate -> OMS.apply_order_event` 应用契约；只推进 OMS `OrderStatus`，不进入成交、会计、broker 或 runtime。
+- Baseline：`stage-l-execution-report-normalization-core / 37cad40`；Stage L 已能从 `NormalizedExecutionReport` deterministic 构造 optional `OrderEventCandidate`，但不调用 OMS。
+- Implemented changes：`OMSEventApplyResultStatus`、`OMSEventApplyResult`、`OMSEventApplyContext`、deterministic `event_id`、canonical payload、candidate -> typed `OrderEvent` mapper、`OMSOrderEventApplier` Protocol、`OMSOrderEventLookup` read-only Protocol、`OMSEventApplicationService`、dry-run default `replay_oms_order_events`、unit / boundary tests 和 docs update。
+- Source-of-truth flow：`NormalizedExecutionReport -> OrderEventCandidate -> typed OrderEvent -> OMSService.apply_order_event(...) -> OMS OrderState transition`。
+- Allowed inputs：`NormalizedExecutionReport`、`OrderEventCandidate`、current OMS `OrderState`、typed application context。
+- Forbidden inputs：`FeatureSnapshot`、`SignalDecision`、`TradingRiskResult`、`OrderIntent` mutation、`raw_payload` facts、Broker state、Accounting tables、Position tables、Margin / PnL / Settlement。
+- Event identity：`event_id` deterministic from `report_id + order_id + execution_status + cumulative_filled_qty + report_ts`。禁止 UUID、timestamp-now 或 DB id。
+- Candidate mapping：Stage L normalizer normally emits candidates only for `ACKED`、`PARTIALLY_FILLED`、`FILLED`、`REJECTED` 和 `CANCELED`。Stage L.2 defensively maps manually supplied `SUBMITTED -> NO_OP` and `ERROR -> REJECTED_NO_EVENT` without calling OMS。
+- OMS boundary：只有 Stage L.2 application service may call `OMSService.apply_order_event(...)`。不得调用 `OMSService.create_order(...)`、Execution adapter、Broker、Accounting、PositionManager 或 TradeRepository。
+- Idempotency：same candidate -> same `OrderEvent` -> same OMS transition / no-op；before live OMS apply, Stage L.2 performs deterministic event-key lookup and typed canonical precheck；existing same canonical -> `DUPLICATE` / no-op；different candidate same `event_id` or missing existing typed canonical -> `CONFLICT` before OMS apply；terminal order protection remains owned by OMS state machine。
+- Replay：same normalized report -> same candidate -> same `OrderEvent`。Replay may call OMS only in explicit OMS replay mode；default review recommendation is dry-run first，live apply requires explicit flag。Live replay must complete full batch canonical preflight before any OMS apply；batch conflict returns `CONFLICT` and performs no OMS apply。
+- Repository decision：Stage L.2 不新增 table，不新增 migration；复用现有 `order_events` 作为 OMS event ledger。如果后续需要额外 audit，必须另开 contract amendment。
+- Explicit non-goals：No Trade ledger，No Fill ledger，No Position update，No Margin / PnL / Settlement update，No Broker / CTP / SimNow，No Runtime / Kafka / Celery / FastAPI。
+- Acceptance criteria：application boundary 能 deterministic 把 mappable candidate 应用到 OMS；no-op status 不调用 OMS；duplicate same candidate no-op；same `event_id` different payload typed conflict；所有非 OMS 状态副作用均出界。
+- Suggested tag：`stage-l2-oms-event-application-core`。
+
 ### Stage M: Runtime / Infrastructure
 
 - Goal：通过 port/adapter 引入 runtime/control plane/event bus/task system。
@@ -621,7 +644,8 @@ Trading Workflow / Execution Gateway / Recovery / Runtime / Broker / Production 
 Stage I + Stage C + Stage D + Stage F -> Stage J
 Stage J.2 -> Stage K
 Stage K -> Stage L
-Stage L -> Stage M
+Stage L -> Stage L.2
+Stage L.2 -> Stage M
 Stage M -> Stage N
 Stage N -> Stage O
 Stage O -> Stage P
@@ -634,6 +658,8 @@ Stage O -> Stage P
 - Stage J 实现 Trading Workflow Core，只到 SignalDecision -> TradingRiskResult -> OrderIntent persistence；不改 OMS state machine，不接 Execution，不进入 Broker/Runtime。
 - Stage J.2 实现 OMS Bridge Core，只到 `OrderIntent -> OMS.create_order`；不接 Execution / Broker。
 - Stage K 实现 Execution Gateway command boundary，只消费 OMS Order / `OrderState` 和 typed execution config，只输出 `ExecutionCommand` / `ExecutionCommandResult`，只支持 `MOCK` target，不提交真实 broker。
+- Stage L 实现 Execution Report Normalization Core，只生成 persisted `NormalizedExecutionReport` 和 optional `OrderEventCandidate`，不调用 OMS。
+- Stage L.2 冻结 OMS event application contract，只允许 application service 将 `OrderEventCandidate` 映射为 typed `OrderEvent` 后调用 `OMSService.apply_order_event(...)`，并只推进 OMS OrderStatus。
 - Risk Context / Portfolio Risk Upgrade 依赖 Position、Margin、Accounting、Market Data、FeatureSnapshot、Strategy / Signal，不应提前硬接 broker state 或 raw payload。
 - Recovery / Replay 依赖订单、执行命令、成交、持仓、结算、行情、Strategy / Signal 和 Trading Workflow 语义。
 - Broker / Adapter 必须在 Execution Gateway、Recovery / Replay 和 Runtime 边界稳定后进入。
@@ -816,21 +842,21 @@ FastAPI、Celery、Kafka、Redis、async runtime、cloud、KMS 是后续 Runtime
 
 本总方案没有发现 P0/P1 blocker。
 
-下一步不是进入 Broker / Runtime，而是先做：
+下一步不是进入 Broker / Runtime，而是先完成：
 
 ```text
-Stage K Execution Gateway acceptance review / Stage L planning
+Stage L.2 OMS Event Application P1 forward fix acceptance
 ```
 
-Stage K acceptance review 前必须确认：
+Stage L.2 acceptance review 前必须确认：
 
-- Stage J `TradingWorkflowService` 只生成并持久化 `TradingRiskResult` / `OrderIntent`。
-- Stage J replay 不调用 OMS / Execution / Accounting。
-- Stage J 没有写 `orders` / `order_events`。
-- Stage J.2 OMS Bridge Core 已实现 `OrderIntent -> OMS.create_order` bridge，V1 不新增 bridge table / migration。
+- Stage L 已持久化 `NormalizedExecutionReport` 并可 deterministic 构造 `OrderEventCandidate`。
+- Stage L normalizer 仍不调用 `OMSService.apply_order_event(...)`。
+- Stage L.2 不新增 table / migration，复用 OMS `order_events` ledger。
+- Stage L.2 只推进 OMS OrderStatus，不生成 Trade / Fill，不更新 Position / Accounting。
 
-Stage K acceptance review 通过后：
+Stage L.2 acceptance review 通过后：
 
-- Stage L Execution Report Normalization Core 已完成后，可进入 normalized report -> OMS apply bridge planning。
-- 后续 replay 仍必须保持 no OMS apply / no Accounting / no Trade generation 边界，除非另开明确 scope。
+- 后续可进入 normalized report -> OMS apply integration review，确认 live apply flag、idempotency 和 OMS terminal protection 行为。
+- Replay 必须继续默认 dry-run；只有显式 live apply flag 才允许调用 OMS。
 - 不应直接跳到 broker adapter 或 runtime infrastructure。

@@ -28,6 +28,7 @@ from futures_mvp.domain.enums import (
     MarketDataResultStatus,
     Offset,
     OMSBridgeResultStatus,
+    OMSEventApplyResultStatus,
     OrderStatus,
     OrderType,
     PnLPriceBasis,
@@ -132,6 +133,12 @@ class OrderEvent(DomainModel):
     new_status: OrderStatus
     event_source: EventSource
     external_event_id: str
+    execution_status: ExecutionReportStatus | None = None
+    report_id: str | None = None
+    report_ts: datetime | None = None
+    filled_qty: Decimal | None = None
+    fill_price: Decimal | None = None
+    cumulative_filled_qty: Decimal | None = None
     raw_payload: dict[str, Any]
     occurred_at: datetime
 
@@ -1459,12 +1466,40 @@ class OrderEventCandidate(DomainModel):
     event_source: EventSource = EventSource.EXCHANGE
     external_event_id: str
     occurred_at: datetime
+    execution_status: ExecutionReportStatus | None = None
+    command_id: str | None = None
+    client_order_id: str | None = None
+    adapter_order_ref: str | None = None
+    exchange_order_id: str | None = None
+    filled_qty: Decimal | None = None
+    fill_price: Decimal | None = None
+    cumulative_filled_qty: Decimal | None = None
     raw_payload: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("normalized_report_id", "order_id", "external_event_id")
     @classmethod
     def _required_identity(cls, value: str, info: Any) -> str:
         return require_non_empty_string(value, field_name=info.field_name)
+
+    @field_validator("filled_qty", "fill_price", "cumulative_filled_qty", mode="before")
+    @classmethod
+    def _decimal_only(cls, value: Any) -> Decimal | None:
+        if value is None:
+            return None
+        return require_decimal(value)
+
+    @model_validator(mode="after")
+    def _valid_order_event_candidate(self) -> "OrderEventCandidate":
+        if self.filled_qty is not None:
+            require_non_negative_decimal(self.filled_qty, field_name="filled_qty")
+        if self.cumulative_filled_qty is not None:
+            require_non_negative_decimal(
+                self.cumulative_filled_qty,
+                field_name="cumulative_filled_qty",
+            )
+        if self.fill_price is not None:
+            require_positive_decimal(self.fill_price, field_name="fill_price")
+        return self
 
     def to_order_event(self, previous_status: OrderStatus | None = None) -> OrderEvent:
         return OrderEvent(
@@ -1476,6 +1511,32 @@ class OrderEventCandidate(DomainModel):
             raw_payload=self.raw_payload,
             occurred_at=self.occurred_at,
         )
+
+
+class OMSEventApplyContext(DomainModel):
+    order_event_candidate: OrderEventCandidate
+    current_order_state: OrderState
+    allow_live_apply: bool = False
+    application_id: str | None = None
+    source: str | None = None
+
+
+class OMSEventApplyResult(DomainModel):
+    status: OMSEventApplyResultStatus
+    candidate: OrderEventCandidate
+    order_event: OrderEvent | None = None
+    order_state: OrderState | None = None
+    event_id: str | None = None
+    reason: str | None = None
+    dry_run: bool
+
+    @model_validator(mode="after")
+    def _valid_oms_event_apply_result(self) -> "OMSEventApplyResult":
+        if self.status is OMSEventApplyResultStatus.DRY_RUN and self.order_event is None:
+            raise ValueError("DRY_RUN OMSEventApplyResult requires order_event")
+        if self.status is OMSEventApplyResultStatus.APPLIED and self.order_state is None:
+            raise ValueError("APPLIED OMSEventApplyResult requires order_state")
+        return self
 
 
 class ExecutionReportNormalizeResult(DomainModel):

@@ -43,6 +43,7 @@ class EventSource(StrEnum):
     OMS = "OMS"
     EMS = "EMS"
     EXCHANGE = "EXCHANGE"
+    EXECUTION_REPORT_NORMALIZER = "execution_report_normalizer"
     SETTLEMENT = "SETTLEMENT"
     SYSTEM = "SYSTEM"
 
@@ -277,6 +278,17 @@ class ExecutionReportNormalizeResultStatus(StrEnum):
     DUPLICATE = "DUPLICATE"
     CONFLICT = "CONFLICT"
     REJECTED_INVALID_REPORT = "REJECTED_INVALID_REPORT"
+    ERROR = "ERROR"
+
+
+class OMSEventApplyResultStatus(StrEnum):
+    APPLIED = "APPLIED"
+    DRY_RUN = "DRY_RUN"
+    NO_OP = "NO_OP"
+    DUPLICATE = "DUPLICATE"
+    CONFLICT = "CONFLICT"
+    REJECTED_INVALID_CANDIDATE = "REJECTED_INVALID_CANDIDATE"
+    REJECTED_NO_EVENT = "REJECTED_NO_EVENT"
     ERROR = "ERROR"
 
 
