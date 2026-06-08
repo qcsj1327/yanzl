@@ -3542,7 +3542,7 @@ Stage L.5 explicit non-goals：
 
 Stage M freezes the Runtime / Infrastructure contract on baseline `stage-l5-position-to-accounting-handoff / 3f1c5a6`。
 
-Stage M is docs-only. It does not change Domain models, schema, `src`, or tests.
+Stage M now includes a thin Runtime / Infrastructure implementation. It does not change Domain models, business schema or business service ownership.
 
 Runtime is an orchestration layer. It owns process lifecycle, dependency wiring, scheduler triggers, replay orchestration, health/readiness reporting, retry envelopes, locks, metrics and structured logs. It does not own business facts.
 
@@ -3648,7 +3648,9 @@ Replay orchestration contract：
 - Runtime coordinates replay order, batch size, dry-run/live-apply flags and reporting。
 - Runtime must call each stage's replay/application boundary。
 - Runtime default is dry-run / preview where supported。
+- Disabled replay is an explicit no-op and must not call stage replay/application boundaries。
 - Live apply requires explicit operator intent and preflight conflict checks。
+- Live apply is a hard per-stage allowlist：non-allowlisted stages remain dry-run regardless of global replay defaults。
 - Conflict or divergence stops dependent downstream replay unless a separately frozen recovery contract allows continuation。
 - Runtime replay must not mutate OMS, Trade ledger, Position, Margin, PnL, Settlement or AccountSnapshot directly。
 
@@ -3721,6 +3723,67 @@ Stage M implementation recommendation：
 - Add replay orchestration as dry-run first。
 - Add no business tables in Stage M。
 - Test Runtime with stubbed application services and explicit assertions that Runtime does not mutate Position / Margin / PnL / Settlement / OMS state directly。
+
+### Stage M implemented facts
+
+Stage M has implemented a thin Runtime / Infrastructure package at `src/futures_mvp/modules/runtime`。
+
+Implemented runtime objects：
+
+- `RuntimeConfig`。
+- `SchedulerConfig`。
+- `ReplayConfig`。
+- `RuntimeHealthStatus` with `READY`、`DEGRADED` and `FAILED`。
+- `RuntimeHealthCheck` and `RuntimeHealthReport`。
+- `RuntimeServiceGraphBuilder` and `RuntimeServiceGraph`。
+- `RuntimeLifecycleManager`。
+- `RuntimeScheduler` Protocol, `DisabledRuntimeScheduler` and `ApplicationServiceScheduler`。
+- `RuntimeReplayCoordinator`、`ReplayStage`、`ReplayResult` and `ReplayStatus`。
+
+Implemented defaults：
+
+- scheduler disabled by default。
+- replay dry-run by default。
+- live apply stages empty by default。
+- Runtime config rejects invalid timeout, enabled scheduler without jobs, live replay without explicit live stages, and mismatched top-level/nested enable flags。
+- Disabled replay is a typed no-op and does not call stage callables。
+
+Implemented service graph boundary：
+
+- Service graph contains slots for MarketDataService、FeatureService、StrategyService、SignalLifecycleService、TradingWorkflowService、OMSBridgeService、OMSService、ExecutionGatewayService、ExecutionReportNormalizer、OMSEventApplicationService、OMSToTradeBridgeService、PositionManager、MarginEngine、PnLEngine and SettlementEngine。
+- Service graph requires an injected `RiskEvaluator` and `TradeRepository`; Runtime does not synthesize risk decisions or trade facts。
+- Service graph wiring may import DB/UoW and concrete service constructors, but business services do not import Runtime。
+
+Implemented scheduler boundary：
+
+- Disabled scheduler is no-op。
+- Enabled scheduler calls injected `RuntimeJob` application callables only。
+- Scheduler module does not import DB or repository protocols。
+
+Implemented replay boundary：
+
+- Replay coordinator stage order is frozen as Market、Feature、Strategy、Workflow、OMS Bridge、Execution Gateway、Execution Reports、OMS Event Application、OMS-to-Trade、Position、Margin、PnL、Settlement。
+- Replay coordinator executes wired stages in frozen order, skips missing stages explicitly and rejects unknown stages before execution。
+- Replay coordinator calls injected stage callables and does not copy stage replay logic。
+- `stop_on_conflict=True` skips downstream stages after conflict / error。
+- Allowed live apply is a hard per-stage gate；non-allowlisted stages remain dry-run。
+
+Implemented health boundary：
+
+- DB check failure returns `FAILED`。
+- Scheduler construction/policy failure returns `FAILED`。
+- Lifecycle validates service graph presence and required service slots before readiness。
+- Scheduler starts only after graph validation and health precheck pass。
+- Replay conflict returns `DEGRADED`。
+- Redis remains optional in Stage M。
+- Health checks are read-only and do not repair business state。
+
+Stage M schema decision：
+
+- No schema migration。
+- No Alembic revision。
+- No business fact table。
+- Any future runtime task audit table must be frozen as a separate infrastructure-only contract before migration。
 
 ### feature_snapshots
 

@@ -776,14 +776,14 @@ Stage L.5 explicit non-goals：
 - order / event / trade mutation。
 - strategy / risk recomputation。
 
-### Stage M: Runtime / Infrastructure
+### Stage M: Runtime / Infrastructure Core
 
 - Goal：冻结 Runtime / Infrastructure process lifecycle、startup / shutdown、dependency wiring、scheduler、replay orchestration、health、failure recovery、service ownership 和 source-of-truth boundary。
 - Baseline：`stage-l5-position-to-accounting-handoff / 3f1c5a6`；Strategy -> OMS OrderState、OMS State -> Trade Fact、Trade -> Position、Position -> Accounting 均已闭合。
 - Inputs：已冻结的 Application Services、repositories/UoW ports、typed config、typed replay inputs、health dependency checks。
-- Outputs：Runtime dependency graph、startup order、shutdown order、replay order、health model、failure model、service ownership、Stage M implementation recommendation。
-- Allowed changes：只改文档；冻结 runtime / infra contract。
-- Forbidden changes：不写代码；不改 schema；不改 `src` / `tests`；不让 Runtime 改 Position / Margin / PnL / Settlement / OMS state；不把 Kafka / Redis / scheduler payload 当作业务事实。
+- Outputs：Runtime dependency graph、startup order、shutdown order、replay order、health model、failure model、service ownership、thin Runtime implementation。
+- Allowed changes：Runtime package、runtime unit tests and docs updates only。
+- Forbidden changes：不改 schema；不改 business domain fields；不改 OMS / Trade / Position / Accounting services；不让 Runtime 改 Position / Margin / PnL / Settlement / OMS state；不把 Kafka / Redis / scheduler payload 当作业务事实。
 - Acceptance criteria：Runtime 只编排 Market、Feature、Strategy、Workflow、OMS、Execution、Trade、Position、Accounting 应用服务；Runtime 不拥有业务事实；Runtime 只调用应用服务，不直接调用 repository mutation 或 domain engine mutation。
 - Suggested tag：`stage-m-runtime-infrastructure-contract-freeze`。
 
@@ -882,6 +882,8 @@ Replay orchestration rules：
 - Runtime must call each stage's existing replay/application boundary。
 - Runtime must not directly mutate OMS state, Trade ledger, Position, Margin, PnL, Settlement or AccountSnapshot。
 - Replay default is dry-run / preview where a stage supports it；live apply requires explicit operator intent and preflight conflict check。
+- Disabled replay is an explicit no-op。
+- Live apply is a hard per-stage allowlist；non-allowlisted stages remain dry-run regardless of global replay defaults。
 - Any conflict / divergence stops the dependent downstream replay segment unless an explicit recovery contract says otherwise。
 
 Health model：
@@ -951,6 +953,21 @@ Stage M implementation recommendation：
 - Add replay orchestrator as dry-run first, with explicit live-apply flags per stage。
 - Add no business tables in Stage M；if runtime task audit is later needed, freeze a separate infrastructure-only contract before migration。
 - Validate with tests that monkeypatch application services and assert Runtime never imports repository implementations for direct mutation and never mutates Position / Margin / PnL / Settlement / OMS state directly。
+
+Stage M current implementation facts：
+
+- Implemented package：`src/futures_mvp/modules/runtime`。
+- Implemented config objects：`RuntimeConfig`、`SchedulerConfig`、`ReplayConfig` and `RuntimeConfigError`。
+- Scheduler is disabled by default. Enabled scheduler requires explicit job names and only calls injected application service callables。
+- Replay is dry-run by default. `RuntimeReplayCoordinator` fixes stage order as Market -> Feature -> Strategy -> Workflow -> OMS Bridge -> Execution Gateway -> Execution Reports -> OMS Event Application -> OMS-to-Trade -> Position -> Margin -> PnL -> Settlement。
+- Disabled replay is a typed no-op and calls no stage callable。
+- Live replay apply is not global；it is a hard gate allowed only for explicitly listed replay stages。
+- Replay conflict / divergence is represented as coordinator conflict and should degrade health; Runtime does not auto-repair business facts。
+- Health model is implemented as `RuntimeHealthStatus.READY / DEGRADED / FAILED` with `RuntimeHealthChecker` and typed check/report objects。
+- Service graph builder wires current application service slots and requires external `RiskEvaluator` and `TradeRepository` dependencies instead of inventing business logic。
+- Lifecycle manager validates service graph before readiness, starts scheduler only after health precheck passes and stops scheduler before DB close hooks。
+- Runtime tests live under `tests/unit/runtime` and include config、health、service graph、lifecycle、scheduler、replay and boundary guards。
+- Stage M adds no Alembic migration, no schema, no business domain fields, no Broker / CTP / SimNow / live adapter, and no FastAPI / Celery / Kafka hard dependency。
 
 ### Stage N: Broker / Adapter Layer
 
