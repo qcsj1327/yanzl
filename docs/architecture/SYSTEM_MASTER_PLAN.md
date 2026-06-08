@@ -90,14 +90,16 @@
   - 当前基线：`stage-l5-position-to-accounting-handoff / 3f1c5a6`。
   - Stage L.5 已实现 `Trade-applied Position / PositionEvent -> Accounting input snapshot -> MarginEngine / PnLEngine -> MarginSnapshot / PnLSnapshot -> SettlementEngine later` 最小闭环。
   - Stage L.5 新增 migration `0015_stage_l5_position_to_accounting.py`，只扩展 `margin_snapshots` / `pnl_snapshots`；不进入 Broker / Runtime / live。
-  - Stage M 仍保留 Runtime / Infrastructure，不占用。
+- Stage M Runtime / Infrastructure Core 已完成。
+  - 当前基线：`stage-m-runtime-infrastructure-core / b443249`。
+  - Stage M 已实现 thin Runtime / Infrastructure package、runtime config、service graph、lifecycle、disabled-by-default scheduler、dry-run replay coordinator、read-only health checks 和 boundary tests。
+  - Stage M 未实现 Broker / CTP / SimNow / live adapter，不新增 schema，不改变 business source-of-truth。
 
 当前尚未实现为业务能力的部分：
 
 - Application Execution Orchestrator。
 - RiskContext、portfolio/account risk、intraday limits、kill switch risk。
 - Recovery / Replay Framework。
-- FastAPI / Celery / Kafka / Runtime control plane。
 - CTP / SimNow / live broker adapter。
 - Production operations、monitoring、audit、kill switch、deployment gates 和 runbook。
 
@@ -971,14 +973,129 @@ Stage M current implementation facts：
 
 ### Stage N: Broker / Adapter Layer
 
-- Goal：接入 CTP / SimNow / broker adapter。
-- Inputs：runtime ports、replay/reconciliation、orchestrator、Trading Workflow Core、Fill/Trade migration。
-- Outputs：broker command/query/report adapter、heartbeat/reconnect/session manager、typed query result。
-- Allowed changes：adapter module、broker config/secrets requirements、sim tests、query reconciliation tests。
-- Forbidden changes：adapter 不调用 OMS/Risk/DB，不改 mapper 语义，不用 raw broker message 补事实。
-- Required tests：connect/login/logout、heartbeat、submit/cancel, pre-send failure, post-send uncertain, reconnect, query order/trade/account/position, SimNow dry-run。
-- Acceptance criteria：SimNow 可对账；live command port 默认不启用；query reconciliation 进入 replay/recovery。
-- Suggested tag：`stage-n-broker-adapter-layer`。
+- Goal：冻结 Broker / Adapter Layer contract；只定义 adapter command/report/query、identity、canonical、replay/idempotency、failure recovery、Runtime interaction 和 OMS ownership boundary。
+- Baseline：`stage-m-runtime-infrastructure-core / b443249`；Runtime 已能 wire application services、scheduler disabled by default、replay dry-run by default，但没有 Broker / CTP / SimNow / live adapter。
+- Inputs：`ExecutionCommand`、typed broker config / secrets handle、Runtime service graph、adapter session context、external broker command acknowledgements、external broker order/trade/account/position query records。
+- Outputs：typed broker command result、typed `RawExecutionReport` input for Stage L normalizer、typed broker query snapshots for reconciliation/recovery、adapter health/session status、redacted diagnostics。
+- Allowed changes for this freeze：只改文档；冻结 dependency graph、adapter boundary、OMS ownership rules、replay contract 和 implementation recommendation。
+- Forbidden changes for this freeze：不写代码；不改 schema；不新增 Alembic；不新增 broker table；不改变 OMS / Execution / Trade / Position / Accounting contracts。
+- Suggested tag：`stage-n-broker-adapter-contract-freeze`。
+
+Stage N dependency graph：
+
+```text
+Runtime Process / Scheduler
+-> Broker Adapter Port
+-> Broker Session Manager
+-> Broker Command Adapter
+-> External Broker / SimNow / CTP
+-> Broker Report Adapter
+-> RawExecutionReport typed input
+-> ExecutionReportNormalizer
+-> OMSEventApplicationService
+-> TradeBridgeService
+-> PositionManager
+-> Accounting application service
+
+Broker Query Adapter
+-> typed Order / Trade / Account / Position query snapshots
+-> Reconciliation / Recovery report
+-> existing replay / application boundaries
+```
+
+Stage N adapter boundary：
+
+- Adapter owns broker connectivity：connect、login、logout、heartbeat、reconnect、session state、command transport、report subscription / polling、query transport and redacted diagnostics。
+- Adapter consumes persisted `ExecutionCommand` and typed broker config only；it must not consume Strategy、Risk、OrderIntent、OMS internals、Accounting tables or `raw_payload` facts。
+- Adapter returns typed command result and typed report/query records；raw broker message is diagnostic-only and must be redacted before logs / metrics。
+- Adapter must not call `OMSService`、`RiskEngine`、`TradeRepository`、`PositionManager`、Margin / PnL / Settlement services or repository mutation methods。
+- Adapter accepted / broker transport accepted is not exchange accepted；exchange/order/fill truth still enters through Stage L typed report normalization and later OMS / Trade / Position / Accounting boundaries。
+
+OMS ownership rules：
+
+- OMS remains the only owner of `orders.status/version` and `order_events`。
+- Broker report must become typed `RawExecutionReport` / `NormalizedExecutionReport` before any OMS event candidate exists。
+- Only `OMSEventApplicationService` may route a candidate into `OMSService.apply_order_event(...)` under its existing dry-run/live-apply gates。
+- Broker query result must not overwrite OMS status。Query mismatch creates typed reconciliation / recovery evidence, then recovery must use existing OMS recovery / replay path。
+- Adapter, Runtime and reconciliation code must not patch `orders` or append `order_events` directly。
+
+Stage N broker source-of-truth：
+
+- Broker is source-of-truth only for external broker-observed facts before they enter the local typed pipeline：external order id / order ref、exchange order status、exchange trade id、fill price / quantity、broker account snapshot、broker position snapshot and broker timestamps。
+- Local system source-of-truth remains the persisted business ledgers after typed ingestion：`execution_commands`、`normalized_execution_reports`、`orders` / `order_events`、`trades`、`positions` / `position_events`、accounting snapshots。
+- Broker query data is reconciliation evidence, not direct local truth。It can prove recovery inputs only after typed normalization and explicit recovery contract handling。
+- `raw_payload` / raw broker message never carries hidden source-of-truth fields; all business fields needed downstream must be first-class typed fields.
+
+Stage N broker command contract：
+
+- Submit / cancel commands originate from existing `ExecutionCommand` only。
+- Command identity remains `ExecutionCommand.command_id`; adapter may add broker lineage such as `adapter_name`、`adapter_instance_id`、`session_id` and `adapter_order_ref` for audit only。
+- Adapter must preserve `order_id`、`client_order_id`、`account_id`、instrument identity、side、offset、quantity、price、order_type、tif、command_type and execution target exactly as typed command input。
+- Same `command_id` + same canonical broker command is duplicate / no-op or idempotent retry。
+- Same `command_id` + different canonical broker command is conflict before broker send。
+- Pre-send failure returns typed adapter failure and does not imply broker accepted。
+- Post-send uncertain must not blindly resend as a new order；it must query/recover through broker order query and existing replay/recovery boundaries。
+
+Stage N broker report contract：
+
+- Broker order / trade notifications must be converted to typed `RawExecutionReport` before Stage L normalizer。
+- Required report lineage includes adapter identity、execution target、`command_id` when known、`order_id` / `client_order_id` when known、`adapter_order_ref`、`exchange_order_id | None`、broker status、filled quantity、fill price when applicable、cumulative filled quantity、remaining quantity、report timestamp and diagnostic-only raw payload。
+- If `command_id` or OMS lineage is missing, adapter may emit typed unresolved report evidence for reconciliation, but it must not invent local order identity。
+- Report timestamp units and timezone must be normalized before domain entry where possible。
+- Decimal quantities/prices are mandatory；float facts are forbidden。
+
+Stage N adapter identity and canonical payload：
+
+- Adapter identity includes `adapter_name`、`execution_target`、`broker_environment`、`account_id`、`adapter_instance_id` and optional `session_id`。
+- `session_id` and `runtime_id` are lineage / audit only and must not participate in deterministic business identity。
+- Broker command canonical payload includes `command_id`、OMS lineage、account/instrument identity、side、offset、quantity、price、order_type、tif、command_type、execution target、adapter name and broker environment。
+- Broker report canonical payload includes adapter identity、broker report identity or deterministic fallback key、OMS/command lineage when known、exchange order/trade identity、typed status、Decimal fill fields and normalized broker report timestamp。
+- Canonical payload excludes raw broker message、logs、metrics、received_at、runtime_id、session_id、DB id and secrets。
+
+Stage N replay contract：
+
+- Broker command replay defaults to dry-run and must not send to broker unless an explicit live-send gate is enabled for the adapter and command type。
+- Report replay consumes typed captured report/query evidence and re-enters Stage L normalizer / existing downstream replay order；it must not call OMS / Trade / Position / Accounting directly。
+- Same command/report canonical -> duplicate / no-op；same identity + different canonical -> conflict and stop dependent downstream replay。
+- Reconnect replay must query broker state first for post-send uncertain commands; it must not generate a second submit command for the same OMS order / target。
+- Query reconciliation is evidence-to-recovery, not direct table mutation。
+
+Stage N failure recovery：
+
+- Pre-send adapter failure：return typed failure, keep OMS recovery through existing command/report path, no broker state assumed。
+- Post-send uncertain：mark adapter result uncertain, stop blind retry, query broker by adapter order ref / exchange order id / client order id, then emit typed report or reconciliation evidence。
+- Disconnect/reconnect：re-login, resubscribe reports, query open orders/trades since last known typed checkpoint, feed typed reports into normalization/replay。
+- Duplicate broker callback：same canonical no-op; different canonical conflict。
+- Missing lineage：quarantine as unresolved typed evidence; do not mutate OMS or create Trade until lineage is proven。
+- Secret/config failure：fail closed and mark Runtime readiness false; never log secret values or put them into `raw_payload`。
+
+Stage N Runtime interaction：
+
+- Runtime wires adapter ports and session lifecycle, but Runtime still owns only process lifecycle, scheduling, health, locks and transport envelope。
+- Scheduler may trigger adapter commands only through the existing Execution Gateway / adapter port boundary。
+- Runtime health may report broker connectivity/session state, but health probes must not repair business state。
+- Runtime readiness must be false when required broker session/config is unavailable for enabled live/paper/sim command flow。
+- Live command flow is disabled by default; paper/sim/live enablement requires explicit config, explicit adapter target, readiness checks and later Operations gates。
+
+Stage N explicit non-goals：
+
+- No code implementation in this freeze。
+- No schema migration or broker ledger table。
+- No OMS state-machine change。
+- No direct Trade / Position / Accounting mutation。
+- No broker reconciliation auto-overwrite。
+- No portfolio risk upgrade。
+- No kill switch risk rule implementation。
+- No production rollout or live enablement。
+- No FastAPI / Celery / Kafka hard dependency。
+
+Stage N implementation recommendation：
+
+- Implement first as a port-driven adapter package with a deterministic fake / SimNow-like adapter before any live CTP integration。
+- Keep command send, report normalization input and query reconciliation as three separate adapter surfaces。
+- Persist no new broker facts until a separate schema contract is frozen; reuse existing `execution_commands` and `normalized_execution_reports` for business pipeline facts。
+- Add boundary tests for no OMS/Risk/DB mutation, command canonical conflicts, post-send uncertain recovery, report Decimal normalization, duplicate callbacks and query mismatch evidence。
+- Keep live target disabled by default and require Runtime readiness plus future Stage O safety gates before real submit/cancel can be enabled。
 
 ### Stage O: Operations / Safety / Production Readiness
 
@@ -1045,7 +1162,7 @@ Stage O -> Stage P
 - Stage L.3 实现 OMS-to-Trade Bridge core，只允许已成交 normalized report 加已应用 OMS proof 创建 typed Trade fact 并持久化到 existing `TradeRepository`；不更新 Position / Accounting，不进入 Runtime。
 - Risk Context / Portfolio Risk Upgrade 依赖 Position、Margin、Accounting、Market Data、FeatureSnapshot、Strategy / Signal，不应提前硬接 broker state 或 raw payload。
 - Recovery / Replay 依赖订单、执行命令、成交、持仓、结算、行情、Strategy / Signal 和 Trading Workflow 语义。
-- Broker / Adapter 必须在 Execution Gateway、Recovery / Replay 和 Runtime 边界稳定后进入。
+- Broker / Adapter 必须在 Execution Gateway、Recovery / Replay 和 Runtime 边界稳定后进入；Stage N 只冻结 adapter 合约，不代表 live enablement。
 - Operations / Safety / Production Readiness 是 Paper / Sim / Live Rollout 的硬前置。
 - Broker / Adapter 完成后不得直接进入 rollout。
 - Stage P 必须依赖 Stage O 的 readiness、kill switch、monitoring、audit、deployment gate、runbook 和 DR 验收。
@@ -1062,7 +1179,8 @@ Stage O -> Stage P
 - 没有 Stage J，不把 SignalDecision 接入 Risk -> OrderIntent -> OMS workflow。
 - 没有 Stage J.2，不把 `OrderIntent` 转入 OMS Order。
 - 没有 Stage K，不生成 ExecutionCommand，不接 adapter dispatch。
-- 没有 Stage L，不接 broker query reconciliation。
+- 没有 Stage L，不接 broker report normalization。
+- 没有 Stage N，不接 broker query reconciliation。
 - 没有 Stage M/N/O，不进入 sim/live。
 - 没有 Stage O，不进入 Stage P。
 - Stage P 只能按 paper -> sim -> live 递进。
@@ -1225,24 +1343,24 @@ FastAPI、Celery、Kafka、Redis、async runtime、cloud、KMS 是后续 Runtime
 
 本总方案没有发现 P0/P1 blocker。
 
-下一步不是进入 Broker / Runtime，而是在 Stage L.5 冻结契约基础上审查并实现 Position -> Accounting handoff：
+下一步是在 `stage-m-runtime-infrastructure-core / b443249` 基线上执行 Stage N Broker / Adapter Layer Contract Freeze：
 
 ```text
-Stage L.5 Position -> Accounting handoff review / implementation
+Stage N Broker / Adapter Layer Contract Freeze
 ```
 
-Trade -> Position handoff 前必须确认：
+Stage N 只改文档，不写代码，不改 schema。冻结输出必须包括：
 
-- Stage L 已持久化 `NormalizedExecutionReport` 并可 deterministic 构造 `OrderEventCandidate`。
-- Stage L.2 已通过 OMS event application boundary 推进 OMS OrderStatus。
-- Stage L.3 已只消费 eligible filled report + applied OMS proof，不从 raw payload 或 broker state 补事实。
-- Stage L.3 已只生成 / 持久化 typed Trade fact，未调用 Position / Accounting。
-- Stage L.4 已实现 typed Trade -> PositionManager.apply_trade(...) -> PositionEvent / projection。
-- Stage L.5 已冻结 Trade-applied Position / PositionEvent -> Margin / PnL -> Settlement / AccountSnapshot 连接契约。
+- dependency graph。
+- adapter boundary。
+- OMS ownership rules。
+- replay contract。
+- implementation recommendation。
 
-Position -> Accounting handoff 必须保持：
+Stage N 必须保持：
 
-- Accounting 只消费 typed Position / PositionEvent / Trade / typed price / typed config。
-- MarginSnapshot / PnLSnapshot 必须绑定 account、instrument、position_version、trading_day 和 deterministic calculation identity。
-- Settlement 不允许按 instrument-only fallback 匹配 Margin / PnL。
-- 不应直接跳到 broker adapter 或 runtime infrastructure。
+- Broker / Adapter 不调用 OMS / Risk / DB mutation。
+- Broker query reconciliation 不静默覆盖本地事实。
+- Broker report 必须先进入 typed report normalization，再由现有 OMS / Trade / Position / Accounting 边界处理。
+- Runtime 只 wire adapter lifecycle / scheduling / health，不拥有业务事实。
+- Live submit/cancel 默认不启用；生产 rollout 仍依赖 Stage O / Stage P。
