@@ -81,11 +81,16 @@
   - 已新增 migration `0014_stage_l3_oms_to_trade_bridge.py`，只扩展 `trades` 和 `normalized_execution_reports` 的 L.3 typed lineage / identity / fee input 字段；未创建第二套 trade ledger。
   - 已实现 deterministic trade identity、`TradeBridgeResult`、OMS-to-Trade bridge service、replay、TradeRepository L.3 aliases 和 canonical conflict checks。
   - Stage L.3 不更新 Position / Margin / PnL / Settlement，不做 broker reconciliation，不进入 Runtime。
-- Stage L.4 Trade-to-Position Contract Freeze 已完成。
-  - 当前基线：`stage-l3-oms-to-trade-bridge-core / 957cf89`。
-  - Stage L.4 只冻结 `typed Trade fact -> Trade-to-Position application -> PositionManager.apply_trade(...) -> Position projection / PositionEvent` 应用契约。
-  - Stage L.4 不写代码、不改 schema、不改 `src` / `tests`；不实现 Margin / PnL / Settlement / AccountSnapshot / Runtime。
-  - 现有 Stage C `PositionManager`、`PositionRepository`、`PositionEventRepository` 和 `position_events` audit ledger 是后续实现复用边界。
+- Stage L.4 Trade-to-Position Handoff 已完成。
+  - 当前基线：`stage-l4-trade-to-position-handoff / 6c26cbd`。
+  - Stage L.4 已实现 `typed Trade fact -> PositionManager.apply_trade(...) -> Position projection / PositionEvent` handoff。
+  - Stage L.4 未新增 schema，未创建第二套 position ledger。
+  - Stage L.4 不更新 Margin / PnL / Settlement / AccountSnapshot，不进入 Broker / Runtime。
+- Stage L.5 Position-to-Accounting Contract Freeze 已完成。
+  - 当前基线：`stage-l4-trade-to-position-handoff / 6c26cbd`。
+  - Stage L.5 只冻结 `Trade-applied Position / PositionEvent -> Accounting input snapshot -> MarginEngine / PnLEngine -> MarginSnapshot / PnLSnapshot -> SettlementEngine later` 连接契约。
+  - Stage L.5 不写代码、不改 schema、不改 `src` / `tests`；不进入 Broker / Runtime / live。
+  - Stage M 仍保留 Runtime / Infrastructure，不占用。
 
 当前尚未实现为业务能力的部分：
 
@@ -692,6 +697,86 @@ Stage L.4 explicit non-goals：
 - trade correction / cancel flows，除非另开范围。
 - cross-account netting。
 
+### Stage L.5: Position-to-Accounting Contract Freeze
+
+- Goal：冻结 Trade-applied Position / PositionEvent 到 Margin / PnL / Settlement / AccountSnapshot 会计链的连接契约。
+- Baseline：`stage-l4-trade-to-position-handoff / 6c26cbd`；Strategy -> OMS OrderState、OMS State -> Trade Fact、Trade -> Position 均已闭环。
+- Inputs：typed Position / PositionEvent after Trade application、typed Trade facts if needed for realized PnL、typed MarketDataSnapshot / settlement price / last price input、typed account config / margin config / pnl config、TradingCalendar / trading_day。
+- Outputs：Accounting input snapshot、MarginSnapshot、PnLSnapshot、later SettlementSnapshot / AccountSnapshot through Settlement / Accounting service。
+- Allowed changes：只改文档；冻结 source-of-truth、ownership、gate、idempotency、replay、repository/schema 和 boundary。
+- Forbidden changes：不写代码；不改 schema；不改 `src` / `tests`；不修改 PositionManager；不实现 Runtime / Broker / live。
+- Required future tests：margin binds to position_version、pnl binds to position_version、settlement rejects margin/pnl mismatch、duplicate same accounting fact no-op、different canonical conflict、replay deterministic、missing price rejected、stale position version rejected、raw_payload excluded、no Position mutation by Margin/PnL、no OMS/Trade mutation by Accounting。
+- Acceptance criteria：会计链只从 typed Position / PositionEvent / Trade / typed price / typed config 形成 accounting facts；MarginSnapshot / PnLSnapshot 绑定 position_version 和 deterministic calculation identity；Settlement 不再按 instrument-only fallback 匹配；Stage M 仍保留 Runtime / Infrastructure。
+- Suggested tag：`stage-l5-position-to-accounting-contract-freeze`。
+
+Stage L.5 source-of-truth：
+
+- Allowed inputs：typed Position / PositionEvent after Trade application、typed Trade facts for realized PnL close input、typed MarketDataSnapshot / settlement price / last price input、typed account config / margin config / pnl config、trading_day / calendar context。
+- Forbidden inputs：`raw_payload` facts、Broker state、OMS `OrderState` directly、`NormalizedExecutionReport` directly、`OrderEventCandidate` directly、SignalDecision / Strategy output、Runtime scheduler、external account balance unless first represented as typed account snapshot input。
+- Position output from Stage L.4 becomes the accounting input; accounting facts must not be reconstructed from broker query, OMS state, execution reports, raw payload, or strategy/risk facts.
+
+Accounting ownership boundaries：
+
+- `PositionManager` owns position quantity projection and `PositionEvent` applied-trade audit。
+- `MarginEngine` owns margin calculation and `MarginSnapshot`。
+- `PnLEngine` owns realized / unrealized PnL calculation and `PnLSnapshot`。
+- `SettlementEngine` owns settlement finalization and `SettlementSnapshot`。
+- AccountSnapshot update may happen only through Settlement / Accounting service; `PositionManager` must not update AccountSnapshot directly。
+
+Stage L.5 required gate：
+
+- Margin / PnL calculation may run only if Position has stable `account_id` / `instrument_id`, known `position.version`, typed Decimal market / settlement price input, available `trading_day`, deterministic `config_hash` / `calculation_key`, and known source PositionEvent / Position version lineage。
+- Must reject：missing position identity、missing price、non-Decimal price、stale position version unless explicitly replaying against that historical version、raw_payload-only facts。
+
+Position -> Margin contract：
+
+- `MarginSnapshot` must bind to `account_id`、`instrument_id`、`position_version`、`trading_day`、deterministic `calculation_key` / config hash。
+- Same account + instrument + position_version + config + typed price input -> same margin fact。
+- Duplicate same canonical -> no-op / existing snapshot。
+- Same identity + different canonical -> conflict。
+- Stage L.5 does not allow direct Position qty / avg mutation by Margin. If an existing Stage D margin projection updates `positions.margin_used`, it must remain margin-only, snapshot-backed, and transactional.
+
+Position / Trade -> PnL contract：
+
+- `PnLSnapshot` must bind to `account_id`、`instrument_id`、`position_version`、`trading_day`、deterministic `calculation_key` / config hash。
+- Realized PnL source is typed Trade / PositionEvent close data only。
+- Unrealized PnL source is typed Position plus typed market / settlement price。
+- No raw report, broker state, OMS state, execution report, or raw payload may drive PnL。
+
+Margin / PnL -> Settlement contract：
+
+- `SettlementEngine` may consume `MarginSnapshot` + `PnLSnapshot` only when `account_id`、`instrument_id`、`position_version` and `trading_day` match exactly for the settled instrument / position lineage。
+- Mismatch returns typed reject / conflict。
+- No fallback by `instrument_id` alone is allowed; this preserves the Stage F fact-lineage P1 fix。
+- Settlement consumes existing accounting facts; it must not recompute Stage D margin or Stage E PnL.
+
+Stage L.5 idempotency / replay：
+
+- Same position_version + same config + same typed price input -> duplicate / no-op。
+- Same identity + different canonical -> conflict。
+- Replay ordered PositionEvents / Positions deterministically。
+- Replay must not call Broker / Runtime。
+- Replay must not mutate OMS / Trade ledger。
+
+Stage L.5 repository / schema decision：
+
+- Current MarginSnapshotRepository、PnLSnapshotRepository、SettlementSnapshotRepository、AccountSnapshotRepository and related tables already exist。
+- Existing schemas are partially sufficient：margin and PnL facts already carry `account_id`、`instrument_id`、`position_version` and deterministic `calculation_key` lineage, and settlement snapshots already reference margin / PnL snapshot ids。
+- Existing schemas are not sufficient for the full Stage L.5 binding contract because `margin_snapshots` and `pnl_snapshots` do not persist first-class `trading_day`; config lineage is only partly represented by `rule_id` / `rule_version` or encoded `calculation_key` and is not a uniform `config_hash` column。
+- Future implementation requires migration `0015_stage_l5_position_to_accounting.py` unless implementation explicitly narrows the contract to encode `trading_day` and config hash inside deterministic `calculation_key` and proves that is acceptable in review。
+- If migration is used, it must extend existing accounting snapshot tables only, preferably `margin_snapshots` and `pnl_snapshots` with `trading_day` and config hash / config lineage fields plus indexes needed for exact settlement matching。
+- Do not create a second accounting ledger.
+
+Stage L.5 explicit non-goals：
+
+- Runtime scheduler。
+- Broker reconciliation。
+- live market feed。
+- settlement calendar automation。
+- external broker account sync。
+- order / event / trade mutation。
+- strategy / risk recomputation。
+
 ### Stage M: Runtime / Infrastructure
 
 - Goal：通过 port/adapter 引入 runtime/control plane/event bus/task system。
@@ -760,7 +845,8 @@ Stage K -> Stage L
 Stage L -> Stage L.2
 Stage L.2 -> Stage L.3
 Stage L.3 -> Stage L.4
-Stage L.4 -> Stage M
+Stage L.4 -> Stage L.5
+Stage L.5 -> Stage M
 Stage M -> Stage N
 Stage N -> Stage O
 Stage O -> Stage P
@@ -932,7 +1018,7 @@ FastAPI、Celery、Kafka、Redis、async runtime、cloud、KMS 是后续 Runtime
 
 1. Stage A 先稳定 application execution boundary。
 2. Stage K 已先冻结并实现 Execution Gateway command boundary，确保 OMS Order -> ExecutionCommand 的 source-of-truth、idempotency 和 dry-run replay 稳定。
-3. Stage L.2 稳定 OMS event application、Stage L.3 稳定 OMS-to-Trade Bridge core 且 Stage L.4 冻结 Trade-to-Position application contract 后，Stage M 才引入 event envelope、task boundary、control plane、config/secrets provider。
+3. Stage L.2 稳定 OMS event application、Stage L.3 稳定 OMS-to-Trade Bridge core、Stage L.4 稳定 Trade-to-Position handoff 且 Stage L.5 冻结 Position-to-Accounting contract 后，Stage M 才引入 event envelope、task boundary、control plane、config/secrets provider。
 4. Kafka 只传输 typed events，不替代 DB source-of-truth。
 5. Celery 只调度任务，不承载领域判断。
 6. Redis 只做 cache/lock/pubsub/临时状态，不做事实来源。
@@ -958,10 +1044,10 @@ FastAPI、Celery、Kafka、Redis、async runtime、cloud、KMS 是后续 Runtime
 
 本总方案没有发现 P0/P1 blocker。
 
-下一步不是进入 Broker / Runtime，而是在 Stage L.4 冻结契约基础上实现 Trade -> Position handoff：
+下一步不是进入 Broker / Runtime，而是在 Stage L.5 冻结契约基础上审查并实现 Position -> Accounting handoff：
 
 ```text
-Stage L.4 Trade -> Position handoff implementation
+Stage L.5 Position -> Accounting handoff review / implementation
 ```
 
 Trade -> Position handoff 前必须确认：
@@ -970,10 +1056,12 @@ Trade -> Position handoff 前必须确认：
 - Stage L.2 已通过 OMS event application boundary 推进 OMS OrderStatus。
 - Stage L.3 已只消费 eligible filled report + applied OMS proof，不从 raw payload 或 broker state 补事实。
 - Stage L.3 已只生成 / 持久化 typed Trade fact，未调用 Position / Accounting。
-- Stage L.4 已冻结 typed Trade -> PositionManager.apply_trade(...) -> PositionEvent / projection 契约。
+- Stage L.4 已实现 typed Trade -> PositionManager.apply_trade(...) -> PositionEvent / projection。
+- Stage L.5 已冻结 Trade-applied Position / PositionEvent -> Margin / PnL -> Settlement / AccountSnapshot 连接契约。
 
-Trade -> Position handoff 必须保持：
+Position -> Accounting handoff 必须保持：
 
-- PositionManager 只消费去重后的 Trade ledger。
-- Replay 必须不 mutate OMS，不更新 Margin / PnL / Settlement / Accounting。
+- Accounting 只消费 typed Position / PositionEvent / Trade / typed price / typed config。
+- MarginSnapshot / PnLSnapshot 必须绑定 account、instrument、position_version、trading_day 和 deterministic calculation identity。
+- Settlement 不允许按 instrument-only fallback 匹配 Margin / PnL。
 - 不应直接跳到 broker adapter 或 runtime infrastructure。
