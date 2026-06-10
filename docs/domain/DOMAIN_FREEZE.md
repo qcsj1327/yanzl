@@ -5449,6 +5449,97 @@ Implemented objects：
 
 No schema migration is added.
 
+## Stage P.4 Paper Runbook / Local Paper Session
+
+Stage P.4 implements the minimal local paper session helper and runbook on baseline `stage-p3-paper-runtime-job-wiring / 50edc23`。
+
+This stage completes the local Paper Trading MVP. It does not add schema, Alembic revisions, durable audit tables, SIM, LIVE, non-`MOCK` execution target enablement, real broker, CTP, SimNow, network broker or remote deployment.
+
+Implemented P.4 objects：
+
+- `PaperSessionConfig`。
+- `PaperSessionStatus`。
+- `PaperSessionResult`。
+- `PaperLocalSession`。
+- `run_paper_local_session`。
+
+### Stage P.4 local paper session scope
+
+Paper local session may only：
+
+- Accept explicit typed `ExecutionCommand` list。
+- Accept an injected typed command provider returning `ExecutionCommand` values。
+- Build `PaperJobConfig` for local session execution。
+- Call `PaperRuntimeJob` through an injected job factory。
+- Return `PaperSessionResult` for observability。
+
+Paper local session must not：
+
+- Own order, trade, position or accounting truth。
+- Directly call `PaperTradingCoordinator` internals。
+- Directly call `PaperExecutionHarness`。
+- Directly call repositories。
+- Directly mutate OMS / Trade / Position / Accounting。
+- Accept raw payload commands。
+- Treat broker callbacks as commands。
+- Guess commands from runtime state。
+- Enter SIM or LIVE。
+- Enable `ExecutionTarget.PAPER`, `ExecutionTarget.SIM` or `ExecutionTarget.LIVE`。
+
+### Stage P.4 session config
+
+`PaperSessionConfig` fields：
+
+- `session_name`。
+- `runtime_id`。
+- `trading_day`。
+- `account_id`。
+- `dry_run: bool = True`。
+- `max_commands`。
+- `require_clean_start: bool = True`。
+- `stop_on_first_error: bool = True`。
+- `stop_on_conflict: bool = True`。
+- `apply_confirmed: bool = False`。
+
+Invalid config rejects before job construction.
+
+### Stage P.4 run flow
+
+- Dry-run is the default local session path。
+- Dry-run session calls `PaperRuntimeJob` in dry-run mode and must not mutate ledgers。
+- Apply session requires explicit `apply_confirmed=True`。
+- Apply session calls `PaperRuntimeJob` in apply mode, which then calls `PaperTradingCoordinator` only after Stage P.3 gates pass。
+- Empty command list, missing command source, duplicate command source or non-`MOCK` target returns `BLOCKED` before job construction。
+- Conflicts and errors are aggregated from `PaperJobResult` and preserve stop-on-conflict / stop-on-first-error behavior。
+
+### Stage P.4 session result
+
+`PaperSessionResult` fields：
+
+- `session_name`。
+- `status`。
+- `reason`。
+- `job_results`。
+- `processed_commands`。
+- `duplicate_count`。
+- `conflict_count`。
+- `error_count`。
+- `started_at`。
+- `finished_at`。
+
+`PaperSessionResult` is observability only and is not a business source-of-truth.
+
+### Stage P.4 completion status
+
+- Stage P.1 minimal harness complete。
+- Stage P.2 paper E2E complete。
+- Stage P.3 runtime job wiring complete。
+- Stage P.4 local paper session / runbook complete。
+- Paper Trading local MVP complete。
+- SIM is still not implemented。
+- LIVE is still not implemented。
+- non-`MOCK` execution target support is still not implemented。
+
 ### feature_snapshots
 
 Stage H 已新增 `feature_snapshots` 表作为 FeatureSnapshot derived facts ledger。

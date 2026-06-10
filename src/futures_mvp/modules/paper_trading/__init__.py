@@ -18,6 +18,13 @@ from futures_mvp.modules.paper_trading.job import (
 )
 from futures_mvp.modules.paper_trading.policy import PaperFillPolicy
 from futures_mvp.modules.paper_trading.reports import build_paper_broker_callback_evidence
+from futures_mvp.modules.paper_trading.session import (
+    PaperLocalSession,
+    PaperSessionConfig,
+    PaperSessionResult,
+    PaperSessionStatus,
+    run_paper_local_session,
+)
 
 __all__ = [
     "PaperAccountingContext",
@@ -32,6 +39,11 @@ __all__ = [
     "PaperRunContext",
     "PaperRunResult",
     "PaperRunStatus",
+    "PaperLocalSession",
+    "PaperSessionConfig",
+    "PaperSessionResult",
+    "PaperSessionStatus",
     "PaperTradingCoordinator",
     "build_paper_broker_callback_evidence",
+    "run_paper_local_session",
 ]

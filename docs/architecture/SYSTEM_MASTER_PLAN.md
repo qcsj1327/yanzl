@@ -1554,6 +1554,43 @@ Implementation recommendation：
 - Next implementation should run Stage P.3 acceptance review before considering paper command-provider hardening or broader paper runtime workflows。
 - No schema migration was added or expected。
 
+### Stage P.4: Paper Runbook / Local Paper Session
+
+- Goal：实现最小 local paper session helper、smoke tests and operations runbook，完成本地 Paper Trading MVP 收官。
+- Baseline：`stage-p3-paper-runtime-job-wiring / 50edc23`；Stage P.3 Post-Acceptance Gate Review = ACCEPT。
+- Implemented changes：新增 `PaperSessionConfig`、`PaperSessionStatus`、`PaperSessionResult`、`PaperLocalSession` and `run_paper_local_session`；新增 dry-run / apply / blocked / conflict smoke tests；更新 operations runbook and completion docs。
+- Scope：Paper local session accepts explicit typed `ExecutionCommand` list or injected typed command provider, then orchestrates `PaperRuntimeJob` only。
+- Forbidden changes preserved：不实现 SIM / LIVE，不启用 `ExecutionTarget.PAPER` / `SIM` / `LIVE`，不接 real broker / CTP / SimNow / network broker，不新增 schema，不实现 durable audit table，不绕过 `PaperRuntimeJob` / `PaperTradingCoordinator`，不让 session result 成为业务 source-of-truth。
+
+P.4 local paper session flow：
+
+```text
+typed ExecutionCommand list / typed command provider
+-> PaperLocalSession
+-> PaperRuntimeJob
+-> PaperTradingCoordinator
+-> accepted paper E2E chain
+```
+
+P.4 session contract：
+
+- `PaperSessionConfig` carries `session_name`, `runtime_id`, `trading_day`, `account_id`, `dry_run`, `max_commands`, `require_clean_start`, `stop_on_first_error`, `stop_on_conflict` and explicit `apply_confirmed`。
+- `dry_run=True` remains the default local session mode。
+- `dry_run=False` requires `apply_confirmed=True` before any job call。
+- Empty commands, missing command source, duplicate command sources or non-`MOCK` execution target return typed blocked result before job execution。
+- `PaperSessionResult` is observability only and is not a business source-of-truth。
+- Conflict and error aggregation preserve stop-on-conflict and stop-on-first-error behavior from `PaperRuntimeJob`。
+
+Paper completion status：
+
+- Stage P.1 minimal harness complete。
+- Stage P.2 paper E2E complete。
+- Stage P.3 runtime job wiring complete。
+- Stage P.4 local paper session / runbook complete。
+- Paper Trading local MVP complete。
+- SIM / LIVE remain not implemented。
+- non-`MOCK` execution target remains not implemented。
+
 ## 7. Stage Dependency Graph
 
 核心执行与会计链：
@@ -1583,8 +1620,8 @@ Stage L.5 -> Stage M
 Stage M -> Stage N
 Stage N -> Stage O
 Stage O -> Stage P
-Stage P -> Stage P.1 -> Stage P.2 -> Stage P.3
-Stage P.3 -> Future Production Rollout
+Stage P -> Stage P.1 -> Stage P.2 -> Stage P.3 -> Stage P.4
+Stage P.4 -> Future Production Rollout
 ```
 
 依赖说明：
@@ -1606,6 +1643,7 @@ Stage P.3 -> Future Production Rollout
 - Paper / Sim / Live 不允许跳级。
 - Stage P 只冻结 Paper / Sim / Live rollout 契约；Future Production Rollout 才能讨论真实资金部署、生产 CTP / SimNow、broker / exchange certification 或 remote cluster deployment。
 - Stage P.3 只允许 paper runtime job / scheduler wiring；不得借机进入 SIM / LIVE / non-`MOCK` execution / real broker。
+- Stage P.4 completes local Paper Trading MVP only；不得借机进入 SIM / LIVE / non-`MOCK` execution / real broker。
 
 不可跳级规则：
 

@@ -88,3 +88,25 @@ Stage P.3 Paper Runtime Job / Scheduler Wiring is implemented as the minimal pap
 - `PaperJobResult` is observability only, not business source-of-truth, and carries job name, status, reason, paper run result, diagnostic timestamps, processed command count and conflict/error counters。
 - Command source is explicit typed `ExecutionCommand` input or an injected typed command provider；raw payload commands, broker callbacks as commands, runtime guessing and strategy direct bypass are forbidden。
 - P.3 non-goals：strategy live loop, market data scheduler, SIM, LIVE, non-`MOCK` gateway target, real broker, remote deployment, durable job/audit table and external monitoring stack。
+
+Stage P.4 Paper Runbook / Local Paper Session completes the local Paper Trading MVP：
+
+- `PaperLocalSession` accepts explicit typed `ExecutionCommand` values or an injected typed command provider and orchestrates `PaperRuntimeJob` only。
+- `PaperSessionConfig` carries session name, runtime id, trading day, account id, dry-run mode, max command count, clean-start flag, stop-on-error/conflict policy and explicit apply confirmation。
+- `PaperSessionResult` is observability only and is not a business source-of-truth。
+- Dry-run is default；apply requires explicit `apply_confirmed=True` and still goes through `PaperRuntimeJob -> PaperTradingCoordinator`。
+- Stage P.1 minimal harness, Stage P.2 paper E2E, Stage P.3 runtime job wiring and Stage P.4 local session/runbook are complete。
+- Paper Trading local MVP is complete；SIM / LIVE / non-`MOCK` execution target support remain not implemented。
+
+Paper local session runbook：
+
+1. Confirm branch/tag：verify the working branch and expected tag before any local paper session.
+2. Run validation commands：`uv run pytest`、`uv run ruff check .`、`uv run mypy src`。
+3. Confirm DB migration visibility：`uv run alembic heads` and `uv run alembic current`。
+4. Confirm safety：rollout mode `PAPER`, broker disabled, live disabled, kill switch released, scheduler not paused, replay not paused, migration compatible, capital controls configured, account allowed and instrument allowed。
+5. Run dry-run session first：use typed `ExecutionCommand` input or an injected typed command provider; do not use raw payload commands。
+6. Inspect `PaperSessionResult`：confirm status, reason, processed command count, duplicate count, conflict count, error count and nested `PaperJobResult`。
+7. Run apply session only after dry-run is clean：set explicit apply confirmation and keep `ExecutionTarget.MOCK`。
+8. Inspect paper facts through accepted ledgers/services：normalized reports, OMS order state, trades, positions, margin snapshots, PnL snapshots and settlement snapshots。
+9. Rollback/stop by safety controls：activate kill switch, scheduler pause or replay pause; do not edit business ledgers manually。
+10. Forbidden during Paper local session：no SIM, no LIVE, no real broker, no CTP, no SimNow, no network broker, no manual DB edits, no raw payload command source and no `ExecutionTarget.PAPER` / `SIM` / `LIVE` enablement。
