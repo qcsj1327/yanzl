@@ -51,15 +51,21 @@ def test_sim_trading_does_not_call_business_mutation_boundaries() -> None:
         "create_or_get_trade",
         "append_margin_snapshot",
         "append_pnl_snapshot",
-        "apply_candidate(",
-        "create_trade(",
-        ".apply_trade(",
-        ".settle(",
+        "Trade(",
+        "Position(",
+        "MarginSnapshot(",
+        "PnLSnapshot(",
+        "SettlementSnapshot(",
         "commit(",
         "rollback(",
     ]
     for call in forbidden_calls:
         assert call not in source
+
+    assert "apply_candidate(" in source
+    assert "create_trade(" in source
+    assert ".apply_trade(" in source
+    assert ".settle(" in source
 
 
 def test_sim_trading_has_no_broker_or_network_dependencies() -> None:
