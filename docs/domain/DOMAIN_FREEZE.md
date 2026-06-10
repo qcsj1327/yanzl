@@ -5596,9 +5596,202 @@ Still not implemented：
 - remote deployment。
 - production rollout。
 
-Next allowed gate：SIM Gap Review / Contract Freeze。
+SIM Gap Review result：ACCEPT。
+
+Next allowed gate：Stage Q.1 SIM Trading Contract Freeze。
 
 SIM implementation, LIVE work and real broker work are not allowed before that gate.
+
+## Stage Q.1 SIM Trading Contract Freeze
+
+Stage Q.1 freezes the SIM Trading contract on baseline `paper-local-mvp-stable-baseline / 73a9f39`。
+
+Stage Q.1 is documentation-only：
+
+- No code changes。
+- No `src` or tests changes。
+- No schema or Alembic migration。
+- No `ExecutionTarget.SIM` enablement。
+- No SimNow, CTP, LIVE, broker, live account or network integration。
+
+### Stage Q.1 SIM scope
+
+- SIM is an independent rollout mode。
+- SIM is not a PAPER alias。
+- SIM is not a shortcut rehearsal for LIVE。
+- SIM currently does not connect to real broker, SimNow, CTP, live account or broker network。
+- Future SIM may implement local or controlled simulated exchange behavior。
+- Future SIM may produce deterministic or configured simulated reports。
+- Future SIM may support richer execution behavior than Paper。
+- Future SIM must still flow through the existing report and accounting pipeline。
+- Stage Q.1 implements none of those future behaviors。
+
+### Stage Q.1 mode boundary
+
+- `RolloutMode.SIM` is mutually exclusive with `RolloutMode.PAPER` and `RolloutMode.LIVE`。
+- A runtime instance may run only one rollout mode。
+- Paper stable baseline does not automatically upgrade to SIM。
+- SIM must not enable LIVE gates。
+- SIM must not enable or use LIVE credentials。
+- SIM must not access live broker credentials。
+
+### Stage Q.1 execution target policy
+
+- Stage Q.1 does not enable `ExecutionTarget.SIM`。
+- `ExecutionTarget.MOCK` remains the only enabled target。
+- Future `ExecutionTarget.SIM` enablement requires separate implementation and acceptance review。
+- `ExecutionTarget.SIM` is not `RolloutMode.SIM`。
+- `RolloutMode.SIM` does not automatically allow `ExecutionTarget.SIM`。
+
+### Stage Q.1 SIM harness / adapter boundary
+
+Future SIM must introduce one of：
+
+- `SimExecutionHarness`。
+- `SimAdapter` contract。
+
+Boundary rules：
+
+- SIM must not directly reuse `PaperExecutionHarness` as the SIM execution engine。
+- A shared deterministic evidence builder may be extracted if it does not blur Paper and SIM boundaries。
+- Input must be typed `ExecutionCommand`。
+- Output must be typed `ExecutionCommandResult` plus `RawExecutionReport` evidence。
+- The SIM harness / adapter must not mutate OMS, Trade, Position or Accounting state。
+- `raw_payload` must remain diagnostic-only and must not become source-of-truth。
+
+### Stage Q.1 source-of-truth
+
+SIM harness does not own：
+
+- order truth。
+- trade truth。
+- position truth。
+- accounting truth。
+
+The source-of-truth remains：
+
+- OMS owns order truth。
+- `NormalizedExecutionReport` owns execution report facts。
+- Trade ledger owns trade facts。
+- Position owns position facts。
+- Accounting owns margin, PnL and settlement snapshots。
+
+### Stage Q.1 report path
+
+All SIM evidence must enter the accepted pipeline：
+
+```text
+RawExecutionReport
+-> ExecutionReportNormalizer
+-> OMSEventApplicationService
+-> OMSToTradeBridgeService
+-> PositionManager
+-> MarginEngine / PnLEngine / SettlementEngine
+```
+
+Forbidden shortcuts：
+
+- Direct OMS apply。
+- Direct Trade creation。
+- Direct Position update。
+- Direct Accounting update。
+
+### Stage Q.1 identity / idempotency
+
+- SIM `raw_report_id` must be deterministic。
+- SIM `adapter_order_ref` must be deterministic。
+- SIM `fill_id` / `exchange_trade_id` must be deterministic or sourced from a typed simulated exchange event。
+- UUID, timestamp-now and DB id must not be used as business fact identity。
+- same identity + same canonical payload means duplicate / no-op。
+- same identity + different canonical payload means conflict。
+- `raw_payload` is diagnostic-only。
+
+### Stage Q.1 safety gates
+
+SIM requires：
+
+- Runtime READY。
+- `RolloutMode.SIM`。
+- migration compatible。
+- kill switch released。
+- scheduler not paused。
+- replay not paused。
+- explicit operator approval for PAPER -> SIM promotion。
+- capital controls configured。
+- account whitelist。
+- instrument whitelist。
+- no unresolved critical incident。
+
+SIM still forbids：
+
+- live flag。
+- live credentials。
+- live apply。
+- real broker。
+
+### Stage Q.1 replay policy
+
+- SIM replay defaults to dry-run。
+- SIM apply requires explicit SIM approval。
+- Duplicate replay must no-op。
+- Conflict replay must stop。
+- SIM replay must not perform live apply。
+- SIM replay must not use broker network。
+- SIM replay must not repair business ledgers manually。
+
+### Stage Q.1 fill / execution behavior contract
+
+Future SIM may allow：
+
+- immediate fill。
+- partial fill sequence。
+- reject。
+- timeout。
+- post-send uncertain。
+- latency simulation。
+- slippage。
+- order book / depth simulation。
+
+Stage Q.1 implements none of these behaviors。
+
+Each future behavior must be deterministic or config-bound, must produce typed `RawExecutionReport` evidence and must not mutate facts directly。
+
+### Stage Q.1 migration decision
+
+- No schema or Alembic migration in Contract Freeze。
+- Future SIM implementation should reuse existing ledgers unless a durable SIM session / audit table is separately frozen and accepted。
+
+### Stage Q.1 Paper stability protection
+
+- Paper remains the stable baseline。
+- Paper local MVP is complete。
+- SIM work must not regress Paper invariants：
+  - dry-run no mutation。
+  - apply completed。
+  - duplicate no-op。
+  - conflict stop。
+  - `MOCK` only。
+  - no broker / live dependency。
+
+### Stage Q.1 explicit non-goals
+
+Stage Q.1 does not implement：
+
+- SIM runtime。
+- SimNow。
+- CTP。
+- LIVE。
+- real capital。
+- remote deployment。
+- production broker certification。
+- `ExecutionTarget.SIM` enablement。
+- schema changes。
+
+### Stage Q.1 next recommendation
+
+- Run SIM Harness Gap Review。
+- Decide `SimExecutionHarness` versus shared execution evidence builder。
+- Do not implement SIM until that review is accepted。
 
 ### feature_snapshots
 

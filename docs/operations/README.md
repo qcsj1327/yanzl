@@ -155,9 +155,91 @@ Paper stable baseline non-goals remain：
 - remote deployment。
 - production rollout。
 
-Next allowed gate：SIM Gap Review / Contract Freeze。
+SIM Gap Review result：ACCEPT。
+
+Next allowed gate：Stage Q.1 SIM Trading Contract Freeze。
 
 Not allowed before that gate：SIM implementation, LIVE work or real broker work。
+
+Stage Q.1 SIM Trading Contract Freeze：
+
+- Baseline：`paper-local-mvp-stable-baseline / 73a9f39`。
+- Scope：documentation-only contract freeze；no code, no schema, no `ExecutionTarget.SIM`, no SimNow / CTP / LIVE / broker / network。
+- SIM is an independent rollout mode；it is not a PAPER alias and not a shortcut rehearsal for LIVE。
+- SIM currently does not connect to real broker, SimNow, CTP, live account or broker network。
+- Future SIM may implement local or controlled simulated exchange behavior, deterministic or configured simulated reports and richer execution behavior than Paper, but Stage Q.1 implements none of it。
+
+SIM mode boundary：
+
+- `RolloutMode.SIM` is mutually exclusive with PAPER and LIVE。
+- One runtime instance may run only one mode。
+- Paper stable baseline does not automatically upgrade to SIM。
+- SIM must not enable LIVE gates, LIVE credentials, live apply or live broker credential access。
+
+SIM execution target policy：
+
+- `ExecutionTarget.MOCK` remains the only enabled target。
+- Stage Q.1 does not enable `ExecutionTarget.SIM`。
+- Future `ExecutionTarget.SIM` enablement requires separate implementation and acceptance review。
+- `ExecutionTarget.SIM` is not `RolloutMode.SIM`; `RolloutMode.SIM` does not automatically allow `ExecutionTarget.SIM`。
+
+SIM harness / adapter boundary：
+
+- Future SIM must add a `SimExecutionHarness` or `SimAdapter` contract。
+- SIM must not directly reuse `PaperExecutionHarness` as the SIM execution engine。
+- A shared deterministic evidence builder may be extracted only if Paper and SIM boundaries remain explicit。
+- Input must be typed `ExecutionCommand`。
+- Output must be typed `ExecutionCommandResult` plus `RawExecutionReport` evidence。
+- The harness / adapter must not mutate OMS, Trade, Position or Accounting state。
+- `raw_payload` remains diagnostic-only and never source-of-truth。
+
+SIM source-of-truth and report path：
+
+- SIM harness does not own order, trade, position or accounting truth。
+- OMS owns order truth；`NormalizedExecutionReport` owns execution report facts；Trade ledger owns trade facts；Position owns position facts；Accounting owns margin, PnL and settlement snapshots。
+- All SIM evidence must flow through `RawExecutionReport -> ExecutionReportNormalizer -> OMSEventApplicationService -> OMSToTradeBridgeService -> PositionManager -> MarginEngine / PnLEngine / SettlementEngine`。
+- Direct OMS apply, direct Trade creation, direct Position update and direct Accounting update are forbidden。
+
+SIM identity / idempotency：
+
+- SIM `raw_report_id` and `adapter_order_ref` must be deterministic。
+- SIM `fill_id` / `exchange_trade_id` must be deterministic or sourced from a typed simulated exchange event。
+- UUID, timestamp-now and DB id must not be business fact identity。
+- same identity + same canonical payload means duplicate / no-op。
+- same identity + different canonical payload means conflict。
+
+SIM safety and replay policy：
+
+- SIM requires Runtime READY, `RolloutMode.SIM`, migration compatible, kill switch released, scheduler and replay not paused, explicit operator approval for PAPER -> SIM promotion, configured capital controls, account whitelist, instrument whitelist and no unresolved critical incident。
+- SIM still forbids live flag, live credentials, live apply and real broker。
+- SIM replay defaults to dry-run；apply requires explicit SIM approval。
+- Duplicate replay must no-op；conflict replay must stop。
+- SIM replay must not perform live apply, use broker network or repair business ledgers manually。
+
+SIM fill / execution behavior contract：
+
+- Future SIM may support immediate fill, partial fill sequence, reject, timeout, post-send uncertain, latency simulation, slippage and order book / depth simulation。
+- Each future behavior must be deterministic or config-bound, produce typed `RawExecutionReport` evidence and avoid direct fact mutation。
+- Stage Q.1 implements none of those behaviors。
+
+SIM migration decision：
+
+- No schema or Alembic migration in Contract Freeze。
+- Future SIM implementation should reuse existing ledgers unless a durable SIM session / audit table is separately frozen and accepted。
+
+SIM non-goals remain：
+
+- SIM runtime。
+- SimNow。
+- CTP。
+- LIVE。
+- real capital。
+- remote deployment。
+- production broker certification。
+- `ExecutionTarget.SIM` enablement。
+- schema changes。
+
+Next recommendation：run SIM Harness Gap Review, decide `SimExecutionHarness` versus shared execution evidence builder and do not implement SIM until that review is accepted。
 
 Paper local session runbook：
 
