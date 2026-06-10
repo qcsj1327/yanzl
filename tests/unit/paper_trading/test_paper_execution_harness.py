@@ -11,7 +11,11 @@ from futures_mvp.domain.enums import (
     Offset,
     OrderType,
 )
-from futures_mvp.domain.models import ExecutionCommand, NormalizedExecutionReport
+from futures_mvp.domain.models import (
+    ExecutionCommand,
+    NormalizedExecutionReport,
+    stable_json_sha256,
+)
 from futures_mvp.interfaces.repositories import ExecutionReportConflictError
 from futures_mvp.modules.broker_adapter import MockBrokerAdapter
 from futures_mvp.modules.execution_gateway import build_execution_command_payload_hash
@@ -24,6 +28,9 @@ from futures_mvp.modules.paper_trading import (
     PaperExecutionHarness,
     PaperExecutionStatus,
     PaperFillPolicy,
+)
+from futures_mvp.modules.paper_trading.reports import (
+    build_paper_broker_callback_evidences,
 )
 
 NOW = datetime(2026, 6, 9, 9, tzinfo=UTC)
@@ -225,6 +232,32 @@ def test_identities_are_deterministic_and_not_timestamp_now_or_random() -> None:
     assert first_raw.raw_payload is None
 
 
+def test_paper_report_builder_preserves_exact_stable_identities() -> None:
+    command = _command()
+    acked, filled = build_paper_broker_callback_evidences(
+        command,
+        adapter_order_ref="paper-order-ref",
+        policy=PaperFillPolicy.IMMEDIATE_FULL_FILL,
+    )
+
+    assert acked.adapter_name == "paper_harness"
+    assert filled.adapter_name == "paper_harness"
+    assert acked.raw_report_id == _paper_raw_report_id(
+        command,
+        report_type="acked",
+        sequence=1,
+    )
+    assert filled.raw_report_id == _paper_raw_report_id(
+        command,
+        report_type="filled",
+        sequence=1,
+    )
+    assert filled.exchange_order_id == _paper_exchange_order_id(command)
+    assert filled.exchange_trade_id == _paper_exchange_trade_id(command, sequence=1)
+    assert filled.fill_id == _paper_fill_id(command, sequence=1)
+    assert [acked.report_type, filled.report_type] == ["acked", "filled"]
+
+
 def test_duplicate_same_command_uses_mock_submit_duplicate_without_new_identity() -> None:
     adapter = MockBrokerAdapter(clock=lambda: NOW)
     harness = PaperExecutionHarness(adapter=adapter)
@@ -285,3 +318,40 @@ def test_non_mock_target_rejected_without_enabling_paper_target() -> None:
         assert result.status is PaperExecutionStatus.REJECTED
         assert result.command_result.status is ExecutionCommandResultStatus.REJECTED_BY_ADAPTER
         assert result.raw_reports == ()
+
+
+def _paper_exchange_order_id(command: ExecutionCommand) -> str:
+    return "paper_order_" + stable_json_sha256({"command_id": command.command_id})[:40]
+
+
+def _paper_exchange_trade_id(command: ExecutionCommand, *, sequence: int) -> str:
+    return (
+        "paper_trade_"
+        + stable_json_sha256({"command_id": command.command_id, "sequence": sequence})[:40]
+    )
+
+
+def _paper_fill_id(command: ExecutionCommand, *, sequence: int) -> str:
+    return (
+        "paper_fill_"
+        + stable_json_sha256({"command_id": command.command_id, "sequence": sequence})[:40]
+    )
+
+
+def _paper_raw_report_id(
+    command: ExecutionCommand,
+    *,
+    report_type: str,
+    sequence: int,
+) -> str:
+    return (
+        "paper_raw_"
+        + stable_json_sha256(
+            {
+                "command_id": command.command_id,
+                "order_id": command.order_id,
+                "policy_report_type": report_type,
+                "sequence": sequence,
+            }
+        )[:48]
+    )
