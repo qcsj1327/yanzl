@@ -250,11 +250,11 @@ Allowed read path：
 
 ```text
 NormalizedExecutionReport
--> applied OMS OrderEvent or compatible OMS OrderState proof
+-> applied OMS OrderEvent proof
 -> typed Trade fact
 ```
 
-Stage L.3 may read OMS `OrderState` / applied `OrderEvent` proof through typed read-only bridge context to prove `PARTIALLY_FILLED` / `FILLED` eligibility and order lineage. Applied `OrderEvent` proof must bind to the current normalized report through typed `report_id`、status、quantity、price and timestamp fields. State-only proof must have compatible status and `filled_quantity >= report.cumulative_filled_qty`，and must leave `source_order_event_id` absent because it does not prove a specific event identity。
+Stage L.3 may read OMS `OrderState` / applied `OrderEvent` proof through typed read-only bridge context to prove `PARTIALLY_FILLED` / `FILLED` eligibility and order lineage. Applied `OrderEvent` proof must bind to the current normalized report through typed `report_id`、status、quantity、price and timestamp fields. State-only `OrderState` proof is not sufficient to persist Trade in the current Pre-Stage-P boundary；missing applied event proof must reject with no repository write。
 
 Stage L.3 must not call `OMSService.apply_order_event(...)`、`OMSService.create_order(...)`、mutate OMS state、alter order status, or infer fill quantity / price from OMS status alone. OMS status only confirms eligibility; `NormalizedExecutionReport` provides fill economics.
 

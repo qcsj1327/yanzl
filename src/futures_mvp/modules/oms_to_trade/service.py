@@ -19,11 +19,6 @@ _FILLED_REPORT_STATUSES = {
     ExecutionReportStatus.FILLED,
 }
 
-_FILLED_ORDER_STATUSES = {
-    OrderStatus.PARTIALLY_FILLED,
-    OrderStatus.FILLED,
-}
-
 _REPORT_TO_ORDER_STATUS = {
     ExecutionReportStatus.PARTIALLY_FILLED: OrderStatus.PARTIALLY_FILLED,
     ExecutionReportStatus.FILLED: OrderStatus.FILLED,
@@ -135,31 +130,24 @@ class OMSToTradeBridgeService:
 
         if report.execution_status not in _FILLED_REPORT_STATUSES:
             return TradeBridgeResultStatus.REJECTED_NOT_FILLED, "report is not filled"
-        if context.applied_order_event is not None:
-            proof_reason = _applied_event_reject_reason(
-                context.applied_order_event,
-                report,
+        if context.applied_order_event is None:
+            return (
+                TradeBridgeResultStatus.REJECTED_OMS_NOT_APPLIED,
+                "applied OMS event proof is required",
             )
-            if proof_reason is not None:
-                status, reason = proof_reason
-                return status, reason
-            source_event_reason = _source_order_event_id_reject_reason(context)
-            if source_event_reason is not None:
-                return (
-                    TradeBridgeResultStatus.REJECTED_LINEAGE_MISMATCH,
-                    source_event_reason,
-                )
-        else:
-            source_event_reason = _source_order_event_id_reject_reason(context)
-            if source_event_reason is not None:
-                return (
-                    TradeBridgeResultStatus.REJECTED_LINEAGE_MISMATCH,
-                    source_event_reason,
-                )
-            state_proof_reason = _order_state_proof_reject_reason(context)
-            if state_proof_reason is not None:
-                status, reason = state_proof_reason
-                return status, reason
+        proof_reason = _applied_event_reject_reason(
+            context.applied_order_event,
+            report,
+        )
+        if proof_reason is not None:
+            status, reason = proof_reason
+            return status, reason
+        source_event_reason = _source_order_event_id_reject_reason(context)
+        if source_event_reason is not None:
+            return (
+                TradeBridgeResultStatus.REJECTED_LINEAGE_MISMATCH,
+                source_event_reason,
+            )
         if report.order_id != order_state.order_id:
             return TradeBridgeResultStatus.REJECTED_LINEAGE_MISMATCH, "order_id mismatch"
         if report.client_order_id != order_state.request.client_order_id:
@@ -232,39 +220,6 @@ def _applied_event_reject_reason(
         return (
             TradeBridgeResultStatus.REJECTED_LINEAGE_MISMATCH,
             "OMS proof cumulative_filled_qty mismatch",
-        )
-    return None
-
-
-def _order_state_proof_reject_reason(
-    context: TradeBridgeContext,
-) -> tuple[TradeBridgeResultStatus, str] | None:
-    report = context.normalized_report
-    order_state = context.order_state
-    expected_status = _REPORT_TO_ORDER_STATUS[report.execution_status]
-    if report.execution_status is ExecutionReportStatus.FILLED:
-        if order_state.status is not OrderStatus.FILLED:
-            return (
-                TradeBridgeResultStatus.REJECTED_OMS_NOT_APPLIED,
-                "FILLED report requires FILLED OMS state proof",
-            )
-    elif order_state.status not in _FILLED_ORDER_STATUSES:
-        return (
-            TradeBridgeResultStatus.REJECTED_OMS_NOT_APPLIED,
-            "missing compatible OMS filled state proof",
-        )
-    if expected_status is OrderStatus.PARTIALLY_FILLED and order_state.status not in {
-        OrderStatus.PARTIALLY_FILLED,
-        OrderStatus.FILLED,
-    }:
-        return (
-            TradeBridgeResultStatus.REJECTED_OMS_NOT_APPLIED,
-            "PARTIALLY_FILLED report requires compatible OMS filled state proof",
-        )
-    if order_state.filled_quantity < report.cumulative_filled_qty:
-        return (
-            TradeBridgeResultStatus.REJECTED_OMS_NOT_APPLIED,
-            "OMS state filled quantity is behind report cumulative filled quantity",
         )
     return None
 

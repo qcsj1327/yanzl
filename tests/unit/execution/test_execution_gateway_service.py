@@ -294,6 +294,8 @@ def test_replay_dry_run_no_adapter_call_and_live_flag_submits() -> None:
         "order-1",
         "order-2",
     ]
+    assert [result.reason for result in dry_results] == ["dry_run_preview", "dry_run_preview"]
+    assert repository.commands == {}
     assert adapter.submitted_commands == []
 
     blocked_live = replay_execution_gateway(
@@ -318,6 +320,28 @@ def test_replay_dry_run_no_adapter_call_and_live_flag_submits() -> None:
     )
     assert live_results[0].status is ExecutionGatewayResultStatus.COMMAND_CREATED
     assert len(adapter.submitted_commands) == 1
+
+
+def test_live_replay_conflict_stops_before_downstream_submit_or_persist() -> None:
+    repository = InMemoryExecutionCommandRepository()
+    service, adapter = _service(repository)
+    existing = service.submit(_order(order_id="order-1"), **_submit_kwargs())
+    assert existing.status is ExecutionGatewayResultStatus.COMMAND_CREATED
+    adapter.submitted_commands.clear()
+
+    results = replay_execution_gateway(
+        service,
+        [_order(order_id="order-1"), _order(order_id="order-2")],
+        symbol="ag",
+        trade_instrument_id="au2606",
+        tif="GFD",
+        dry_run=False,
+        allow_submit=True,
+    )
+
+    assert [result.status for result in results] == [ExecutionGatewayResultStatus.CONFLICT]
+    assert adapter.submitted_commands == []
+    assert {command.order_id for command in repository.commands.values()} == {"order-1"}
 
 
 def test_replay_submit_failed_order_rejected_without_command_or_adapter() -> None:

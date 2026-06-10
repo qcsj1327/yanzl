@@ -1,10 +1,7 @@
 from collections.abc import Mapping
 
-from pydantic import ValidationError
-
-from futures_mvp.domain.enums import Direction, EventSource, Offset, OrderStatus
-from futures_mvp.domain.errors import FuturesMvpError
-from futures_mvp.domain.models import FillEvent, OrderEvent, Trade
+from futures_mvp.domain.enums import EventSource, OrderStatus
+from futures_mvp.domain.models import OrderEvent
 from futures_mvp.modules.execution.models import (
     DeliveryPhase,
     ExchangeReport,
@@ -222,15 +219,12 @@ def map_exchange_report(report: ExchangeReport, context: MappingContext) -> Mapp
         occurred_at=report.occurred_at,
     )
     if report_type in _FILL_REPORT_TYPES and not context.allow_status_only_fill:
-        fill_fact_result = _build_fill_facts(report)
-        if isinstance(fill_fact_result, MappingResult):
-            return fill_fact_result
-        fill_event, trade = fill_fact_result
-        return MappingResult(
-            status=MappingResultStatus.MAPPED_ORDER_EVENT,
-            order_event=event,
-            fill_event=fill_event,
-            trade=trade,
+        return _domain_field_unsupported(
+            MappingErrorReason.DOMAIN_FIELD_UNSUPPORTED,
+            (
+                "legacy ExchangeReport fill-to-trade mapping is disabled; "
+                "use ExecutionReportNormalizer and OMSToTradeBridgeService"
+            ),
         )
 
     return MappingResult(status=MappingResultStatus.MAPPED_ORDER_EVENT, order_event=event)
@@ -282,28 +276,6 @@ def _coerce_event_source(value: EventSource | str | None) -> EventSource | None:
         return value
     try:
         return EventSource(value)
-    except ValueError:
-        return None
-
-
-def _coerce_direction(value: Direction | str | None) -> Direction | None:
-    if value is None:
-        return None
-    if isinstance(value, Direction):
-        return value
-    try:
-        return Direction(value)
-    except ValueError:
-        return None
-
-
-def _coerce_offset(value: Offset | str | None) -> Offset | None:
-    if value is None:
-        return None
-    if isinstance(value, Offset):
-        return value
-    try:
-        return Offset(value)
     except ValueError:
         return None
 
@@ -443,109 +415,6 @@ def _raw_payload_has_forbidden_fill_facts(
     raw_payload: Mapping[str, object],
 ) -> bool:
     return report_type in _FILL_REPORT_TYPES and bool(_FILL_FACT_KEYS.intersection(raw_payload))
-
-
-def _build_fill_facts(report: ExchangeReport) -> tuple[FillEvent, Trade] | MappingResult:
-    missing_fields = _missing_typed_fill_fields(report)
-    if missing_fields:
-        return _domain_field_unsupported(
-            MappingErrorReason.DOMAIN_FIELD_UNSUPPORTED,
-            "typed fill fields are required: " + ", ".join(missing_fields),
-        )
-
-    direction = _coerce_direction(report.direction)
-    offset = _coerce_offset(report.offset)
-    if direction is None or offset is None:
-        return _mapping_error(
-            MappingErrorReason.DOMAIN_FIELD_UNSUPPORTED,
-            "typed fill direction and offset must be supported values.",
-        )
-
-    if report.fee_amount is not None and report.fee_currency is None:
-        return _mapping_error(
-            MappingErrorReason.DOMAIN_FIELD_UNSUPPORTED,
-            "fee_currency is required when fee_amount is not None.",
-        )
-    if report.fee_amount is None and report.fee_currency is not None:
-        return _mapping_error(
-            MappingErrorReason.DOMAIN_FIELD_UNSUPPORTED,
-            "fee_currency requires fee_amount.",
-        )
-
-    assert report.order_id is not None
-    assert report.account_id is not None
-    assert report.exchange is not None
-    assert report.instrument_id is not None
-    assert report.exchange_report_id is not None
-    assert report.exchange_trade_id is not None
-    assert report.fill_price is not None
-    assert report.fill_quantity is not None
-    assert report.trade_time is not None
-
-    raw_payload = dict(report.raw_payload or {})
-    fill_event_id = ":".join(
-        filter(None, [report.exchange_report_id, report.exchange_trade_id, report.fill_id])
-    )
-    try:
-        fill_event = FillEvent(
-            id=fill_event_id,
-            order_id=report.order_id,
-            account_id=report.account_id,
-            exchange=report.exchange,
-            instrument_id=report.instrument_id,
-            exchange_report_id=report.exchange_report_id,
-            exchange_trade_id=report.exchange_trade_id,
-            fill_id=report.fill_id,
-            direction=direction,
-            offset=offset,
-            price=report.fill_price,
-            quantity=report.fill_quantity,
-            fee_amount=report.fee_amount,
-            fee_currency=report.fee_currency,
-            fee_source=report.fee_source,
-            traded_at=report.trade_time,
-            trading_day=report.trading_day,
-            raw_payload=raw_payload,
-        )
-        trade = Trade(
-            account_id=report.account_id,
-            exchange=report.exchange,
-            exchange_trade_id=report.exchange_trade_id,
-            order_id=report.order_id,
-            instrument_id=report.instrument_id,
-            direction=direction,
-            offset=offset,
-            price=report.fill_price,
-            quantity=report.fill_quantity,
-            fee_amount=report.fee_amount,
-            fee_currency=report.fee_currency,
-            fee_source=report.fee_source,
-            trade_time=report.trade_time,
-            trading_day=report.trading_day,
-            source_exchange_report_id=report.exchange_report_id,
-            raw_payload=raw_payload,
-        )
-    except (FuturesMvpError, ValidationError, ValueError) as exc:
-        return _mapping_error(
-            MappingErrorReason.DOMAIN_FIELD_UNSUPPORTED,
-            f"typed fill facts failed domain validation: {exc}",
-        )
-    return fill_event, trade
-
-
-def _missing_typed_fill_fields(report: ExchangeReport) -> list[str]:
-    required_fields = {
-        "account_id": report.account_id,
-        "exchange": report.exchange,
-        "instrument_id": report.instrument_id,
-        "direction": report.direction,
-        "offset": report.offset,
-        "exchange_trade_id": report.exchange_trade_id,
-        "fill_price": report.fill_price,
-        "fill_quantity": report.fill_quantity,
-        "trade_time": report.trade_time,
-    }
-    return [field for field, value in required_fields.items() if value is None]
 
 
 def _mapping_error(reason: MappingErrorReason, message: str) -> MappingResult:

@@ -3401,7 +3401,7 @@ Stage L.3 does not implement：
 
 Stage L.4 freezes the application contract from current typed `Trade` facts to existing `PositionManager.apply_trade(...)` and `PositionEvent` audit. It follows Stage L.3 and stays before Stage M Runtime / Infrastructure.
 
-Stage L.4 is docs-only. It does not change Domain models, schema, `src`, or tests.
+Stage L.4 is implemented as the `typed Trade fact -> PositionManager.apply_trade(...) -> Position projection / PositionEvent` handoff using the existing Position ledger and tests. It does not add a second position ledger and does not update Margin / PnL / Settlement / AccountSnapshot.
 
 Source-of-truth path：
 
@@ -3794,7 +3794,7 @@ Stage M schema decision：
 
 Stage N freezes the Broker / Adapter Layer contract on baseline `stage-m-runtime-infrastructure-core / b443249`。
 
-This is a documentation-only freeze. It does not add code, schema, Alembic revisions, broker tables, domain fields, OMS state-machine changes or live trading enablement.
+Stage N began as a contract freeze and now has Broker Adapter Core implementation. It does not add broker-owned business facts, broker tables, OMS state-machine changes or live trading enablement. The only accepted schema strengthening in this scope is migration `0016_stage_n_report_identity_conflict`, which enforces normalized report `raw_report_id` identity conflict detection.
 
 Stage N purpose：
 
@@ -4059,9 +4059,11 @@ Canonical payload excludes：
 Command replay：
 
 - Default is dry-run。
+- Dry-run replay is no-write preview：it may build deterministic command previews, but must not append `execution_commands` and must not submit adapter / broker。
 - Live send requires explicit adapter target, explicit command type allowlist and future Operations gate。
 - Same command identity + same canonical -> duplicate / no-op。
 - Same command identity + different canonical -> conflict before broker send。
+- Live replay stops downstream on the first `CONFLICT` / `ERROR` by default。
 - Replaying a post-send uncertain command must query broker state first and must not create a second submit。
 
 Report replay：
@@ -4147,9 +4149,8 @@ Readiness rules：
 
 ### Stage N explicit non-goals
 
-- No code implementation。
-- No schema migration。
-- No broker fact table。
+- No real broker / CTP / SimNow / live implementation。
+- No broker-owned schema or broker fact table；accepted schema change is limited to `0016_stage_n_report_identity_conflict` on existing normalized report identity。
 - No OMS state-machine change。
 - No Domain model field change。
 - No direct OMS / Trade / Position / Accounting mutation。

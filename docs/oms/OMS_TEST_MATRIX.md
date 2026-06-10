@@ -406,7 +406,7 @@ Phase 2.2 只覆盖 OMS Repository / UnitOfWork / `order_events` 持久化边界
 
 | 场景 | 预期 |
 |---|---|
-| read-only OMS proof | Stage L.3 只能通过 typed read-only bridge context 读取 applied `OrderEvent` / compatible `OrderState` proof。 |
+| read-only OMS proof | Stage L.3 只能通过 typed read-only bridge context 读取 applied `OrderEvent` proof；state-only `OrderState` proof 不足以持久化 Trade。 |
 | no OMS apply | Stage L.3 不调用 `OMSService.apply_order_event(...)`。 |
 | no OMS create | Stage L.3 不调用 `OMSService.create_order(...)`。 |
 | no OMS mutation | Stage L.3 不 append `order_events`，不更新 `orders.status` / `orders.version`。 |

@@ -29,6 +29,7 @@ class ExecutionOrchestrationStatus(StrEnum):
     NO_REPORTS = "NO_REPORTS"
     MAPPING_PASSTHROUGH = "MAPPING_PASSTHROUGH"
     OMS_APPLICATION_REJECTED = "OMS_APPLICATION_REJECTED"
+    LEGACY_DEFERRED = "LEGACY_DEFERRED"
 
 
 @dataclass(frozen=True)
@@ -66,24 +67,8 @@ class ApplicationExecutionOrchestrator:
         known_exchange_report_ids: set[str] | None = None,
         allow_status_only_fill: bool = True,
     ) -> ExecutionOrchestrationResult:
-        pre_event = self._pre_event(
-            order,
-            previous_status=OrderStatus.RISK_ACCEPTED,
-            new_status=OrderStatus.SUBMITTING,
-            operation=ExecutionOperation.SUBMIT,
-            external_event_id=external_event_id,
-        )
-        pre_result = self._oms.apply_order_event(pre_event)
-        if pre_result.status is not EventApplicationStatus.APPLIED:
-            return self._pre_event_rejected(pre_result)
-
-        self._ems.submit(pre_result.order)
-        return self._process_reports(
-            pre_result,
-            operation=ExecutionOperation.SUBMIT,
-            known_exchange_report_ids=known_exchange_report_ids,
-            allow_status_only_fill=allow_status_only_fill,
-        )
+        del external_event_id, known_exchange_report_ids, allow_status_only_fill
+        return self._legacy_deferred(order)
 
     def cancel_and_process(
         self,
@@ -93,24 +78,8 @@ class ApplicationExecutionOrchestrator:
         known_exchange_report_ids: set[str] | None = None,
         allow_status_only_fill: bool = True,
     ) -> ExecutionOrchestrationResult:
-        pre_event = self._pre_event(
-            order,
-            previous_status=order.status,
-            new_status=OrderStatus.CANCEL_PENDING,
-            operation=ExecutionOperation.CANCEL,
-            external_event_id=external_event_id,
-        )
-        pre_result = self._oms.apply_order_event(pre_event)
-        if pre_result.status is not EventApplicationStatus.APPLIED:
-            return self._pre_event_rejected(pre_result)
-
-        self._ems.cancel(pre_result.order)
-        return self._process_reports(
-            pre_result,
-            operation=ExecutionOperation.CANCEL,
-            known_exchange_report_ids=known_exchange_report_ids,
-            allow_status_only_fill=allow_status_only_fill,
-        )
+        del external_event_id, known_exchange_report_ids, allow_status_only_fill
+        return self._legacy_deferred(order)
 
     def _process_reports(
         self,
@@ -160,11 +129,7 @@ class ApplicationExecutionOrchestrator:
                 saw_passthrough = True
                 continue
 
-            oms_result = self._oms.apply_order_event(mapping_result.order_event)
-            oms_application_results.append(oms_result)
-            current_order = oms_result.order
-            if oms_result.status is not EventApplicationStatus.APPLIED:
-                saw_oms_rejection = True
+            saw_passthrough = True
 
         if saw_oms_rejection:
             status = ExecutionOrchestrationStatus.OMS_APPLICATION_REJECTED
@@ -218,6 +183,25 @@ class ApplicationExecutionOrchestrator:
             command_executed=False,
             final_order=pre_result.order,
             reason=pre_result.reason or "pre_event_rejected",
+        )
+
+    @staticmethod
+    def _legacy_deferred(
+        order: OrderState,
+    ) -> ExecutionOrchestrationResult:
+        return ExecutionOrchestrationResult(
+            status=ExecutionOrchestrationStatus.LEGACY_DEFERRED,
+            pre_event_result=OrderEventApplicationResult(
+                status=EventApplicationStatus.MISMATCH_REJECTED,
+                order=order,
+                reason=(
+                    "legacy execution orchestrator is deferred; use "
+                    "ExecutionReportNormalizer and OMSEventApplicationService"
+                ),
+            ),
+            command_executed=False,
+            final_order=order,
+            reason="legacy_execution_orchestrator_deferred",
         )
 
     @staticmethod

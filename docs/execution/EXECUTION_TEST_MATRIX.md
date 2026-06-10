@@ -289,7 +289,7 @@
 | 场景 | 预期 | 状态 |
 |---|---|---|
 | source-of-truth path | `NormalizedExecutionReport / applied OMS OrderEvent proof -> typed Trade fact -> TradeRepository`。 | Stage L.3 |
-| allowed inputs | 只消费 filled `NormalizedExecutionReport`、applied OMS `OrderEvent` 或 compatible `OrderState` proof、typed order/instrument/account identity、typed fee/trade identity when available。 | Stage L.3 |
+| allowed inputs | 只消费 filled `NormalizedExecutionReport`、applied OMS `OrderEvent` proof、typed order/instrument/account identity、typed fee/trade identity when available。 | Stage L.3 |
 | forbidden inputs | 不消费 `raw_payload` facts、Broker state as truth、FeatureSnapshot、SignalDecision、TradingRiskResult、OrderIntent mutation、Position/Margin/PnL/Settlement 或 Runtime。 | Stage L.3 |
 | ACKED no trade | `ACKED` report 不创建 Trade，返回 `REJECTED_NOT_FILLED`。 | Stage L.3 |
 | SUBMITTED no trade | `SUBMITTED` report 不创建 Trade，返回 `REJECTED_NOT_FILLED`。 | Stage L.3 |

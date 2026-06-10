@@ -205,7 +205,7 @@ def orchestrator(
     )
 
 
-def test_submit_pre_event_applied_calls_ems_submit() -> None:
+def test_submit_is_deferred_without_oms_or_ems_call() -> None:
     order = order_state()
     submitting = order.model_copy(update={"status": OrderStatus.SUBMITTING})
     oms = FakeOMS(pre_result=app_result(EventApplicationStatus.APPLIED, submitting))
@@ -218,14 +218,15 @@ def test_submit_pre_event_applied_calls_ems_submit() -> None:
         external_event_id="submit-pre-1",
     )
 
-    assert result.status is ExecutionOrchestrationStatus.NO_REPORTS
-    assert result.command_executed is True
-    assert ems.submitted == [submitting]
-    assert oms.applied_events[0].previous_status is OrderStatus.RISK_ACCEPTED
-    assert oms.applied_events[0].new_status is OrderStatus.SUBMITTING
+    assert result.status is ExecutionOrchestrationStatus.LEGACY_DEFERRED
+    assert result.command_executed is False
+    assert ems.submitted == []
+    assert oms.applied_events == []
+    assert result.pre_event_result.reason is not None
+    assert "ExecutionReportNormalizer" in result.pre_event_result.reason
 
 
-def test_submit_pre_event_rejected_does_not_call_ems_submit() -> None:
+def test_submit_does_not_call_oms_even_when_pre_result_would_reject() -> None:
     order = order_state()
     oms = FakeOMS(
         pre_result=app_result(
@@ -243,12 +244,13 @@ def test_submit_pre_event_rejected_does_not_call_ems_submit() -> None:
         handler=FakeReportHandler([]),
     ).submit_and_process(order, external_event_id="submit-pre-1")
 
-    assert result.status is ExecutionOrchestrationStatus.PRE_EVENT_REJECTED
+    assert result.status is ExecutionOrchestrationStatus.LEGACY_DEFERRED
     assert result.command_executed is False
     assert ems.submitted == []
+    assert oms.applied_events == []
 
 
-def test_cancel_pre_event_applied_calls_ems_cancel() -> None:
+def test_cancel_is_deferred_without_oms_or_ems_call() -> None:
     order = order_state(OrderStatus.ACKED)
     cancel_pending = order.model_copy(update={"status": OrderStatus.CANCEL_PENDING})
     oms = FakeOMS(pre_result=app_result(EventApplicationStatus.APPLIED, cancel_pending))
@@ -261,14 +263,15 @@ def test_cancel_pre_event_applied_calls_ems_cancel() -> None:
         handler=FakeReportHandler([]),
     ).cancel_and_process(order, external_event_id="cancel-pre-1")
 
-    assert result.status is ExecutionOrchestrationStatus.NO_REPORTS
-    assert result.command_executed is True
-    assert ems.canceled == [cancel_pending]
-    assert oms.applied_events[0].previous_status is OrderStatus.ACKED
-    assert oms.applied_events[0].new_status is OrderStatus.CANCEL_PENDING
+    assert result.status is ExecutionOrchestrationStatus.LEGACY_DEFERRED
+    assert result.command_executed is False
+    assert ems.canceled == []
+    assert oms.applied_events == []
+    assert result.pre_event_result.reason is not None
+    assert "ExecutionReportNormalizer" in result.pre_event_result.reason
 
 
-def test_cancel_pre_event_rejected_does_not_call_ems_cancel() -> None:
+def test_cancel_does_not_call_oms_even_when_pre_result_would_reject() -> None:
     order = order_state(OrderStatus.FILLED)
     oms = FakeOMS(
         pre_result=app_result(
@@ -286,9 +289,10 @@ def test_cancel_pre_event_rejected_does_not_call_ems_cancel() -> None:
         handler=FakeReportHandler([]),
     ).cancel_and_process(order, external_event_id="cancel-pre-1")
 
-    assert result.status is ExecutionOrchestrationStatus.PRE_EVENT_REJECTED
+    assert result.status is ExecutionOrchestrationStatus.LEGACY_DEFERRED
     assert result.command_executed is False
     assert ems.canceled == []
+    assert oms.applied_events == []
 
 
 def test_report_filtering_only_handles_current_order_and_operation_without_draining() -> None:
@@ -315,8 +319,8 @@ def test_report_filtering_only_handles_current_order_and_operation_without_drain
         handler=handler,
     ).submit_and_process(order, external_event_id="submit-pre-1")
 
-    assert result.status is ExecutionOrchestrationStatus.MAPPING_PASSTHROUGH
-    assert [call[0] for call in handler.calls] == [matched]
+    assert result.status is ExecutionOrchestrationStatus.LEGACY_DEFERRED
+    assert handler.calls == []
     assert sink.list_reports() == [matched, wrong_operation, wrong_order]
     assert sink.drained is False
 
@@ -341,11 +345,11 @@ def test_report_filtering_accepts_string_operation() -> None:
         handler=handler,
     ).submit_and_process(order, external_event_id="submit-pre-1")
 
-    assert result.status is ExecutionOrchestrationStatus.MAPPING_PASSTHROUGH
-    assert [call[0] for call in handler.calls] == [matched]
+    assert result.status is ExecutionOrchestrationStatus.LEGACY_DEFERRED
+    assert handler.calls == []
 
 
-def test_mapped_order_event_calls_oms_apply_order_event() -> None:
+def test_mapped_order_event_path_is_deferred_without_oms_apply() -> None:
     order = order_state()
     submitting = order.model_copy(update={"status": OrderStatus.SUBMITTING})
     acked = order.model_copy(update={"status": OrderStatus.ACKED})
@@ -373,13 +377,10 @@ def test_mapped_order_event_calls_oms_apply_order_event() -> None:
         ),
     ).submit_and_process(order, external_event_id="submit-pre-1")
 
-    assert result.status is ExecutionOrchestrationStatus.REPORTS_PROCESSED
-    assert len(oms.applied_events) == 2
-    assert oms.applied_events[1] == mapped_event
-    assert result.oms_application_results == [
-        app_result(EventApplicationStatus.APPLIED, acked)
-    ]
-    assert result.final_order == acked
+    assert result.status is ExecutionOrchestrationStatus.LEGACY_DEFERRED
+    assert oms.applied_events == []
+    assert result.oms_application_results == []
+    assert result.final_order == order
 
 
 @pytest.mark.parametrize(
@@ -419,12 +420,12 @@ def test_non_mapped_results_do_not_call_oms_apply_order_event(
         ),
     ).submit_and_process(order, external_event_id="submit-pre-1")
 
-    assert result.status is ExecutionOrchestrationStatus.MAPPING_PASSTHROUGH
-    assert len(oms.applied_events) == 1
+    assert result.status is ExecutionOrchestrationStatus.LEGACY_DEFERRED
+    assert oms.applied_events == []
     assert result.oms_application_results == []
 
 
-def test_oms_application_rejected_is_typed_result() -> None:
+def test_legacy_report_apply_rejection_path_is_deferred() -> None:
     order = order_state()
     submitting = order.model_copy(update={"status": OrderStatus.SUBMITTING})
     mapped_event = order_event(
@@ -455,9 +456,9 @@ def test_oms_application_rejected_is_typed_result() -> None:
         ),
     ).submit_and_process(order, external_event_id="submit-pre-1")
 
-    assert result.status is ExecutionOrchestrationStatus.OMS_APPLICATION_REJECTED
-    assert result.oms_application_results == [rejected]
-    assert result.reason == "oms_application_rejected"
+    assert result.status is ExecutionOrchestrationStatus.LEGACY_DEFERRED
+    assert result.oms_application_results == []
+    assert result.reason == "legacy_execution_orchestrator_deferred"
 
 
 def test_no_reports_returns_no_reports_status() -> None:
@@ -471,16 +472,15 @@ def test_no_reports_returns_no_reports_status() -> None:
         handler=FakeReportHandler([]),
     ).submit_and_process(order, external_event_id="submit-pre-1")
 
-    assert result.status is ExecutionOrchestrationStatus.NO_REPORTS
+    assert result.status is ExecutionOrchestrationStatus.LEGACY_DEFERRED
     assert result.mapping_results == []
     assert result.oms_application_results == []
-    assert result.final_order == submitting
+    assert result.final_order == order
 
 
-def test_mapping_context_uses_latest_oms_order_status_and_operation() -> None:
+def test_legacy_orchestrator_does_not_build_report_mapping_context() -> None:
     order = order_state()
     submitting = order.model_copy(update={"status": OrderStatus.SUBMITTING})
-    submitted = order.model_copy(update={"status": OrderStatus.SUBMITTED})
     acked = order.model_copy(update={"status": OrderStatus.ACKED})
     handler = FakeReportHandler(
         [
@@ -497,10 +497,9 @@ def test_mapping_context_uses_latest_oms_order_status_and_operation() -> None:
         ]
     )
 
-    orchestrator(
+    result = orchestrator(
         oms=FakeOMS(
             pre_result=app_result(EventApplicationStatus.APPLIED, submitting),
-            application_results=[app_result(EventApplicationStatus.APPLIED, submitted)],
         ),
         ems=FakeEMS(),
         sink=FakeReportSink(
@@ -517,15 +516,8 @@ def test_mapping_context_uses_latest_oms_order_status_and_operation() -> None:
         allow_status_only_fill=False,
     )
 
-    first_context = handler.calls[0][1]
-    second_context = handler.calls[1][1]
-    assert first_context.current_order_status is OrderStatus.SUBMITTING
-    assert first_context.expected_previous_status is OrderStatus.SUBMITTING
-    assert first_context.known_exchange_report_ids == {"known-report"}
-    assert first_context.operation is ExecutionOperation.SUBMIT
-    assert first_context.allow_status_only_fill is False
-    assert second_context.current_order_status is OrderStatus.SUBMITTED
-    assert second_context.expected_previous_status is OrderStatus.SUBMITTED
+    assert result.status is ExecutionOrchestrationStatus.LEGACY_DEFERRED
+    assert handler.calls == []
 
 
 def test_orchestrator_does_not_import_forbidden_boundaries() -> None:
@@ -560,3 +552,12 @@ def test_orchestrator_does_not_import_forbidden_boundaries() -> None:
         not any(fragment in imported.lower() for fragment in forbidden_fragments)
         for imported in imports
     )
+
+
+def test_orchestrator_source_does_not_call_oms_apply_order_event() -> None:
+    path = Path("src/futures_mvp/modules/execution/orchestrator.py")
+    tree = ast.parse(path.read_text())
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute):
+            assert node.attr != "apply_order_event"

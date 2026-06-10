@@ -2,7 +2,7 @@
 
 本文档是 Execution 的冻结契约。它描述终态 Execution 架构，同时明确 Current facts、Phase 4.1 implementation target、Stage K Execution Gateway contract、Stage L Execution Report Normalization contract、Stage L.2 OMS Event Application contract、Stage L.3 OMS-to-Trade Bridge contract、Stage L.4 Trade-to-Position contract freeze、Phase 4.2+ target 和 Later Phase 的落地区分。除非另开契约迁移，后续实现必须以本文档和 `EXECUTION_TEST_MATRIX.md` 为准。
 
-Phase 4.0 只冻结契约。Phase 4.1 按本文档落地 DTO、enum、MappingContext、MappingResult、MappingError 和 pure mapper。Execution Runtime 和 Stage A ApplicationExecutionOrchestrator 已作为后续阶段实现。Stage K 在 `stage-j2-oms-bridge-core / ee4aace` 后实现 OMS Order -> Execution Gateway command boundary；它只支持 `MOCK` target，不实现真实 Broker、CTP、SimNow、Paper、Sim 或 Live。Stage L 在 `stage-k-execution-gateway-core / 94b498e` 后实现 Execution Report Normalization Core。Stage L.2 在 `stage-l-execution-report-normalization-core / 37cad40` 后实现 OMS event application core。Stage L.3 已在 `stage-l3-oms-to-trade-bridge-core / 957cf89` 完成 OMS-to-Trade Bridge core，不进入 Runtime。Stage L.4 在该基线后只冻结 Trade-to-Position application contract，不写代码、不改 schema、不进入 Stage M。
+Phase 4.0 只冻结契约。Phase 4.1 按本文档落地 DTO、enum、MappingContext、MappingResult、MappingError 和 pure mapper。Execution Runtime 和 Stage A ApplicationExecutionOrchestrator 曾作为后续阶段实现；Pre-Stage-P 后 legacy ApplicationExecutionOrchestrator 已 deferred，不再作为当前 OMS apply path。Stage K 在 `stage-j2-oms-bridge-core / ee4aace` 后实现 OMS Order -> Execution Gateway command boundary；它只支持 `MOCK` target，不实现真实 Broker、CTP、SimNow、Paper、Sim 或 Live。Stage L 在 `stage-k-execution-gateway-core / 94b498e` 后实现 Execution Report Normalization Core。Stage L.2 在 `stage-l-execution-report-normalization-core / 37cad40` 后实现 OMS event application core。Stage L.3 已在 `stage-l3-oms-to-trade-bridge-core / 957cf89` 完成 OMS-to-Trade Bridge core，不进入 Runtime。Stage L.4 已实现 Trade-to-Position handoff，不新增 schema、不进入 Stage M。
 
 ## Final-state Architecture
 
@@ -118,7 +118,7 @@ OMS 是订单状态唯一事实入口：
 - 当前 Stage L 基线为 `stage-l-execution-report-normalization-core / 37cad40`。Stage L 已实现 Execution Report Normalization Core；`ExecutionCommandResult` 只表示 adapter accepted / rejected，不表示 exchange accepted、fill 或 trade。Stage L may build typed `OrderEvent` candidate, but does not call `OMSService.apply_order_event(...)`。
 - 当前 Stage L.2 已实现 `OrderEventCandidate -> typed OrderEvent -> OMSService.apply_order_event(...)` 应用核心。Stage L.2 只推进 OMS `OrderStatus`，不生成 Trade / Fill ledger，不更新 Position / Accounting，不调用 Broker，不进入 Runtime，不新增 schema。
 - 当前 Stage L.3 只创建并持久化 typed Trade fact。Stage L.3 不更新 Position / Accounting，不调用 Broker，不进入 Runtime。
-- 当前 Stage L.4 不调用 Broker，不进入 Runtime，不占用 Stage M。
+- 当前 Stage L.4 已实现 typed Trade 到 `PositionManager.apply_trade(...)` handoff；不调用 Broker，不进入 Runtime，不占用 Stage M。
 
 `MockFuturesExchange.run_daily_settlement(trading_day)` 的移除是 intentional interface migration：
 
@@ -818,7 +818,7 @@ NormalizedExecutionReport / OrderEventCandidate / applied OMS OrderEvent
 Allowed inputs：
 
 - `NormalizedExecutionReport` with `execution_status` in `PARTIALLY_FILLED` / `FILLED`。
-- applied OMS `OrderEvent` or OMS `OrderState` proving OMS accepted the compatible filled status。
+- applied OMS `OrderEvent` proving OMS accepted the compatible filled status and bound to the current normalized report。
 - existing OMS `OrderState` / order identity。
 - typed instrument/account identity。
 - typed fee input if available。
@@ -841,7 +841,7 @@ Forbidden inputs：
 Trade fact may be created only if：
 
 - normalized report status is `PARTIALLY_FILLED` or `FILLED`。
-- corresponding OMS `OrderEvent` has been applied and binds to the current report, or OMS `OrderState` confirms a compatible filled state with typed filled quantity proof。
+- corresponding OMS `OrderEvent` has been applied and binds to the current report。
 - `order_id` / `client_order_id` lineage matches。
 - `filled_qty > 0`。
 - `fill_price > 0`。
@@ -849,7 +849,7 @@ Trade fact may be created only if：
 
 Applied OMS `OrderEvent` proof must match current `NormalizedExecutionReport` on `event_source == EXECUTION_REPORT_NORMALIZER`、`order_id`、`report_id`、`execution_status` and mapped OMS `new_status`、`filled_qty`、`fill_price`、`cumulative_filled_qty` and `report_ts`。Missing typed proof fields are rejected conservatively; Stage L.3 must not recover proof from `raw_payload`。
 
-Compatible `OrderState` proof without applied event is allowed only when `FILLED` report maps to `FILLED` state, `PARTIALLY_FILLED` report maps to `PARTIALLY_FILLED` or `FILLED` state, and `OrderState.filled_quantity >= NormalizedExecutionReport.cumulative_filled_qty`。State-only proof confirms eligibility, not event identity, so `source_order_event_id` must be absent / `None` unless a matching applied OMS `OrderEvent` proof exists。
+Compatible `OrderState` proof without applied event is not sufficient to persist Trade in the current Pre-Stage-P boundary。State-only proof may be inspected only as preview / reject context；missing applied OMS event proof must return `REJECTED_OMS_NOT_APPLIED` and perform no repository write。`source_order_event_id` is required for created Trade and must come from matching applied OMS `OrderEvent` proof。
 
 No Trade may be created from：
 
@@ -1037,14 +1037,14 @@ Stage L.3 does not implement：
 
 ## Stage L.4 Trade-to-Position Contract Freeze
 
-Stage L.4 freezes the downstream application contract that applies typed `Trade` facts to Position. It deliberately stays after Stage L.3 and before Stage M. It does not occupy Stage M, and Stage M remains Runtime / Infrastructure.
+Stage L.4 implements the downstream application contract that applies typed `Trade` facts to Position. It deliberately stays after Stage L.3 and before Stage M. It does not occupy Stage M, and Stage M remains Runtime / Infrastructure.
 
-Stage L.4 is documentation-only：
+Stage L.4 uses existing `PositionManager.apply_trade(...)` and `PositionEvent` audit：
 
-- no code changes。
-- no schema changes。
-- no `src` / `tests` changes。
-- no implementation。
+- no second position ledger。
+- no Margin / PnL / Settlement / AccountSnapshot mutation。
+- no Broker / Runtime entry。
+- no Stage L.4 schema migration。
 
 Source-of-truth flow：
 

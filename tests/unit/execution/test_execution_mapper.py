@@ -624,7 +624,7 @@ def test_expected_previous_partially_filled_same_status_remains_mappable() -> No
         (ExchangeReportType.FULL_FILL, OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED),
     ],
 )
-def test_typed_fill_report_maps_order_event_fill_event_and_trade(
+def test_typed_fill_report_does_not_create_legacy_trade(
     report_type: ExchangeReportType,
     expected_status: OrderStatus,
     previous_status: OrderStatus,
@@ -634,47 +634,17 @@ def test_typed_fill_report_maps_order_event_fill_event_and_trade(
         context(current_order_status=previous_status, allow_status_only_fill=False),
     )
 
-    assert result.status is MappingResultStatus.MAPPED_ORDER_EVENT
-    assert result.order_event is not None
-    assert result.order_event.previous_status is previous_status
-    assert result.order_event.new_status is expected_status
-
-    assert result.fill_event is not None
-    assert result.fill_event.order_id == "order-1"
-    assert result.fill_event.account_id == "acct-1"
-    assert result.fill_event.exchange == "SHFE"
-    assert result.fill_event.instrument_id == "rb2610"
-    assert result.fill_event.exchange_report_id == "report-1"
-    assert result.fill_event.exchange_trade_id == "trade-1"
-    assert result.fill_event.fill_id == "fill-1"
-    assert result.fill_event.direction is Direction.BUY
-    assert result.fill_event.offset is Offset.OPEN
-    assert result.fill_event.price == Decimal("3500.5")
-    assert result.fill_event.quantity == Decimal("1")
-    assert result.fill_event.fee_amount == Decimal("1.2")
-    assert result.fill_event.fee_currency == "CNY"
-    assert result.fill_event.fee_source == "EXCHANGE_REPORT"
-    assert result.fill_event.traded_at == NOW
-    assert result.fill_event.trading_day == date(2026, 1, 1)
-
-    assert result.trade is not None
-    assert result.trade.account_id == "acct-1"
-    assert result.trade.exchange == "SHFE"
-    assert result.trade.exchange_trade_id == "trade-1"
-    assert result.trade.order_id == "order-1"
-    assert result.trade.instrument_id == "rb2610"
-    assert result.trade.direction is Direction.BUY
-    assert result.trade.offset is Offset.OPEN
-    assert result.trade.price == Decimal("3500.5")
-    assert result.trade.quantity == Decimal("1")
-    assert result.trade.fee_amount == Decimal("1.2")
-    assert result.trade.fee_currency == "CNY"
-    assert result.trade.trade_time == NOW
-    assert result.trade.trading_day == date(2026, 1, 1)
-    assert result.trade.source_exchange_report_id == "report-1"
+    del expected_status, previous_status
+    assert result.status is MappingResultStatus.DOMAIN_FIELD_UNSUPPORTED
+    assert result.error is not None
+    assert result.error.reason is MappingErrorReason.DOMAIN_FIELD_UNSUPPORTED
+    assert "OMSToTradeBridgeService" in result.error.message
+    assert result.order_event is None
+    assert result.fill_event is None
+    assert result.trade is None
 
 
-def test_typed_partial_fill_same_status_still_maps_fill_facts() -> None:
+def test_typed_partial_fill_same_status_still_disables_legacy_trade() -> None:
     result = map_exchange_report(
         typed_fill_report(ExchangeReportType.PARTIAL_FILL),
         context(
@@ -683,12 +653,10 @@ def test_typed_partial_fill_same_status_still_maps_fill_facts() -> None:
         ),
     )
 
-    assert result.status is MappingResultStatus.MAPPED_ORDER_EVENT
-    assert result.order_event is not None
-    assert result.order_event.previous_status is OrderStatus.PARTIALLY_FILLED
-    assert result.order_event.new_status is OrderStatus.PARTIALLY_FILLED
-    assert result.fill_event is not None
-    assert result.trade is not None
+    assert result.status is MappingResultStatus.DOMAIN_FIELD_UNSUPPORTED
+    assert result.order_event is None
+    assert result.fill_event is None
+    assert result.trade is None
 
 
 def test_status_only_fill_ignores_typed_fill_fields_when_compatibility_enabled() -> None:
@@ -714,7 +682,7 @@ def test_typed_fill_fee_currency_rule_is_enforced() -> None:
         context(current_order_status=OrderStatus.ACKED, allow_status_only_fill=False),
     )
 
-    assert result.status is MappingResultStatus.MAPPING_ERROR
+    assert result.status is MappingResultStatus.DOMAIN_FIELD_UNSUPPORTED
     assert result.error is not None
     assert result.error.reason is MappingErrorReason.DOMAIN_FIELD_UNSUPPORTED
     assert result.order_event is None

@@ -1,6 +1,6 @@
 # 执行文档
 
-Phase 4.0 Exchange / Execution Contract Gate 已冻结执行契约。Phase 4.1 已实现 DTO、MappingContext、MappingResult、MappingError 和 pure ExchangeReport mapper；Execution Command/Report Runtime Layer 已实现本地 in-memory report surface、EMS command boundary、ConfigurableMockFuturesExchange skeleton 和 mapper wrapper。Stage A 已实现 ApplicationExecutionOrchestrator，负责 OMS pre-event、EMS command、report collection、handler mapping、MappingResult routing 和 `MAPPED_ORDER_EVENT` -> OMS apply。Stage K 已实现 Execution Gateway Core：OMS Order / `OrderState` -> deterministic `ExecutionCommand` -> typed `ExecutionCommandResult`。Stage K only supports `MOCK` target，不连接真实交易接口。Stage L 已实现 Execution Report Normalization Core：typed adapter report input -> deterministic `NormalizedExecutionReport` -> optional OMS `OrderEvent` candidate。Stage L.2 已实现 OMS event application core：`OrderEventCandidate -> typed OrderEvent -> OMSService.apply_order_event(...)`。Stage L.3 已实现 OMS-to-Trade Bridge core：eligible filled `NormalizedExecutionReport` + applied OMS proof -> typed Trade fact -> `TradeRepository`。
+Phase 4.0 Exchange / Execution Contract Gate 已冻结执行契约。Phase 4.1 已实现 DTO、MappingContext、MappingResult、MappingError 和 pure ExchangeReport mapper；Execution Command/Report Runtime Layer 已实现本地 in-memory report surface、EMS command boundary、ConfigurableMockFuturesExchange skeleton 和 mapper wrapper。Legacy `ApplicationExecutionOrchestrator` 已 deferred，不再作为当前 OMS apply 路径。Stage K 已实现 Execution Gateway Core：OMS Order / `OrderState` -> deterministic `ExecutionCommand` -> typed `ExecutionCommandResult`。Stage K only supports `MOCK` target，不连接真实交易接口。Stage L 已实现 Execution Report Normalization Core：typed adapter report input -> deterministic `NormalizedExecutionReport` -> optional OMS `OrderEvent` candidate。Stage L.2 已实现 OMS event application core：`OrderEventCandidate -> typed OrderEvent -> OMSService.apply_order_event(...)`。Stage L.3 已实现 OMS-to-Trade Bridge core：eligible filled `NormalizedExecutionReport` + applied OMS `OrderEvent` proof -> typed Trade fact -> `TradeRepository`。
 
 ## 文档入口
 
@@ -14,7 +14,7 @@ Execution 只维护上述两份主文档。后续新增执行设计优先合并�
 - Phase 4.0 定义 EMS / MockFuturesExchange command port、ExchangeReport / OrderEvent 映射契约。
 - Phase 4.1 已实现 DTO、typed result 和 pure mapper。
 - Execution runtime layer 已实现 `ExchangeCommandPort`、本地 `ExecutionReportSink`、EMS command boundary、ConfigurableMockFuturesExchange 和 `ExecutionReportHandler`。
-- ApplicationExecutionOrchestrator 已实现 submit / cancel 应用编排；它只通过 `OMSService.apply_order_event(...)` 推进订单状态。
+- Legacy `ApplicationExecutionOrchestrator` 当前返回 deferred / unsupported 结果；它不得直接调用 `OMSService.apply_order_event(...)` 或从 legacy `ExchangeReport` 推进 OMS。当前 OMS apply 只能经过 Stage L normalizer -> Stage L.2 `OMSEventApplicationService`。
 - Stage K 已实现 Execution Gateway Core：`ExecutionGatewayService`、`ExecutionCommandRepository`、`execution_commands` migration、`ExecutionAdapter` Protocol 和 deterministic `MockExecutionAdapter`。
 - Stage K only supports `MOCK` target；`PAPER` / `SIM` / `LIVE` typed rejected / deferred。
 - Execution Gateway 只能消费 OMS Order / `OrderState`、OMS order identity、OMS Order 复制的下单字段、typed execution config 和 trading session / calendar context。
@@ -28,11 +28,13 @@ Execution 只维护上述两份主文档。后续新增执行设计优先合并�
 - Stage L.2 已实现 `OMSEventApplicationService`、`OMSOrderEventApplier` / `OMSOrderEventLookup` Protocol、deterministic `event_id`、typed canonical precheck 和 dry-run default replay。Live apply requires explicit `allow_live_apply=True` and must pass canonical duplicate/conflict precheck before OMS apply。
 - Stage L.2 不生成 Trade，不生成 Fill ledger，不更新 Position / Accounting / Margin / PnL / Settlement，不调用 Broker，不进入 Runtime，不新增 schema。
 - Stage L.3 已实现 OMS-to-Trade Bridge core，新增 migration `0014_stage_l3_oms_to_trade_bridge.py` 扩展 existing `trades` / `normalized_execution_reports`，不创建第二套 trade ledger。
-- Stage L.3 只能从 `PARTIALLY_FILLED` / `FILLED` 的 `NormalizedExecutionReport` 加 applied OMS `OrderEvent` / compatible `OrderState` proof 创建 typed Trade fact；applied event proof 必须绑定当前 report，state-only proof 必须有兼容状态和 filled quantity，且不能携带 `source_order_event_id`；`ACKED`、`SUBMITTED`、`REJECTED`、`CANCELED`、`ERROR`、adapter accepted only 和 un-applied candidate 都不得创建 Trade。
+- Stage L.3 只能从 `PARTIALLY_FILLED` / `FILLED` 的 `NormalizedExecutionReport` 加 applied OMS `OrderEvent` proof 创建 typed Trade fact；applied event proof 必须绑定当前 report 并填充 `source_order_event_id`。State-only `OrderState` proof 不得持久化 Trade；`ACKED`、`SUBMITTED`、`REJECTED`、`CANCELED`、`ERROR`、adapter accepted only 和 un-applied candidate 都不得创建 Trade。
 - Stage L.3 Trade identity 优先 `account_id + exchange + exchange_trade_id`；无 `exchange_trade_id` 时只能使用 deterministic and collision-safe fallback，并标记 `identity_source=derived_from_report`。
 - Stage L.3 `TradeRepository` 复用 existing trade ledger，并提供 `append_trade`、`get_by_trade_identity`、`list_by_order_id` bridge surface；same canonical duplicate/no-op，different canonical conflict。
 - Stage L.3 可读 OMS proof，但不得调用 `OMSService.apply_order_event(...)` / `OMSService.create_order(...)`，不得修改 OMS 状态，也不得只凭 OMS status 推导成交价格或数量。
 - Stage L.3 不调用 `PositionManager.apply_trade`，不更新 Position / Margin / PnL / Settlement / account snapshot，不进入 Broker / Runtime。
+- Legacy `ExchangeReport` mapper 不再创建 `Trade`；Trade source-of-truth 只能是 `NormalizedExecutionReport + applied OMS OrderEvent proof -> OMSToTradeBridgeService -> TradeRepository`。
+- ExecutionGateway replay dry-run 是 no-write preview，不写 `execution_commands` 且不调用 adapter；live replay 默认在首个 `CONFLICT` / `ERROR` 停止下游。
 - Fill-like report fields are execution-state facts only；Stage L 不创建 Trade / Fill ledger，不更新 Position，不更新 Accounting。
 - 当前 `MockFuturesExchange` Protocol 只承载 submit / cancel command port，方法返回 `None`；report surface 通过独立 `ExecutionReportSink` 承载。
 - `ExecutionReportSink` 是当前 local / in-memory report surface，不是 Kafka / Redis / Celery，也不是生产事件总线；后续 runtime/infra event bus 必须另开 adapter。

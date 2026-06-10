@@ -198,8 +198,9 @@ def test_partially_filled_trade_created_with_exchange_trade_id() -> None:
     assert result.trade.source_order_event_id == "event-1"
 
 
-def test_filled_trade_created_from_compatible_order_state_without_event() -> None:
-    service = OMSToTradeBridgeService(FakeTradeRepository())
+def test_filled_trade_rejects_state_only_order_proof_without_event() -> None:
+    repository = FakeTradeRepository()
+    service = OMSToTradeBridgeService(repository)
 
     result = service.create_trade(
         _context(
@@ -215,8 +216,11 @@ def test_filled_trade_created_from_compatible_order_state_without_event() -> Non
         )
     )
 
-    assert result.status is TradeBridgeResultStatus.CREATED
+    assert result.status is TradeBridgeResultStatus.REJECTED_OMS_NOT_APPLIED
+    assert result.reason == "applied OMS event proof is required"
+    assert result.trade is None
     assert result.source_order_event_id is None
+    assert repository.trades == {}
 
 
 @pytest.mark.parametrize(
@@ -333,7 +337,7 @@ def test_applied_event_allows_matching_source_order_event_id() -> None:
     assert result.trade.source_order_event_id == "event-1"
 
 
-def test_state_only_proof_rejects_source_order_event_id_override() -> None:
+def test_missing_applied_event_rejects_before_source_order_event_id_override() -> None:
     repository = FakeTradeRepository()
     service = OMSToTradeBridgeService(repository)
 
@@ -344,12 +348,13 @@ def test_state_only_proof_rejects_source_order_event_id_override() -> None:
         )
     )
 
-    assert result.status is TradeBridgeResultStatus.REJECTED_LINEAGE_MISMATCH
+    assert result.status is TradeBridgeResultStatus.REJECTED_OMS_NOT_APPLIED
+    assert result.reason == "applied OMS event proof is required"
     assert result.trade is None
     assert repository.trades == {}
 
 
-def test_compatible_state_proof_requires_filled_quantity_not_behind_report() -> None:
+def test_state_only_proof_rejected_before_quantity_check() -> None:
     repository = FakeTradeRepository()
     service = OMSToTradeBridgeService(repository)
 
@@ -362,10 +367,11 @@ def test_compatible_state_proof_requires_filled_quantity_not_behind_report() -> 
     )
 
     assert result.status is TradeBridgeResultStatus.REJECTED_OMS_NOT_APPLIED
+    assert result.reason == "applied OMS event proof is required"
     assert repository.trades == {}
 
 
-def test_filled_report_requires_filled_order_state_without_event() -> None:
+def test_filled_report_rejects_missing_applied_event_before_state_check() -> None:
     repository = FakeTradeRepository()
     service = OMSToTradeBridgeService(repository)
 
@@ -378,11 +384,13 @@ def test_filled_report_requires_filled_order_state_without_event() -> None:
     )
 
     assert result.status is TradeBridgeResultStatus.REJECTED_OMS_NOT_APPLIED
+    assert result.reason == "applied OMS event proof is required"
     assert repository.trades == {}
 
 
-def test_partially_filled_report_allows_compatible_state_quantity_without_event() -> None:
-    service = OMSToTradeBridgeService(FakeTradeRepository())
+def test_partially_filled_report_rejects_state_only_proof_without_event() -> None:
+    repository = FakeTradeRepository()
+    service = OMSToTradeBridgeService(repository)
 
     result = service.create_trade(
         _context(
@@ -391,10 +399,11 @@ def test_partially_filled_report_allows_compatible_state_quantity_without_event(
         )
     )
 
-    assert result.status is TradeBridgeResultStatus.CREATED
-    assert result.trade is not None
-    assert result.trade.source_order_event_id is None
+    assert result.status is TradeBridgeResultStatus.REJECTED_OMS_NOT_APPLIED
+    assert result.reason == "applied OMS event proof is required"
+    assert result.trade is None
     assert result.source_order_event_id is None
+    assert repository.trades == {}
 
 
 def test_missing_exchange_trade_id_uses_deterministic_fallback() -> None:
