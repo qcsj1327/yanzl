@@ -5793,6 +5793,203 @@ Stage Q.1 does not implement：
 - Decide `SimExecutionHarness` versus shared execution evidence builder。
 - Do not implement SIM until that review is accepted。
 
+## Stage Q.2 SIM Harness Contract Freeze
+
+Stage Q.2 freezes the `SharedExecutionEvidenceBuilder + SimExecutionHarness` contract on baseline `stage-q1-sim-trading-contract-freeze / b459f2d`。
+
+Stage Q.2 is documentation-only：
+
+- No code changes。
+- No `src` or tests changes。
+- No schema or Alembic migration。
+- No `ExecutionTarget.SIM` enablement。
+- No SimNow, CTP, LIVE, broker, live account or network integration。
+
+### Stage Q.2 route decision
+
+Adopt：
+
+- `SharedExecutionEvidenceBuilder`。
+- independent `SimExecutionHarness`。
+
+Reject：
+
+- Directly reusing `PaperExecutionHarness` as the SIM engine。
+- Changing Paper harness into a generic execution engine。
+- Enabling `ExecutionTarget.SIM`。
+
+### Stage Q.2 shared builder scope
+
+`SharedExecutionEvidenceBuilder` may only own：
+
+- deterministic evidence identity construction。
+- typed `BrokerCallbackEvidence` construction。
+- report sequence construction。
+- canonical input validation。
+- cumulative / remaining quantity calculation。
+
+`SharedExecutionEvidenceBuilder` must not：
+
+- hold rollout mode。
+- decide PAPER / SIM safety gates。
+- call adapters。
+- call OMS, Trade, Position or Accounting services。
+- write DB。
+- own order, trade, position or accounting source-of-truth。
+
+### Stage Q.2 namespace / prefix rules
+
+- Paper prefix remains `paper_*`。
+- SIM prefix must be `sim_*`。
+- Paper `adapter_name` remains `paper_harness`。
+- SIM `adapter_name` must be `sim_harness`。
+- `raw_report_id`, `fill_id`, `exchange_trade_id` and `exchange_order_id` must include the mode namespace。
+- Paper and SIM identity domains must not collide。
+
+### Stage Q.2 Paper regression contract
+
+Paper wrapper must preserve：
+
+- `ExecutionTarget.MOCK` only。
+- `adapter_name = paper_harness`。
+- identity prefix = `paper_*`。
+- `ACKED -> FILLED` sequence for full fill。
+- reject behavior。
+- timeout behavior。
+- post-send uncertain behavior。
+- no direct OMS / Trade / Position / Accounting mutation。
+- no broker or network dependency。
+- Paper stable baseline invariants。
+
+### Stage Q.2 SimExecutionHarness contract
+
+Future SIM harness：
+
+- input：typed `ExecutionCommand`。
+- output：typed `ExecutionCommandResult` plus `RawExecutionReport` evidence。
+- uses `SharedExecutionEvidenceBuilder`。
+- owns no business facts。
+- does not directly mutate OMS, Trade, Position or Accounting。
+- does not connect to real broker, SimNow, CTP, live account or network。
+- adds no schema。
+- does not enable `ExecutionTarget.SIM` in Stage Q.2。
+
+### Stage Q.2 SIM policy / scenario contract
+
+Future SIM policies may include：
+
+- immediate full fill。
+- reject。
+- timeout。
+- post-send uncertain。
+- partial fill sequence。
+- latency simulation。
+- slippage。
+- order book / depth simulation。
+
+Stage Q.2 implements none of these policies。
+
+Future implementation must make each policy deterministic or config-bound。
+
+### Stage Q.2 partial fill contract
+
+- `ACKED` must precede `PARTIALLY_FILLED` / `FILLED` when required by the OMS state machine。
+- `cumulative_filled_qty` must be monotonic increasing。
+- per-report `filled_qty` must be positive for fill reports。
+- `remaining_qty` must be non-negative。
+- final `FILLED` cumulative quantity must equal order quantity。
+- overfill is forbidden。
+- report identity must be deterministic per sequence index。
+- duplicate same report must no-op。
+- conflict must stop。
+
+### Stage Q.2 safety gate boundary
+
+SIM harness does not own safety gates。
+
+SIM runtime / job / session layer must enforce：
+
+- `RolloutMode.SIM`。
+- promotion approval PAPER -> SIM。
+- Runtime READY。
+- migration compatible。
+- kill switch released。
+- scheduler not paused。
+- replay not paused。
+- capital controls。
+- account whitelist。
+- instrument whitelist。
+- no live credentials。
+- no live apply。
+
+### Stage Q.2 execution target policy
+
+- Stage Q.2 does not enable `ExecutionTarget.SIM`。
+- Gateway still rejects non-`MOCK` targets。
+- SIM harness may exist as a local controlled evidence generator only after implementation。
+- `RolloutMode.SIM` does not imply `ExecutionTarget.SIM`。
+
+### Stage Q.2 source-of-truth / report path
+
+All SIM evidence must enter：
+
+```text
+RawExecutionReport
+-> ExecutionReportNormalizer
+-> OMSEventApplicationService
+-> OMSToTradeBridgeService
+-> PositionManager
+-> MarginEngine / PnLEngine / SettlementEngine
+```
+
+SIM harness and shared builder never own facts。
+
+Forbidden shortcuts remain：
+
+- Direct OMS apply。
+- Direct Trade creation。
+- Direct Position update。
+- Direct Accounting update。
+
+### Stage Q.2 migration decision
+
+- No schema or Alembic migration。
+- Durable SIM session / audit storage requires a separate contract freeze and acceptance review。
+
+### Stage Q.2 test matrix
+
+Future tests must include：
+
+- Paper regression outputs unchanged after shared builder extraction。
+- SIM immediate fill `ACKED -> FILLED`。
+- SIM partial fill `ACKED -> PARTIALLY_FILLED -> FILLED`。
+- SIM reject / timeout / post-send uncertain。
+- deterministic identities with `sim_*` prefix。
+- no Paper / SIM identity collision。
+- duplicate no-op。
+- conflict stop。
+- no direct mutation。
+- no broker / network imports。
+- gateway still rejects `ExecutionTarget.SIM`。
+- no schema / Alembic migration。
+
+### Stage Q.2 explicit non-goals
+
+Stage Q.2 does not implement：
+
+- shared builder code。
+- sim harness code。
+- SIM runtime / job / session。
+- `ExecutionTarget.SIM`。
+- SimNow / CTP / live。
+- schema changes。
+
+### Stage Q.2 next recommendation
+
+- Implement shared builder extraction。
+- Wrap Paper reports through shared builder without changing output。
+- Implement minimal `SimExecutionHarness` only after Paper regression review。
+
 ### feature_snapshots
 
 Stage H 已新增 `feature_snapshots` 表作为 FeatureSnapshot derived facts ledger。
