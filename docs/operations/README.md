@@ -75,7 +75,7 @@ Stage P.2 Paper Trading End-to-End Flow adds the paper-only coordinator：
 - Duplicate reports no-op; conflict or error stops downstream。
 - `ExecutionTarget.MOCK` remains the only enabled target；`ExecutionTarget.PAPER` / `SIM` / `LIVE` remain disabled and no real broker/network dependency is introduced。
 
-Stage P.3 Paper Runtime Job / Scheduler Wiring is contract-frozen only：
+Stage P.3 Paper Runtime Job / Scheduler Wiring is implemented as the minimal paper runtime callable boundary：
 
 - Paper runtime job may run only under rollout mode `PAPER`, call `PaperTradingCoordinator` through typed `PaperRunContext`, and return typed `PaperRunResult` / `PaperJobResult`。
 - `PaperJobConfig` defaults are disabled and fail-closed：`enabled = False`, explicit `job_name`, `rollout_mode = PAPER`, dry-run default where applicable, `max_commands_per_run`, `stop_on_first_error`, `stop_on_conflict`, and required migration / capital / scheduler-pause / replay-pause gates。

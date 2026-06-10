@@ -1455,10 +1455,11 @@ P.2 target policy：
 - Acceptance criteria：paper full fill can traverse the existing service chain through typed boundaries；reject / timeout / uncertain do not create downstream facts；safety preflight blocks before execution；no schema、real broker、SIM / LIVE or non-`MOCK` target enablement。
 - Suggested tag：`stage-p2-paper-trading-e2e-flow`。
 
-### Stage P.3: Paper Runtime Job / Scheduler Wiring Contract
+### Stage P.3: Paper Runtime Job / Scheduler Wiring
 
-- Goal：冻结 paper runtime job and scheduler wiring contract，将 Stage P.2 coordinator 放入 Runtime / Scheduler callable 边界；本冻结只定义契约，不实现代码。
+- Goal：实现最小 paper runtime job and scheduler wiring，将 Stage P.2 coordinator 放入 Runtime / Scheduler callable 边界。
 - Baseline：`stage-p2-paper-trading-e2e-flow / 041014a`；Stage P.2 Post-Acceptance Gate Review = ACCEPT。
+- Implemented changes：新增 `PaperJobConfig`、`PaperJobStatus`、`PaperJobResult` and `PaperRuntimeJob`；Runtime service graph 新增 `PaperTradingCoordinator` slot and default disabled `PaperJobConfig`；Scheduler 继续只通过 injected `RuntimeJob` callable 调用 paper job。
 - Scope：Paper runtime job may trigger `PaperTradingCoordinator` only under rollout mode `PAPER`, using typed `PaperRunContext`, and returning typed `PaperRunResult` / `PaperJobResult`。
 - Forbidden changes：不实现 SIM / LIVE，不启用 `ExecutionTarget.PAPER` / `SIM` / `LIVE`，不接 real broker / CTP / SimNow / network broker，不新增 schema，不实现 durable job/audit table，不让 runtime 或 scheduler 拥有业务事实。
 
@@ -1550,8 +1551,8 @@ P.3 non-goals：
 
 Implementation recommendation：
 
-- Next implementation should add `PaperJobConfig`, `PaperRuntimeJob` callable, `PaperJobResult`, a runtime service graph slot and scheduler wiring tests。
-- No schema migration is expected。
+- Next implementation should run Stage P.3 acceptance review before considering paper command-provider hardening or broader paper runtime workflows。
+- No schema migration was added or expected。
 
 ## 7. Stage Dependency Graph
 

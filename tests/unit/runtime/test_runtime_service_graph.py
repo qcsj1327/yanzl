@@ -71,6 +71,7 @@ def test_service_graph_builds_required_slots() -> None:
 
     assert graph.validate_required_services()
     assert all(getattr(graph, name) is not None for name in required_service_names())
+    assert graph.paper_job_config.enabled is False
 
 
 def test_required_service_names_include_full_business_chain() -> None:
@@ -90,4 +91,5 @@ def test_required_service_names_include_full_business_chain() -> None:
         "margin",
         "pnl",
         "settlement",
+        "paper_trading",
     )

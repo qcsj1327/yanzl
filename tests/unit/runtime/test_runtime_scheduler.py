@@ -1,6 +1,15 @@
 from futures_mvp.modules.runtime import RuntimeJob, SchedulerConfig, build_scheduler
 
 
+class CountingPaperJob:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self) -> str:
+        self.calls += 1
+        return "paper-result"
+
+
 def test_disabled_scheduler_is_noop() -> None:
     calls: list[str] = []
     scheduler = build_scheduler(
@@ -16,6 +25,20 @@ def test_disabled_scheduler_is_noop() -> None:
     assert calls == []
 
 
+def test_disabled_scheduler_does_not_run_injected_paper_job() -> None:
+    paper_job = CountingPaperJob()
+    scheduler = build_scheduler(
+        SchedulerConfig(),
+        (RuntimeJob(name="paper_runtime_job", callable=paper_job),),
+    )
+
+    scheduler.start()
+    result = scheduler.run_once("paper_runtime_job")
+
+    assert result is None
+    assert paper_job.calls == 0
+
+
 def test_enabled_scheduler_calls_application_callable() -> None:
     calls: list[str] = []
     scheduler = build_scheduler(
@@ -29,6 +52,20 @@ def test_enabled_scheduler_calls_application_callable() -> None:
 
     assert calls == ["called"]
     assert scheduler.is_running is False
+
+
+def test_enabled_scheduler_calls_injected_paper_job_callable() -> None:
+    paper_job = CountingPaperJob()
+    scheduler = build_scheduler(
+        SchedulerConfig(enabled=True, enabled_jobs=("paper_runtime_job",)),
+        (RuntimeJob(name="paper_runtime_job", callable=paper_job),),
+    )
+
+    scheduler.start()
+    result = scheduler.run_once("paper_runtime_job")
+
+    assert result == "paper-result"
+    assert paper_job.calls == 1
 
 
 def test_enabled_scheduler_rejects_unwired_job() -> None:

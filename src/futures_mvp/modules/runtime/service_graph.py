@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import cast
+from typing import Any, cast
 
 from sqlalchemy.orm import Session
 
 from futures_mvp.db.unit_of_work import SQLAlchemyExecutionReportUnitOfWork, SQLAlchemyUnitOfWork
+from futures_mvp.domain.enums import EventSource
+from futures_mvp.domain.models import OrderEvent
 from futures_mvp.interfaces.repositories import (
     ExecutionGatewayUnitOfWork,
     ExecutionReportUnitOfWork,
@@ -29,6 +31,10 @@ from futures_mvp.modules.oms.service import OMSService
 from futures_mvp.modules.oms_bridge.service import OMSBridgeService
 from futures_mvp.modules.oms_event_application.service import OMSEventApplicationService
 from futures_mvp.modules.oms_to_trade.service import OMSToTradeBridgeService
+from futures_mvp.modules.paper_trading import (
+    PaperJobConfig,
+    PaperTradingCoordinator,
+)
 from futures_mvp.modules.pnl.engine import PnLEngine
 from futures_mvp.modules.position.manager import PositionManager
 from futures_mvp.modules.runtime.config import RuntimeConfig
@@ -65,6 +71,8 @@ class RuntimeServiceGraph:
     margin: MarginEngine
     pnl: PnLEngine
     settlement: SettlementEngine
+    paper_trading: PaperTradingCoordinator
+    paper_job_config: PaperJobConfig
 
     def validate_required_services(self) -> bool:
         return all(getattr(self, field) is not None for field in required_service_names())
@@ -87,6 +95,7 @@ class ServiceGraphDependencies:
         _default_execution_report_uow_factory
     )
     execution_adapter: ExecutionAdapter | None = None
+    paper_job_config: PaperJobConfig = field(default_factory=PaperJobConfig)
 
 
 class RuntimeServiceGraphBuilder:
@@ -116,6 +125,17 @@ class RuntimeServiceGraphBuilder:
         )
         execution_report_uow_factory = deps.execution_report_uow_factory
         oms = OMSService(uow_factory, clock=clock)
+        oms_event_lookup = _OMSOrderEventLookup(uow_factory)
+        execution_reports = ExecutionReportNormalizer(execution_report_uow_factory)
+        oms_event_application = OMSEventApplicationService(
+            oms_applier=oms,
+            event_lookup=oms_event_lookup,
+        )
+        oms_to_trade = OMSToTradeBridgeService(deps.trade_repository)
+        position = PositionManager(uow_factory)
+        margin = MarginEngine(uow_factory)
+        pnl = PnLEngine(uow_factory)
+        settlement = SettlementEngine(uow_factory)
         graph = RuntimeServiceGraph(
             config=self._config,
             uow_factory=uow_factory,
@@ -128,13 +148,23 @@ class RuntimeServiceGraphBuilder:
             oms=oms,
             oms_bridge=OMSBridgeService(oms),
             execution_gateway=ExecutionGatewayService(execution_gateway_uow_factory, adapter),
-            execution_reports=ExecutionReportNormalizer(execution_report_uow_factory),
-            oms_event_application=OMSEventApplicationService(oms_applier=oms),
-            oms_to_trade=OMSToTradeBridgeService(deps.trade_repository),
-            position=PositionManager(uow_factory),
-            margin=MarginEngine(uow_factory),
-            pnl=PnLEngine(uow_factory),
-            settlement=SettlementEngine(uow_factory),
+            execution_reports=execution_reports,
+            oms_event_application=oms_event_application,
+            oms_to_trade=oms_to_trade,
+            position=position,
+            margin=margin,
+            pnl=pnl,
+            settlement=settlement,
+            paper_trading=PaperTradingCoordinator(
+                normalizer=execution_reports,
+                oms_event_application=oms_event_application,
+                oms_to_trade=oms_to_trade,
+                position_manager=position,
+                margin_engine=cast(Any, margin),
+                pnl_engine=cast(Any, pnl),
+                settlement_engine=cast(Any, settlement),
+            ),
+            paper_job_config=deps.paper_job_config,
         )
         if not graph.validate_required_services():
             raise ServiceGraphError("runtime service graph is missing required services")
@@ -158,6 +188,7 @@ def required_service_names() -> tuple[str, ...]:
         "margin",
         "pnl",
         "settlement",
+        "paper_trading",
     )
 
 
@@ -173,3 +204,16 @@ def db_reachable(session_factory: Callable[[], Session]) -> bool:
     finally:
         session.close()
     return True
+
+
+class _OMSOrderEventLookup:
+    def __init__(self, uow_factory: UoWFactory) -> None:
+        self._uow_factory = uow_factory
+
+    def get_by_event_key(
+        self,
+        event_source: EventSource,
+        external_event_id: str,
+    ) -> OrderEvent | None:
+        with self._uow_factory() as uow:
+            return uow.order_events.get_by_event_key(event_source, external_event_id)

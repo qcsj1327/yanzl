@@ -5266,11 +5266,13 @@ Duplicate / conflict：
 - Rollout mode `PAPER` must not imply `ExecutionTarget.PAPER`。
 - No CTP、SimNow、live broker、network broker dependency or live account is introduced。
 
-## Stage P.3 Paper Runtime Job / Scheduler Wiring Contract
+## Stage P.3 Paper Runtime Job / Scheduler Wiring
 
-Stage P.3 freezes the paper runtime job / scheduler wiring contract on baseline `stage-p2-paper-trading-e2e-flow / 041014a`。
+Stage P.3 implements the minimal paper runtime job / scheduler wiring on baseline `stage-p2-paper-trading-e2e-flow / 041014a`。
 
-This stage is a contract freeze only. It does not implement code, schema, Alembic revisions, SIM, LIVE, non-`MOCK` execution target enablement, real broker, CTP, SimNow, network broker, remote deployment or durable job/audit tables.
+This stage adds `PaperJobConfig`, `PaperJobStatus`, `PaperJobResult`, `PaperRuntimeJob`, a Runtime service graph `PaperTradingCoordinator` slot, a default disabled `PaperJobConfig`, scheduler callable tests and boundary tests.
+
+This stage does not add schema, Alembic revisions, SIM, LIVE, non-`MOCK` execution target enablement, real broker, CTP, SimNow, network broker, remote deployment or durable job/audit tables.
 
 ### Stage P.3 paper runtime job scope
 
@@ -5435,9 +5437,9 @@ Stage P.3 does not implement：
 - Durable job/audit table。
 - External monitoring stack。
 
-### Stage P.3 implementation recommendation
+### Stage P.3 implementation note
 
-Next implementation should add：
+Implemented objects：
 
 - `PaperJobConfig`。
 - `PaperRuntimeJob` callable。
@@ -5445,7 +5447,7 @@ Next implementation should add：
 - Runtime service graph slot。
 - Scheduler wiring tests。
 
-No schema migration is expected.
+No schema migration is added.
 
 ### feature_snapshots
 
