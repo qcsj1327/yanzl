@@ -1284,12 +1284,12 @@ Implementation recommendation：
 - Acceptance criteria：PAPER / SIM / LIVE modes are mutually exclusive；promotion and rollback are typed and auditable；live remains disabled by default；Runtime uses only `Runtime -> ExecutionGateway -> BrokerAdapter`；capital controls and incident policy block unsafe live entry；ExecutionGateway still rejects non-`MOCK` target。
 - Suggested tag：`stage-p-paper-sim-live-rollout-core`。
 
-### Stage P.1: Paper Trading Enablement Contract Freeze
+### Stage P.1: Paper Trading Enablement Minimal Harness
 
-- Goal：冻结 Paper Trading Enablement 契约，只允许 local deterministic paper execution，不进入 Sim / Live / real broker。
-- Baseline：`stage-p-paper-sim-live-rollout-core / f48098c`；Post-Stage-P System Acceptance Review = ACCEPT。
-- Allowed changes：文档契约、paper adapter / harness gap review、paper runbook / checklist contract。
-- Forbidden changes：不写代码，不改 schema，不改 `src` / tests，不启用 `ExecutionTarget.PAPER`，不接 CTP / SimNow / live，不接真实 broker/network，不接 live account，不部署真实资金。
+- Goal：实现 Paper Trading Enablement 最小 deterministic harness，只生成 local paper execution evidence，不进入 Sim / Live / real broker。
+- Baseline：`stage-p1-paper-trading-contract-freeze / 2d07591`；Paper Adapter / Harness Gap Review recommends adding `PaperExecutionHarness` instead of expanding `MockBrokerAdapter` into a paper execution engine。
+- Implemented changes：新增 `paper_trading` module、`PaperFillPolicy`、`PaperExecutionHarness`、typed `PaperExecutionResult`、deterministic paper report identity helpers、unit / boundary tests and docs update。
+- Forbidden changes preserved：不改 schema，不启用 `ExecutionTarget.PAPER` / `SIM` / `LIVE`，不接 CTP / SimNow / live，不接真实 broker/network，不接 live account，不部署真实资金，不直接 mutate OMS / Trade / Position / Accounting。
 
 Paper scope：
 
@@ -1329,16 +1329,21 @@ Paper adapter / harness contract：
 
 - Input：typed `ExecutionCommand`。
 - Output：typed `ExecutionCommandResult` plus `RawExecutionReport` evidence。
+- `PaperExecutionHarness` reuses the `MockBrokerAdapter` submit boundary and keeps `ExecutionTarget.MOCK` as the only supported target。
+- `ExecutionTarget.PAPER` / `SIM` / `LIVE` remain disabled in `ExecutionGateway` and are rejected by the paper harness。
 - Adapter order reference must be deterministic。
 - Fill identity must be deterministic；no random fill id。
 - Fact identity must not use timestamp-now。
 - `raw_payload` remains diagnostic-only and must not be source-of-truth。
 
-Fill policy：
+P.1 fill policy：
 
-- Allowed paper policies：immediate full fill、immediate reject、partial fill sequence、price slippage policy and timeout / uncertain simulation。
-- Every policy must be deterministic、config-bound、replayable and produce `RawExecutionReport` evidence。
-- Fill policy must not call OMS directly or mutate Trade / Position / Accounting。
+- Implemented policies：immediate full fill、immediate reject、pre-send timeout and post-send uncertain。
+- Immediate full fill and immediate reject produce `RawExecutionReport` evidence through `BrokerCallbackEvidence` and `translate_callback_to_raw_execution_report(...)`。
+- Pre-send timeout and post-send uncertain return typed command failure / uncertain results and produce no report in P.1。
+- Deferred：partial fill sequence、multi-fill、price slippage policy、market-depth/order-book simulation、latency model and timeout recovery workflow。
+- Every implemented policy is deterministic、config-bound and replayable。
+- Fill policy does not call OMS directly or mutate Trade / Position / Accounting。
 
 Paper reports：
 
@@ -1357,6 +1362,7 @@ RawExecutionReport
 - Direct Trade creation is forbidden。
 - Direct Position update is forbidden。
 - Direct Accounting update is forbidden。
+- `PaperExecutionHarness` stops at typed `RawExecutionReport` evidence；normalization、OMS event application、OMS-to-Trade、Position and Accounting remain owned by their existing services。
 
 Paper safety gates：
 
@@ -1397,8 +1403,7 @@ Stage P.1 non-goals：
 
 Implementation recommendation：
 
-- First run Paper adapter / harness gap review。
-- Decide whether to reuse `MockBrokerAdapter` or add `PaperExecutionHarness`。
+- Next implementation should wire the harness through an approved paper runtime entrypoint with Stage O/P safety gates upstream。
 - Keep `ExecutionTarget.MOCK` until explicit `PAPER` target implementation and acceptance review。
 - Treat Paper Enablement as local deterministic evidence generation, not as broker integration。
 

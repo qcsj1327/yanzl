@@ -4964,23 +4964,21 @@ Boundary facts：
 - Add promotion / rollback drill reports before enabling live。
 - Keep `LIVE` behind explicit live flag, operator approval, broker credentials, migration compatibility, Runtime `READY`, kill switch release, replay idle state, scheduler health and verified capital controls。
 
-## Stage P.1 Paper Trading Enablement Contract Freeze
+## Stage P.1 Paper Trading Enablement Minimal Harness
 
-Stage P.1 freezes the Paper Trading Enablement contract on baseline `stage-p-paper-sim-live-rollout-core / f48098c`。
+Stage P.1 implements the Paper Trading Enablement minimal harness on baseline `stage-p1-paper-trading-contract-freeze / 2d07591`。
 
-This stage is documentation-only. It does not add code, schema, Alembic revisions, `src` changes, tests, real broker integration, CTP, SimNow, live account access, network execution, real capital or remote deployment.
+This stage adds local deterministic paper execution evidence generation only. It does not add schema, Alembic revisions, real broker integration, CTP, SimNow, live account access, network execution, real capital or remote deployment.
 
 Stage P.1 purpose：
 
-- Freeze paper-only execution scope。
-- Freeze Paper source-of-truth boundaries。
-- Freeze execution target policy。
-- Freeze paper adapter / harness contract。
-- Freeze deterministic fill policy contract。
-- Freeze report ingestion path。
-- Freeze Paper safety gates。
-- Freeze Paper replay policy。
-- Freeze Paper non-goals and implementation recommendation。
+- Implement `PaperExecutionHarness`。
+- Keep Paper source-of-truth boundaries frozen。
+- Keep `ExecutionTarget.MOCK` as the only enabled gateway target。
+- Generate deterministic typed `ExecutionCommandResult` and `RawExecutionReport` evidence。
+- Keep report ingestion on the accepted normalized report pipeline。
+- Preserve Paper safety gates as upstream Runtime / Stage O/P concerns。
+- Preserve Paper non-goals。
 
 ### Stage P.1 scope
 
@@ -5031,7 +5029,7 @@ Ownership remains：
 - `ExecutionTarget.MOCK` remains the only enabled target。
 - `ExecutionTarget.PAPER` must not be enabled automatically by rollout mode `PAPER`。
 - If a later stage enables `ExecutionTarget.PAPER`, it must be separately implemented and accepted。
-- Paper Enablement may first use `MockBrokerAdapter` or a deterministic paper harness。
+- Paper Enablement now uses `PaperExecutionHarness` and reuses `MockBrokerAdapter` for the submit boundary。
 - Paper adapter / harness must never pretend to be CTP、SimNow、live broker or live account execution。
 
 ### Paper adapter / harness contract
@@ -5053,24 +5051,34 @@ Rules：
 - No timestamp-now as fact identity。
 - `raw_payload` is diagnostic-only and must not be source-of-truth。
 - The adapter / harness must not mutate OMS、Trade、Position or Accounting。
+- The harness has no repository or UnitOfWork dependency and performs no DB writes。
 
 ### Paper fill policy
 
-Allowed policy families：
+Implemented P.1 policy families：
 
 - Immediate full fill。
 - Immediate reject。
-- Partial fill sequence。
-- Price slippage policy。
-- Timeout / uncertain simulation。
+- Pre-send timeout。
+- Post-send uncertain。
 
-Every policy must be：
+Immediate full fill and immediate reject produce `RawExecutionReport` evidence. Pre-send timeout and post-send uncertain return typed command result states and produce no report until a later recovery workflow is accepted.
+
+Every implemented policy is：
 
 - Deterministic。
 - Config-bound。
 - Replayable。
-- Producing `RawExecutionReport` evidence。
 - Not mutating OMS directly。
+
+Deferred policy families：
+
+- Partial fill sequence。
+- Multi-fill。
+- Price slippage policy。
+- Market-depth / order-book simulation。
+- Latency model。
+- Timeout recovery workflow。
 
 ### Paper reports
 
@@ -5091,6 +5099,8 @@ Forbidden：
 - Direct Trade creation。
 - Direct Position update。
 - Direct Accounting update。
+
+`PaperExecutionHarness` stops at `RawExecutionReport` evidence. Existing `ExecutionReportNormalizer` owns normalized execution report facts, `OMSEventApplicationService` owns typed OMS event application, `OMSToTradeBridgeService` owns trade creation, and Position / Accounting remain downstream owners.
 
 ### Stage P.1 safety gates
 
@@ -5157,10 +5167,10 @@ Forbidden：
 
 ### Stage P.1 implementation recommendation
 
-- First perform Paper adapter / harness gap review。
-- Decide whether to reuse `MockBrokerAdapter` or add `PaperExecutionHarness`。
+- `PaperExecutionHarness` is the accepted minimal implementation path。
 - Keep `ExecutionTarget.MOCK` until explicit `PAPER` target acceptance。
 - Treat Paper Enablement as local deterministic evidence generation, not live broker integration。
+- Next implementation should add an approved paper runtime entrypoint that enforces Runtime / Stage O/P safety gates before invoking the harness。
 
 ### feature_snapshots
 
