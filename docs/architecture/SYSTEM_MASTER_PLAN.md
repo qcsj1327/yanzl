@@ -1169,16 +1169,120 @@ Stage O current implementation facts：
 - Observability is typed in-memory only：`OpsEvent`、`OpsHealthReport`、`ReplaySummary`、`SchedulerStatus` and `OpsCounters`；no external monitoring stack is introduced。
 - Stage O does not add Alembic/schema, broker ledger, CTP / SimNow / live adapter, external monitoring dependency or business fact mutation path。
 
-### Stage P: Paper / Sim / Live Rollout
+### Stage P: Paper / Sim / Live Rollout Core
 
-- Goal：按 local -> paper -> sim -> live 递进验收。
-- Inputs：Stage A-O 验收结果、runtime config、broker config、runbook、preflight checklist。
-- Outputs：paper trading run、SimNow run、live preflight、controlled live enablement。
-- Allowed changes：rollout config、environment gates、runbook updates、preflight automation。
-- Forbidden changes：不跳级 live；不绕过 paper/sim；不以手工配置暗示环境；不在 live 前启用真实 submit/cancel。
-- Required tests：paper trading tests、simulation tests、live read-only preflight、dry-run command validation、rollback drill。
-- Acceptance criteria：paper/sim 通过后才可 live；live preflight 全绿且 kill switch 默认安全。
-- Suggested tag：`stage-p-paper-sim-live-rollout`。
+- Goal：实现 Paper / Sim / Live rollout typed safety gates；只到 mode / promotion / rollback / capital / live / replay policy decision，不启用真实 Paper / Sim / Live execution。
+- Baseline：`pre-stage-p-system-acceptance / c834f7c`；Pre-Stage-P System Acceptance Review = ACCEPT。
+- Implemented changes：`RolloutMode`、`RolloutConfig`、`CapitalControlConfig`、capital control evaluator、promotion evaluator、rollback evaluator、Stage P live gate composition helper、mode-aware replay policy、`SafetyConfig.rollout` integration、unit / boundary tests 和 docs update。
+- Forbidden changes：不改 schema，不启用 `ExecutionTarget.PAPER` / `SIM` / `LIVE`，不让 ExecutionGateway 支持非 `MOCK` target，不接 CTP / SimNow / live，不接真实 broker/network，不修改 OMS / Trade / Position / Accounting business facts，不实现 durable approval/audit table。
+
+Mode ownership：
+
+- Rollout modes are exactly `PAPER`、`SIM` and `LIVE`。
+- The three modes are mutually exclusive；Runtime may run only one rollout mode at any time。
+- Mode source-of-truth now enters typed `SafetyConfig.rollout` as `RolloutConfig.mode`；operator approval remains explicit for promotion, live and live replay apply。
+- Simultaneous `PAPER + LIVE`、`SIM + LIVE` or `PAPER + SIM` enablement is forbidden and must fail closed。
+- Mode must never be inferred from environment typo、broker callback、raw payload、runtime guessing or partial config defaults。
+- `RuntimeConfig.environment` is not rollout mode；`ExecutionTarget` is not rollout mode。Default rollout mode is `PAPER`。
+
+Mode source-of-truth：
+
+- Allowed：`RuntimeConfig`、`SafetyConfig` and explicit operator decision。
+- Forbidden：`raw_payload`、unknown / misspelled environment values、broker callback、runtime guessing、manual DB edits or untyped logs。
+- Runtime may report mode, but must not invent mode。
+
+Promotion path：
+
+```text
+PAPER
+-> SIM
+-> LIVE
+```
+
+- `PAPER -> SIM` requires Runtime `READY`、migration compatible、healthy replay result and explicit operator approval。
+- `SIM -> LIVE` requires Runtime `READY`、migration compatible、broker enabled、live gate passed、operator approval、kill switch released、no unresolved critical incidents and passed capital controls。
+- Promotion may not skip a mode；failed promotion leaves the previous accepted mode intact。
+- Same-mode promotion returns typed no-op。
+
+Rollback path：
+
+```text
+LIVE -> SIM
+LIVE -> PAPER
+SIM -> PAPER
+```
+
+- Rollback must support operator rollback、kill switch rollback、migration incompatibility rollback and incident rollback。
+- Rollback is a safety decision, not a mutation of OMS / Trade / Position / Accounting facts。
+- Rollback must preserve evidence：mode decision、incident state、replay summary、broker command/report evidence and operator approval/revocation。
+- Rollback evaluator accepts only `LIVE -> SIM`、`LIVE -> PAPER` and `SIM -> PAPER`；it is typed decision-only and does not mutate business facts。
+
+Live gate：
+
+- Live is disabled by default。
+- `LIVE` requires explicit live flag、operator approval、broker enabled、credentials present、migration compatible、Runtime `READY`、kill switch released、replay not running、scheduler healthy、passed capital controls and no unresolved critical incidents。
+- Any missing, unknown or mismatched input rejects fail-closed。
+- `FAILED`、`KILLED` or `PAUSED` incident state forbids entering `LIVE`。
+
+Capital control contract：
+
+- Stage P safety gate must freeze max order size、max position size、max daily loss、account whitelist and allowed instrument list。
+- Capital controls are rollout safety gates；they are not OMS source-of-truth and must not rewrite orders, trades, positions or accounting facts。
+- Implemented capital controls validate order size、position size、daily loss、account whitelist and instrument whitelist。Empty whitelist is fail-closed for `LIVE`；non-live empty whitelist behavior is explicit in config。
+
+Runtime interaction：
+
+```text
+Runtime
+-> ExecutionGateway
+-> BrokerAdapter
+```
+
+- Runtime must not call Broker directly。
+- Runtime must not mutate OMS directly。
+- Runtime must not mutate Trade、Position、Margin、PnL、Settlement or AccountSnapshot directly。
+- Broker callback evidence must re-enter typed report normalization and existing application boundaries。
+
+Replay policy：
+
+- `PAPER`：replay allowed。
+- `SIM`：replay allowed by policy。
+- `LIVE`：live replay apply disabled by default。
+- Live replay apply requires explicit approval、`allow_live_apply` and operator decision together；missing any one condition rejects。
+- Replay must not run concurrently with live gate entry。
+- Kill switch / replay pause blocks replay policy。`PAPER` / `SIM` replay is allowed by policy；`LIVE` dry-run remains allowed but live apply is gated。
+
+Incident policy：
+
+- Incident states remain `READY`、`DEGRADED`、`FAILED`、`PAUSED` and `KILLED`。
+- Entering `LIVE` is forbidden when state is `FAILED`、`KILLED` or `PAUSED`。
+- `DEGRADED` may only proceed for non-live work unless a future contract defines an explicit exception。
+
+Recovery contract：
+
+- Post-send uncertain：do not blindly resend；query broker by typed keys, convert proven evidence to typed report/reconciliation input, and re-enter Stage L normalization。
+- Unresolved callback：quarantine until lineage is proven；do not mutate OMS / Trade / Position / Accounting from quarantined evidence。
+- Replay recovery：start dry-run, stop on conflict, require operator approval before any live apply resumes。
+- Operator rollback：must revoke approval, record mode transition and preserve evidence before resuming a lower mode。
+
+Non-goals：
+
+- Stage P Core does not implement real capital deployment。
+- No production CTP。
+- No production SimNow。
+- No broker certification。
+- No exchange certification。
+- No remote cluster deployment。
+
+Implementation recommendation：
+
+- Keep this Stage P Core as typed preflight/checklist helpers with no business ledger ownership。
+- Keep mode validation in typed runtime/safety config before any executable rollout。
+- Keep `LIVE` behind explicit operator approval, kill switch release and capital-control gates。
+- Future implementation order after acceptance：paper dry-run, paper command path, sim broker adapter path, live read-only preflight, then controlled live enablement only after a separate acceptance review。
+
+- Acceptance criteria：PAPER / SIM / LIVE modes are mutually exclusive；promotion and rollback are typed and auditable；live remains disabled by default；Runtime uses only `Runtime -> ExecutionGateway -> BrokerAdapter`；capital controls and incident policy block unsafe live entry；ExecutionGateway still rejects non-`MOCK` target。
+- Suggested tag：`stage-p-paper-sim-live-rollout-core`。
 
 ## 7. Stage Dependency Graph
 
@@ -1209,6 +1313,7 @@ Stage L.5 -> Stage M
 Stage M -> Stage N
 Stage N -> Stage O
 Stage O -> Stage P
+Stage P -> Future Production Rollout
 ```
 
 依赖说明：
@@ -1228,6 +1333,7 @@ Stage O -> Stage P
 - Broker / Adapter 完成后不得直接进入 rollout。
 - Stage P 必须依赖 Stage O 的 readiness、kill switch、monitoring、audit、deployment gate、runbook 和 DR 验收。
 - Paper / Sim / Live 不允许跳级。
+- Stage P 只冻结 Paper / Sim / Live rollout 契约；Future Production Rollout 才能讨论真实资金部署、生产 CTP / SimNow、broker / exchange certification 或 remote cluster deployment。
 
 不可跳级规则：
 
@@ -1404,15 +1510,16 @@ FastAPI、Celery、Kafka、Redis、async runtime、cloud、KMS 是后续 Runtime
 
 本总方案没有发现 P0/P1 blocker。
 
-下一步是在 `stage-o-safety-readiness-core / cce8507` 基线上执行 Pre-Stage-P acceptance / P1 forward-fix 后的 Stage P Paper / Sim / Live Rollout gate：
+下一步是在 `pre-stage-p-system-acceptance / c834f7c` 基线上执行 Stage P Paper / Sim / Live Rollout Core acceptance review：
 
 ```text
 Stage P Paper / Sim / Live Rollout
 ```
 
-Stage N Broker Adapter Core 与 Stage O Operations / Safety Core 已完成；Stage P 仍未实现。进入 Stage P 前必须保持：
+Stage N Broker Adapter Core、Stage O Operations / Safety Core、Pre-Stage-P System Acceptance Review 和 Stage P typed rollout safety gates 已完成；Stage P Core 不实现 live enablement。进入任何可执行 Paper / Sim / Live rollout 前必须保持：
 
 - legacy Execution orchestrator 不再作为当前 OMS apply path。
 - Trade source-of-truth 只能来自 `NormalizedExecutionReport + applied OMS OrderEvent proof -> OMSToTradeBridgeService -> TradeRepository`。
 - ExecutionGateway replay dry-run 为 no-write preview；live replay 冲突默认停止下游。
 - Broker / Adapter 不拥有 OMS / Trade / Position / Accounting facts，且 live submit/cancel 默认不启用。
+- PAPER / SIM / LIVE 互斥，`LIVE` 默认禁用，并受 operator approval、kill switch、migration readiness、Runtime READY、broker credentials、scheduler/replay policy 和 capital controls 共同约束。

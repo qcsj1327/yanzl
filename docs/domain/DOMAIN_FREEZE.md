@@ -4630,6 +4630,340 @@ Stage O boundary facts：
 - Add any future recovery code helper as read-only summary / preflight first；repair remains documented operator procedure。
 - Keep Stage P as Paper / Sim / Live Rollout and do not treat Stage O as live enablement。
 
+## Stage P Paper / Sim / Live Rollout Core
+
+Stage P implements typed Paper / Sim / Live rollout safety gates on baseline `pre-stage-p-system-acceptance / c834f7c`。
+
+This stage adds code and tests only for typed safety-gate decisions. It does not add schema, Alembic revisions, real capital deployment, production CTP, production SimNow, broker certification, exchange certification, remote cluster deployment, non-`MOCK` ExecutionGateway support, real broker/network dependencies or durable approval/audit tables.
+
+Stage P purpose：
+
+- Implement rollout mode ownership。
+- Implement rollout mode source-of-truth under `SafetyConfig.rollout`。
+- Implement promotion evaluator。
+- Implement rollback evaluator。
+- Implement Stage P live gate composition。
+- Implement capital control safety evaluator。
+- Implement mode-aware replay policy。
+- Preserve Runtime interaction boundaries。
+- Preserve explicit non-goals before any future production rollout。
+
+### Stage P dependency graph
+
+```text
+Stage O Operations / Safety / Production Readiness
+-> Stage P Paper / Sim / Live Rollout Core
+-> Future Production Rollout
+```
+
+Dependency rules：
+
+- Stage P requires accepted Stage O readiness, kill switch, dry-run/live gate, observability, recovery playbook and operator checklist。
+- Stage P requires Pre-Stage-P System Acceptance Review = ACCEPT。
+- Stage P does not grant production rollout permission by itself。
+- Future Production Rollout must not bypass Stage P mode, live gate, capital control, incident and recovery contracts。
+
+### Mode ownership
+
+Rollout modes：
+
+- `PAPER`。
+- `SIM`。
+- `LIVE`。
+
+Rules：
+
+- `PAPER`、`SIM` and `LIVE` are mutually exclusive。
+- Runtime may run only one rollout mode at any time。
+- Mode is represented in typed `SafetyConfig.rollout.mode`。
+- Mode requires explicit operator decision for promotion, rollback and live entry。
+- Default mode is `PAPER`。
+- `RuntimeConfig.environment` is not rollout mode。
+- `ExecutionTarget` is not rollout mode。
+- Simultaneous `PAPER + LIVE` is forbidden。
+- Simultaneous `SIM + LIVE` is forbidden。
+- Simultaneous `PAPER + SIM` is forbidden unless a later contract explicitly splits isolated runtimes; a single Runtime instance remains one mode only。
+
+### Mode source-of-truth
+
+Allowed mode source-of-truth：
+
+- `RuntimeConfig`。
+- `SafetyConfig`。
+- Explicit operator decision。
+
+Forbidden mode source-of-truth：
+
+- `raw_payload`。
+- unknown, misspelled or partially inferred environment value。
+- broker callback。
+- runtime guessing。
+- manual DB edits。
+- untyped logs / metrics / chat notes。
+
+Rules：
+
+- Mode must fail closed when unset, unknown, conflicting or misspelled。
+- Broker evidence may affect health or recovery, but must not choose rollout mode。
+- Environment labels are valid only after typed config validation；an environment typo must not coerce to `PAPER`、`SIM` or `LIVE`。
+
+### Promotion path
+
+Promotion order：
+
+```text
+PAPER
+-> SIM
+-> LIVE
+```
+
+`PAPER -> SIM` requires：
+
+- Runtime `READY`。
+- Migration compatible。
+- Replay healthy。
+- Explicit operator approval。
+
+`SIM -> LIVE` requires：
+
+- Runtime `READY`。
+- Migration compatible。
+- Broker enabled。
+- Live gate passed。
+- Explicit operator approval。
+- Kill switch released。
+- No unresolved critical incidents。
+- Capital controls passed。
+
+Promotion rules：
+
+- Promotion may not skip a mode。
+- Failed promotion must leave the last accepted mode intact。
+- Promotion decision must be auditable and revocable。
+- Same-mode promotion returns typed no-op。
+
+### Rollback path
+
+Allowed rollback order：
+
+```text
+LIVE -> SIM
+LIVE -> PAPER
+SIM -> PAPER
+```
+
+Rollback triggers：
+
+- Operator rollback。
+- Kill switch rollback。
+- Migration incompatibility rollback。
+- Incident rollback。
+
+Rollback rules：
+
+- Rollback must revoke unsafe live approval before lower-mode resume。
+- Rollback must preserve mode decision, incident state, replay summary, scheduler status, broker evidence and operator decision evidence。
+- Rollback must not rewrite OMS、Trade、Position、Margin、PnL、Settlement、AccountSnapshot、ExecutionCommand or NormalizedExecutionReport facts。
+- Rollback evaluator returns typed decision only and is allowed even when promotion gates fail。
+
+### Live gate
+
+Default：
+
+- Live is disabled。
+- Missing live gate input rejects fail-closed。
+
+`LIVE` requires：
+
+- Explicit live flag。
+- Operator approval。
+- Broker enabled。
+- Credentials present。
+- Migration compatible。
+- Runtime `READY`。
+- Kill switch released。
+- Replay not running。
+- Scheduler healthy。
+- Capital controls passed。
+- No unresolved critical incidents。
+
+Forbidden live entry：
+
+- Incident state is `FAILED`。
+- Incident state is `KILLED`。
+- Incident state is `PAUSED`。
+- Migration state is incompatible or unknown when migration readiness is enabled。
+- Broker credentials are absent。
+- Live flag and operator approval do not match account / environment / adapter target / command surface。
+
+### Capital control contract
+
+Stage P safety gate must freeze：
+
+- Max order size。
+- Max position size。
+- Max daily loss。
+- Account whitelist。
+- Allowed instrument list。
+
+Rules：
+
+- Capital controls belong to the Stage P safety gate。
+- Capital controls are not OMS source-of-truth。
+- Capital controls must not rewrite orders, trades, positions, accounting snapshots or broker reports。
+- Implemented `CapitalControlConfig` covers max order size、max position size、max daily loss、account whitelist and allowed instrument list。
+- Implemented evaluator validates order size、projected position size、daily loss、account whitelist and instrument whitelist。
+- Empty whitelist is fail-closed for `LIVE`；non-live empty whitelist behavior is explicit in config。
+
+### Runtime interaction
+
+Only allowed command path：
+
+```text
+Runtime
+-> ExecutionGateway
+-> BrokerAdapter
+```
+
+Forbidden paths：
+
+- Runtime -> Broker directly。
+- Runtime -> OMS mutation directly。
+- Runtime -> Trade mutation directly。
+- Runtime -> Position mutation directly。
+- Runtime -> Margin / PnL / Settlement / AccountSnapshot mutation directly。
+
+Rules：
+
+- Runtime owns lifecycle, scheduling, health, mode reporting and safety gate orchestration only。
+- ExecutionGateway owns command construction and command ledger boundary。
+- BrokerAdapter owns external adapter dispatch / evidence capture only and owns no business facts。
+- Broker callback evidence must enter through typed adapter/report normalization and existing application boundaries。
+- ExecutionGateway still rejects non-`MOCK` target；Stage P Core does not enable `PAPER` / `SIM` / `LIVE` execution target support。
+
+### Replay rules
+
+`PAPER`：
+
+- Replay allowed。
+
+`SIM`：
+
+- Replay allowed by policy。
+
+`LIVE`：
+
+- Replay live apply disabled by default。
+- Live replay apply requires explicit approval。
+- Live replay apply requires `allow_live_apply`。
+- Live replay apply requires operator decision。
+- All three conditions must be true at the same time。
+- Implemented replay policy keeps `PAPER` / `SIM` replay allowed by policy, `LIVE` dry-run allowed, and `LIVE` live apply rejected unless approval and `allow_live_apply` are both present。
+
+Replay safety：
+
+- Replay must not run concurrently with live gate entry。
+- Replay conflict stops downstream by default。
+- Replay recovery starts with dry-run。
+
+### Incident policy
+
+Incident states：
+
+- `READY`。
+- `DEGRADED`。
+- `FAILED`。
+- `PAUSED`。
+- `KILLED`。
+
+Entering `LIVE`：
+
+- `FAILED` => forbidden。
+- `KILLED` => forbidden。
+- `PAUSED` => forbidden。
+- `DEGRADED` => non-live only unless a future contract defines an explicit exception。
+
+### Recovery contract
+
+Post-send uncertain：
+
+- Do not blindly resend。
+- Query broker by typed lookup keys。
+- Convert proven broker evidence to typed report/reconciliation input。
+- Re-enter Stage L normalization and downstream replay/application boundaries。
+
+Unresolved callback quarantine：
+
+- Keep evidence quarantined until lineage is proven。
+- Do not invent `command_id`、`order_id`、`client_order_id`、`raw_report_id` or trade identity from `raw_payload`。
+- Do not mutate OMS、Trade、Position or Accounting from quarantined evidence。
+
+Replay recovery：
+
+- Start from dry-run replay。
+- Stop on conflict unless a documented operator procedure resolves it。
+- Resume live apply only after explicit operator approval and matching `allow_live_apply`。
+
+Operator rollback：
+
+- Revoke unsafe approval。
+- Record mode transition and incident trigger。
+- Preserve replay and broker evidence。
+- Re-run readiness / migration / safety gates before resume。
+
+### Stage P explicit non-goals
+
+- No real capital deployment。
+- No production CTP。
+- No production SimNow。
+- No broker certification。
+- No exchange certification。
+- No remote cluster deployment。
+- No new business ledger。
+- No OMS state-machine change。
+- No Trade / Position / Accounting semantic change。
+- No schema migration。
+- No non-`MOCK` ExecutionGateway enablement。
+- No durable approval / audit table。
+
+### Stage P implemented facts
+
+Implemented package surface：
+
+- `RolloutMode`。
+- `RolloutConfig` mounted on `SafetyConfig.rollout`。
+- `CapitalControlConfig`。
+- `evaluate_capital_controls(...)`。
+- `evaluate_promotion(...)`。
+- `evaluate_rollback(...)`。
+- `evaluate_stage_p_live_gate(...)`。
+- `evaluate_replay_policy(...)`。
+
+Implemented safety rules：
+
+- Default rollout mode is `PAPER`。
+- `LIVE` mode requires broker enabled at config boundary。
+- `PAPER -> SIM` promotion requires runtime ready、migration compatible、replay healthy and operator approval。
+- `SIM -> LIVE` promotion composes Stage O live gate with runtime ready、replay idle、scheduler healthy、capital controls and unresolved incident checks。
+- `LIVE -> SIM`、`LIVE -> PAPER` and `SIM -> PAPER` rollback return typed accepted decisions without business mutation。
+- Capital controls reject max order、max position、daily loss、account whitelist and instrument whitelist violations。
+- Mode-aware replay policy blocks kill/pause, allows PAPER/SIM replay, and gates LIVE live apply behind approval plus `allow_live_apply`。
+
+Boundary facts：
+
+- No Alembic revision。
+- No schema migration。
+- No CTP / SimNow / live adapter。
+- No real broker/network dependency。
+- No OMS / Trade / Position / Accounting business service mutation。
+- No durable approval/audit table。
+- No ExecutionGateway non-`MOCK` enablement。
+
+### Stage P forward recommendation
+
+- Add promotion / rollback drill reports before enabling live。
+- Keep `LIVE` behind explicit live flag, operator approval, broker credentials, migration compatibility, Runtime `READY`, kill switch release, replay idle state, scheduler health and verified capital controls。
+
 ### feature_snapshots
 
 Stage H 已新增 `feature_snapshots` 表作为 FeatureSnapshot derived facts ledger。

@@ -18,6 +18,8 @@ def _imports(path: Path) -> set[str]:
 def test_ops_safety_does_not_add_schema_or_alembic_revision() -> None:
     assert not list(Path("alembic/versions").glob("*stage_o*"))
     assert not list(Path("alembic/versions").glob("*ops_safety*"))
+    assert not list(Path("alembic/versions").glob("*stage_p*"))
+    assert not list(Path("alembic/versions").glob("*rollout*"))
 
 
 def test_ops_safety_has_no_broker_or_external_monitoring_dependency() -> None:
@@ -48,6 +50,7 @@ def test_ops_safety_does_not_define_business_fact_mutation_calls() -> None:
         "apply_order_event(",
         "create_order(",
         "append_trade",
+        "append_execution_command",
     }
     text = "\n".join(path.read_text() for path in OPS_SAFETY_DIR.glob("*.py"))
 

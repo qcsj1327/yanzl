@@ -6,7 +6,7 @@
 
 不得提前新增 live、production、remote、kms、cloud 或真实交易运行流程。
 
-Stage M Runtime / Infrastructure contract freeze 和 Stage O Operations / Safety / Production Readiness contract freeze 当前记录在：
+Stage M Runtime / Infrastructure contract freeze、Stage O Operations / Safety / Production Readiness contract freeze 和 Stage P Paper / Sim / Live Rollout Contract Freeze 当前记录在：
 
 - `docs/architecture/SYSTEM_MASTER_PLAN.md`
 - `docs/domain/DOMAIN_FREEZE.md`
@@ -37,3 +37,15 @@ Stage O implementation 当前新增 `src/futures_mvp/modules/ops_safety` 并接�
 - recovery playbook must cover replay recovery、conflict recovery、broker post-send uncertain recovery and unresolved callback quarantine handling。
 - incident states are `READY`、`DEGRADED`、`FAILED`、`PAUSED` and `KILLED`。
 - Stage O does not add schema/Alembic、business fact mutation、real live rollout、CTP/SimNow production integration、external monitoring stack、Kubernetes/systemd deployment、remote server deployment or automatic self-healing trade repair。
+
+Stage P Core 当前实现 typed rollout safety gates，但仍不实现真实 rollout：
+
+- `SafetyConfig.rollout` carries `RolloutConfig`；default rollout mode is `PAPER`。
+- Rollout modes are `PAPER`、`SIM` and `LIVE`；单个 Runtime 任一时刻只能处于一个 mode。`RuntimeConfig.environment` 和 `ExecutionTarget` 都不是 rollout mode。
+- Promotion evaluator supports `PAPER -> SIM` and `SIM -> LIVE`；rollback evaluator supports `LIVE -> SIM`、`LIVE -> PAPER`、`SIM -> PAPER`。
+- Live is disabled by default and requires explicit live flag、operator approval、broker enabled、credentials present、migration compatible、Runtime `READY`、kill switch released、replay not running、scheduler healthy、capital controls passed and no unresolved critical incidents。
+- Stage P capital controls implement max order size、max position size、max daily loss、account whitelist and allowed instrument list；these are safety gates, not OMS source-of-truth。
+- Runtime command interaction remains `Runtime -> ExecutionGateway -> BrokerAdapter` only；Runtime must not call Broker directly or mutate OMS / Trade / Position / Accounting directly。
+- Mode-aware replay policy allows PAPER / SIM replay, keeps LIVE live apply disabled by default, and requires explicit approval plus `allow_live_apply` for LIVE live apply。
+- `FAILED`、`KILLED` and `PAUSED` forbid entering `LIVE`。
+- Stage P does not implement real capital deployment、production CTP、production SimNow、broker certification、exchange certification、remote cluster deployment、durable approval/audit table or non-`MOCK` ExecutionGateway support。

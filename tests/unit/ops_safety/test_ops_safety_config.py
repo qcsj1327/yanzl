@@ -6,6 +6,7 @@ from futures_mvp.modules.ops_safety import (
     KillSwitchConfig,
     LiveGateConfig,
     MigrationReadinessConfig,
+    RolloutMode,
     SafetyConfig,
     SafetyConfigError,
 )
@@ -21,6 +22,7 @@ def test_default_safety_config_disables_broker_and_live() -> None:
     assert config.kill_switch.replay_paused is False
     assert config.live_gate.broker_enabled is False
     assert config.live_gate.live_submit_enabled is False
+    assert config.rollout.mode is RolloutMode.PAPER
 
 
 def test_unknown_environment_is_rejected_by_runtime_config() -> None:
@@ -48,4 +50,3 @@ def test_safety_config_rejects_empty_stage_or_revision_names() -> None:
         MigrationReadinessConfig(enabled=True)
     with pytest.raises(SafetyConfigError):
         LiveGateConfig(broker_credentials_handle="")
-

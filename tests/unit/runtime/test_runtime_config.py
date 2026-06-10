@@ -1,5 +1,6 @@
 import pytest
 
+from futures_mvp.modules.ops_safety import RolloutConfig, RolloutMode, SafetyConfig
 from futures_mvp.modules.runtime import (
     ReplayConfig,
     RuntimeConfig,
@@ -16,6 +17,7 @@ def test_runtime_config_defaults_fail_closed() -> None:
     assert config.enable_replay is False
     assert config.replay.default_dry_run is True
     assert config.replay.allowed_live_apply_stages == ()
+    assert config.safety.rollout.mode is RolloutMode.PAPER
 
 
 def test_invalid_timeout_is_rejected() -> None:
@@ -45,3 +47,20 @@ def test_runtime_flags_must_match_nested_configs() -> None:
             enable_replay=True,
             replay=ReplayConfig(enabled=False),
         )
+
+
+def test_runtime_environment_does_not_set_rollout_mode() -> None:
+    config = RuntimeConfig(runtime_id="runtime-1", environment="sim")
+
+    assert config.environment == "sim"
+    assert config.safety.rollout.mode is RolloutMode.PAPER
+
+
+def test_runtime_accepts_explicit_rollout_mode_through_safety_config() -> None:
+    config = RuntimeConfig(
+        runtime_id="runtime-1",
+        environment="test",
+        safety=SafetyConfig(rollout=RolloutConfig(mode=RolloutMode.SIM)),
+    )
+
+    assert config.safety.rollout.mode is RolloutMode.SIM
