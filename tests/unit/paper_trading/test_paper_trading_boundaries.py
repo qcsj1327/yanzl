@@ -47,16 +47,19 @@ def test_paper_trading_does_not_call_business_mutation_boundaries() -> None:
     source = _paper_sources()
 
     forbidden_calls = [
-        "apply_order_event",
         "append_trade",
         "create_or_get_trade",
-        "apply_trade",
         "append_margin_snapshot",
         "append_pnl_snapshot",
-        "settle(",
+        "Trade(",
     ]
     for call in forbidden_calls:
         assert call not in source
+
+    assert "apply_candidate(" in source
+    assert "create_trade(" in source
+    assert ".apply_trade(" in source
+    assert ".settle(" in source
 
 
 def test_paper_trading_has_no_live_network_or_broker_dependencies() -> None:

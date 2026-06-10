@@ -5172,6 +5172,100 @@ Forbidden：
 - Treat Paper Enablement as local deterministic evidence generation, not live broker integration。
 - Next implementation should add an approved paper runtime entrypoint that enforces Runtime / Stage O/P safety gates before invoking the harness。
 
+## Stage P.2 Paper Trading End-to-End Flow
+
+Stage P.2 implements the paper-only end-to-end coordinator on baseline `stage-p1-paper-trading-minimal-harness / 1a2089f`。
+
+This stage adds orchestration only. It does not add schema, Alembic revisions, real broker integration, CTP, SimNow, live account access, network execution, real capital, SIM, LIVE or non-`MOCK` execution target enablement.
+
+Implemented P.2 objects：
+
+- `PaperRunContext`。
+- `PaperAccountingContext`。
+- `PaperRunResult`。
+- `PaperRunStatus`。
+- `PaperTradingCoordinator`。
+
+P.2 paper chain：
+
+```text
+ExecutionCommand
+-> PaperExecutionHarness
+-> RawExecutionReport
+-> ExecutionReportNormalizer
+-> OMSEventApplicationService
+-> OMSToTradeBridgeService
+-> PositionManager
+-> MarginEngine / PnLEngine / SettlementEngine
+```
+
+### Stage P.2 safety preflight
+
+Before harness execution, the coordinator requires：
+
+- `RolloutMode.PAPER`。
+- `SafetyConfig.rollout.mode == PAPER`。
+- Compatible migration readiness。
+- Global kill switch released。
+- Scheduler not paused。
+- Replay not paused。
+- Capital controls passed。
+- Account whitelist and instrument whitelist passed by configured policy。
+
+If preflight rejects, the coordinator does not call the harness and creates no raw report, OMS event, Trade, Position or Accounting fact.
+
+### Stage P.2 source-of-truth boundaries
+
+- The coordinator owns no order truth。
+- The coordinator owns no trade truth。
+- The coordinator owns no position truth。
+- The coordinator owns no accounting truth。
+- Order truth remains OMS-owned。
+- Normalized report truth remains `ExecutionReportNormalizer`-owned。
+- Trade truth remains `OMSToTradeBridgeService` / Trade ledger-owned。
+- Position projection remains `PositionManager`-owned。
+- Accounting facts remain Margin / PnL / Settlement engine-owned。
+
+The coordinator must not call OMS repositories、Trade repositories、Position repositories or accounting repositories directly for mutation.
+
+### Stage P.2 behavior
+
+Full fill：
+
+- `PaperExecutionHarness` generates a filled `RawExecutionReport`。
+- `ExecutionReportNormalizer` persists / deduplicates the normalized report and candidate。
+- `OMSEventApplicationService` applies the typed OMS event when explicitly requested by the paper run context。
+- `OMSToTradeBridgeService` creates Trade only with applied OMS event proof。
+- `PositionManager` applies Trade。
+- Margin / PnL / Settlement engines may run when typed accounting inputs are supplied。
+
+Reject：
+
+- `PaperExecutionHarness` generates a rejected `RawExecutionReport`。
+- `ExecutionReportNormalizer` maps it to rejected normalized report and OMS candidate。
+- `OMSEventApplicationService` may apply OMS rejection。
+- No Trade is created。
+- No Position or Accounting update is produced from the reject report。
+
+Timeout / uncertain：
+
+- Pre-send timeout and post-send uncertain return typed command result states。
+- They produce no `RawExecutionReport` in P.2。
+- No normalized report, OMS event, Trade, Position or Accounting fact is created。
+
+Duplicate / conflict：
+
+- Duplicate normalized raw report is a no-op and does not reapply downstream。
+- Duplicate OMS event and duplicate Trade are recorded as duplicate/no-op results。
+- Any conflict or error stops downstream processing。
+
+### Stage P.2 target policy
+
+- `ExecutionTarget.MOCK` remains the only enabled target。
+- `ExecutionTarget.PAPER` / `SIM` / `LIVE` remain disabled。
+- Rollout mode `PAPER` must not imply `ExecutionTarget.PAPER`。
+- No CTP、SimNow、live broker、network broker dependency or live account is introduced。
+
 ### feature_snapshots
 
 Stage H 已新增 `feature_snapshots` 表作为 FeatureSnapshot derived facts ledger。

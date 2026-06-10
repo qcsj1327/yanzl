@@ -1410,6 +1410,51 @@ Implementation recommendation：
 - Acceptance criteria：Paper execution can be expressed without weakening source-of-truth ownership；paper reports enter only through `RawExecutionReport -> NormalizedExecutionReport -> OMS Event -> Trade -> Position -> Accounting`；non-`MOCK` gateway target remains disabled。
 - Suggested tag：`stage-p1-paper-trading-enablement-contract-freeze`。
 
+### Stage P.2: Paper Trading End-to-End Flow
+
+- Goal：实现 paper-only E2E coordinator，将 Stage P.1 harness evidence 串入现有 accepted main chain，不进入 SIM / LIVE / real broker。
+- Baseline：`stage-p1-paper-trading-minimal-harness / 1a2089f`；Stage P.1 Paper Harness Integration Gate Review = ACCEPT。
+- Implemented changes：新增 `PaperRunContext`、`PaperAccountingContext`、`PaperRunResult`、`PaperRunStatus` and `PaperTradingCoordinator`；新增 safety preflight、report application sequence、full fill / reject / timeout / uncertain paths、duplicate / conflict stop tests、boundary tests and docs update。
+- Forbidden changes preserved：不改 schema，不启用 `ExecutionTarget.PAPER` / `SIM` / `LIVE`，不接 CTP / SimNow / live，不接真实 broker/network，不直接 mutate OMS / Trade / Position / Accounting repositories，不把 paper coordinator 变成 source-of-truth。
+
+P.2 paper E2E sequence：
+
+```text
+ExecutionCommand
+-> PaperExecutionHarness
+-> RawExecutionReport
+-> ExecutionReportNormalizer
+-> OMSEventApplicationService
+-> OMSToTradeBridgeService
+-> PositionManager
+-> MarginEngine / PnLEngine / SettlementEngine
+```
+
+P.2 safety preflight：
+
+- Requires rollout mode `PAPER` and `SafetyConfig.rollout.mode == PAPER`。
+- Requires compatible migration readiness。
+- Blocks on global kill switch、scheduler pause and replay pause。
+- Requires capital controls to pass, including account whitelist and instrument whitelist policy。
+- Safety reject stops before harness execution and has no downstream side effect。
+
+P.2 report and fact ownership：
+
+- The coordinator calls existing services in order；it does not own order、trade、position or accounting truth。
+- Full fill uses applied OMS event proof before `OMSToTradeBridgeService` creates a Trade。
+- Reject reports may apply OMS rejection through `OMSEventApplicationService` but do not create Trade、Position or Accounting facts。
+- Pre-send timeout and post-send uncertain produce no report and no downstream mutation。
+- Duplicate report no-ops; conflict / error stops downstream。
+
+P.2 target policy：
+
+- `ExecutionTarget.MOCK` remains the only enabled execution target。
+- `ExecutionTarget.PAPER` / `SIM` / `LIVE` remain rejected and require separate implementation / acceptance。
+- Rollout mode `PAPER` still does not imply `ExecutionTarget.PAPER`。
+
+- Acceptance criteria：paper full fill can traverse the existing service chain through typed boundaries；reject / timeout / uncertain do not create downstream facts；safety preflight blocks before execution；no schema、real broker、SIM / LIVE or non-`MOCK` target enablement。
+- Suggested tag：`stage-p2-paper-trading-e2e-flow`。
+
 ## 7. Stage Dependency Graph
 
 核心执行与会计链：

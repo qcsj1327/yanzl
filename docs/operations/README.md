@@ -63,3 +63,14 @@ Stage P.1 Paper Trading Enablement minimal harness keeps the next phase local an
 - Paper still obeys rollout mode `PAPER`、kill switch、scheduler pause、replay pause、migration readiness、capital controls、account whitelist and instrument whitelist。
 - Paper replay is allowed, dry-run remains default unless explicitly applying paper facts, conflicts stop downstream, duplicates no-op, and no live apply or broker network is allowed。
 - Next implementation should add an approved paper runtime entrypoint that enforces Runtime / Stage O/P safety gates before invoking `PaperExecutionHarness` while keeping `ExecutionTarget.MOCK` until explicit `PAPER` target acceptance。
+
+Stage P.2 Paper Trading End-to-End Flow adds the paper-only coordinator：
+
+- `PaperTradingCoordinator` runs `ExecutionCommand -> PaperExecutionHarness -> RawExecutionReport -> ExecutionReportNormalizer -> OMSEventApplicationService -> OMSToTradeBridgeService -> PositionManager -> Margin/PnL/Settlement engines`。
+- `PaperRunContext` carries rollout mode, safety config, migration readiness, capital-control context, order lineage, trading day and accounting config hash。
+- Safety preflight requires rollout mode `PAPER`, compatible migration readiness, released kill switch, scheduler/replay not paused and passing capital controls before harness execution。
+- Full fill can traverse the accepted service chain and creates Trade only with applied OMS event proof。
+- Reject may apply OMS rejection but creates no Trade, Position or Accounting facts。
+- Timeout and post-send uncertain produce no report and no downstream mutation。
+- Duplicate reports no-op; conflict or error stops downstream。
+- `ExecutionTarget.MOCK` remains the only enabled target；`ExecutionTarget.PAPER` / `SIM` / `LIVE` remain disabled and no real broker/network dependency is introduced。
