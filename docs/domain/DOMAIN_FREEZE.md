@@ -5266,6 +5266,187 @@ Duplicate / conflict：
 - Rollout mode `PAPER` must not imply `ExecutionTarget.PAPER`。
 - No CTP、SimNow、live broker、network broker dependency or live account is introduced。
 
+## Stage P.3 Paper Runtime Job / Scheduler Wiring Contract
+
+Stage P.3 freezes the paper runtime job / scheduler wiring contract on baseline `stage-p2-paper-trading-e2e-flow / 041014a`。
+
+This stage is a contract freeze only. It does not implement code, schema, Alembic revisions, SIM, LIVE, non-`MOCK` execution target enablement, real broker, CTP, SimNow, network broker, remote deployment or durable job/audit tables.
+
+### Stage P.3 paper runtime job scope
+
+Paper runtime job may only：
+
+- Trigger `PaperTradingCoordinator` while rollout mode is `PAPER`。
+- Build or receive a typed `PaperRunContext`。
+- Return typed `PaperRunResult` / `PaperJobResult`。
+- Observe coordinator output for reporting。
+
+Paper runtime job must not：
+
+- Own order, trade, position or accounting truth。
+- Directly call repositories。
+- Directly call OMS / Trade / Position / Accounting mutation boundaries。
+- Enter SIM or LIVE。
+- Enable `ExecutionTarget.PAPER`, `ExecutionTarget.SIM` or `ExecutionTarget.LIVE`。
+- Connect real broker, CTP, SimNow or network broker dependencies。
+
+### Stage P.3 `PaperJobConfig`
+
+Frozen typed config fields：
+
+- `enabled: bool = False`。
+- `job_name`。
+- `rollout_mode` must be `PAPER`。
+- dry-run default if applicable。
+- `max_commands_per_run`。
+- `stop_on_first_error`。
+- `stop_on_conflict`。
+- `require_migration_ready`。
+- `require_capital_controls`。
+- `require_scheduler_not_paused`。
+- `require_replay_not_paused`。
+
+Defaults are disabled and fail-closed.
+
+### Stage P.3 runtime service graph wiring
+
+Runtime service graph may hold：
+
+- `PaperTradingCoordinator`。
+- Paper job callable。
+- `PaperJobConfig`。
+
+Runtime must not：
+
+- Call `PaperExecutionHarness` directly。
+- Call BrokerAdapter directly。
+- Call OMS / Trade / Position / Accounting repositories directly。
+
+Allowed path：
+
+```text
+Runtime Scheduler
+-> Paper Runtime Job
+-> PaperTradingCoordinator
+-> existing application services
+```
+
+### Stage P.3 scheduler boundary
+
+Scheduler may：
+
+- Call an injected paper job callable。
+- Record typed job result / status。
+
+Scheduler must not：
+
+- Construct `ExecutionCommand` from raw payload。
+- Mutate business facts。
+- Bypass `PaperTradingCoordinator`。
+- Call `PaperExecutionHarness` directly。
+- Call broker directly。
+
+### Stage P.3 safety gates
+
+Before job execution, all configured gates must pass：
+
+- Rollout mode `PAPER`。
+- Scheduler enabled。
+- Paper job enabled。
+- Kill switch released。
+- Scheduler not paused。
+- Replay not paused。
+- Migration compatible。
+- Capital controls pass。
+- Account allowed。
+- Instrument allowed。
+
+If any gate fails, the job returns a typed blocked / rejected result, does not call `PaperTradingCoordinator` and creates no business side effect.
+
+### Stage P.3 dry-run / apply semantics
+
+- Default behavior is disabled or dry-run by config。
+- Apply path is allowed only after every safety gate passes。
+- Dry-run must not mutate ledgers。
+- Paper apply may mutate only through the accepted Stage P.2 service chain。
+- No live apply is allowed。
+
+### Stage P.3 job result / reporting
+
+`PaperJobStatus` values are frozen as：
+
+- `DISABLED`。
+- `BLOCKED`。
+- `DRY_RUN`。
+- `COMPLETED`。
+- `DUPLICATE`。
+- `CONFLICT`。
+- `ERROR`。
+
+`PaperJobResult` fields are frozen as：
+
+- `job_name`。
+- `status`。
+- `reason`。
+- `paper_run_result`。
+- `started_at`。
+- `finished_at`。
+- processed command count。
+- conflict counter。
+- error counter。
+
+`PaperJobResult` is observability only and is not a business source-of-truth.
+
+### Stage P.3 command source
+
+Current P.3 command source may be：
+
+- Explicit typed `ExecutionCommand` input。
+- Injected command provider returning a typed `ExecutionCommand` list。
+
+Forbidden command sources：
+
+- raw payload commands。
+- broker callbacks as commands。
+- runtime guessing。
+- strategy direct bypass。
+
+Strategy-originated commands must arrive through the already accepted workflow / OMS / Execution command path.
+
+### Stage P.3 replay / conflict policy
+
+- Duplicate no-op。
+- Conflict stops downstream。
+- `stop_on_conflict` defaults to true。
+- `stop_on_first_error` defaults to true。
+- No downstream execution after conflict or error。
+
+### Stage P.3 non-goals
+
+Stage P.3 does not implement：
+
+- Strategy live loop。
+- Market data scheduler。
+- SIM。
+- LIVE。
+- non-`MOCK` gateway target。
+- Real broker。
+- Remote deployment。
+- Durable job/audit table。
+- External monitoring stack。
+
+### Stage P.3 implementation recommendation
+
+Next implementation should add：
+
+- `PaperJobConfig`。
+- `PaperRuntimeJob` callable。
+- `PaperJobResult`。
+- Runtime service graph slot。
+- Scheduler wiring tests。
+
+No schema migration is expected.
+
 ### feature_snapshots
 
 Stage H 已新增 `feature_snapshots` 表作为 FeatureSnapshot derived facts ledger。

@@ -74,3 +74,17 @@ Stage P.2 Paper Trading End-to-End Flow adds the paper-only coordinator：
 - Timeout and post-send uncertain produce no report and no downstream mutation。
 - Duplicate reports no-op; conflict or error stops downstream。
 - `ExecutionTarget.MOCK` remains the only enabled target；`ExecutionTarget.PAPER` / `SIM` / `LIVE` remain disabled and no real broker/network dependency is introduced。
+
+Stage P.3 Paper Runtime Job / Scheduler Wiring is contract-frozen only：
+
+- Paper runtime job may run only under rollout mode `PAPER`, call `PaperTradingCoordinator` through typed `PaperRunContext`, and return typed `PaperRunResult` / `PaperJobResult`。
+- `PaperJobConfig` defaults are disabled and fail-closed：`enabled = False`, explicit `job_name`, `rollout_mode = PAPER`, dry-run default where applicable, `max_commands_per_run`, `stop_on_first_error`, `stop_on_conflict`, and required migration / capital / scheduler-pause / replay-pause gates。
+- Runtime service graph may hold `PaperTradingCoordinator`, a paper job callable and `PaperJobConfig`; Runtime must not call `PaperExecutionHarness`, BrokerAdapter, or OMS / Trade / Position / Accounting repositories directly。
+- Scheduler may call only the injected paper job callable and record typed result/status; it must not construct commands from raw payload, mutate business facts, bypass the coordinator, call the harness directly or call broker directly。
+- Before job execution, rollout mode `PAPER`, scheduler enabled, paper job enabled, kill switch released, scheduler not paused, replay not paused, migration compatible, capital controls passed, account allowed and instrument allowed must all pass。
+- Any failed gate returns a typed blocked/rejected job result, does not call the coordinator and creates no business side effect。
+- Dry-run must not mutate ledgers; paper apply may mutate only through the accepted Stage P.2 service chain after all gates pass；no live apply is allowed。
+- `PaperJobStatus` is frozen as `DISABLED`, `BLOCKED`, `DRY_RUN`, `COMPLETED`, `DUPLICATE`, `CONFLICT`, `ERROR`。
+- `PaperJobResult` is observability only, not business source-of-truth, and carries job name, status, reason, paper run result, diagnostic timestamps, processed command count and conflict/error counters。
+- Command source is explicit typed `ExecutionCommand` input or an injected typed command provider；raw payload commands, broker callbacks as commands, runtime guessing and strategy direct bypass are forbidden。
+- P.3 non-goals：strategy live loop, market data scheduler, SIM, LIVE, non-`MOCK` gateway target, real broker, remote deployment, durable job/audit table and external monitoring stack。
