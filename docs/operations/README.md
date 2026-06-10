@@ -343,6 +343,92 @@ Stage Q.2 non-goals：
 
 Next recommendation：implement shared builder extraction, wrap Paper reports through shared builder without changing output and implement minimal `SimExecutionHarness` only after Paper regression review。
 
+Stage Q.5 SIM E2E Contract Freeze：
+
+- Baseline：`stage-q4-minimal-sim-execution-harness / 48a62ab`。
+- Scope：documentation-only；no code, no `src` / tests, no schema, no `ExecutionTarget.SIM`, no broker / SimNow / CTP / LIVE / network。
+- SIM E2E may only use local controlled SIM evidence, typed `ExecutionCommand` input, `SimExecutionHarness` output and the existing report / accounting pipeline。
+- SIM E2E must not use real broker, external exchange, live capital or `ExecutionTarget.SIM` enablement。
+
+SIM E2E coordinator boundary：
+
+- Future implementation must add `SimTradingCoordinator`, `SimRunContext` and `SimRunResult`。
+- SIM E2E must not reuse `PaperTradingCoordinator` as SIM coordinator。
+- Shared orchestration helpers are allowed only if they do not own PAPER / SIM mode semantics。
+- Coordinator may only orchestrate `SimExecutionHarness -> RawExecutionReport -> ExecutionReportNormalizer -> OMSEventApplicationService -> OMSToTradeBridgeService -> PositionManager -> MarginEngine / PnLEngine / SettlementEngine`。
+
+SIM E2E source-of-truth：
+
+- SIM coordinator / harness do not own order truth, execution report facts, trade truth, position truth or accounting truth。
+- Facts remain owned by OMS, `NormalizedExecutionReport`, Trade ledger, Position and Accounting snapshots。
+
+SIM E2E safety preflight：
+
+- Must run before `SimExecutionHarness`。
+- Required gates：`RolloutMode.SIM`, explicit operator approval for PAPER -> SIM, Runtime READY, migration compatible, kill switch released, scheduler / replay not paused, capital controls pass, account whitelist, instrument whitelist, no live credentials, no live apply and no unresolved critical incident。
+
+SIM E2E report sequence：
+
+- Full fill：`ACKED -> FILLED`。
+- Reject：`REJECTED` report, no Trade。
+- Timeout / post-send uncertain：command result only, no report, no downstream。
+- Future partial fill：`ACKED -> PARTIALLY_FILLED* -> FILLED`, cumulative monotonic, no overfill, duplicate no-op and conflict stop。
+
+SIM E2E duplicate / conflict policy：
+
+- duplicate normalized report no-ops。
+- duplicate OMS event no-ops。
+- duplicate trade no-ops。
+- any conflict / error stops downstream。
+- no later Position or Accounting mutation after stop。
+
+SIM E2E accounting contract：
+
+- Use consistent `position_version`, `trading_day` and `config_hash`。
+- Settlement must consume run-local margin and PnL snapshots。
+- Preserve settlement identity checks。
+- Do not fake settlement facts。
+- Do not use instrument-only fallback。
+
+SIM E2E target / runtime policy：
+
+- `ExecutionTarget.MOCK` remains the only enabled target。
+- `ExecutionTarget.SIM` remains disabled。
+- `RolloutMode.SIM` does not imply `ExecutionTarget.SIM`。
+- `SimExecutionHarness` may reject non-`MOCK` until target enablement is separately frozen。
+- Stage Q.5 does not implement `SimRuntimeJob`, `SimLocalSession`, scheduler wiring or target enablement。
+
+SIM E2E migration decision：
+
+- No schema or Alembic migration。
+- Durable SIM session / audit storage requires a separate contract freeze and acceptance review。
+
+Future SIM E2E test matrix：
+
+- non-SIM mode rejected。
+- safety gate blocks。
+- full fill E2E completes。
+- reject no trade。
+- timeout / post-send uncertain no downstream。
+- duplicate no-op。
+- report conflict stop。
+- OMS duplicate stop。
+- trade duplicate stop。
+- accounting settlement identity consistency。
+- no non-`MOCK` gateway enablement。
+- no broker / network / schema。
+
+Stage Q.5 non-goals：
+
+- SIM E2E code。
+- SIM runtime / job / session。
+- `ExecutionTarget.SIM`。
+- SimNow / CTP / live。
+- real broker。
+- partial fill implementation。
+- slippage / depth / latency implementation。
+- schema changes。
+
 Paper local session runbook：
 
 1. Confirm branch/tag：verify the working branch and expected tag before any local paper session.

@@ -5990,6 +5990,179 @@ Stage Q.2 does not implement：
 - Wrap Paper reports through shared builder without changing output。
 - Implement minimal `SimExecutionHarness` only after Paper regression review。
 
+## Stage Q.5 SIM E2E Contract Freeze
+
+Stage Q.5 freezes the SIM E2E coordinator contract on baseline `stage-q4-minimal-sim-execution-harness / 48a62ab`。
+
+Stage Q.5 is documentation-only：
+
+- No code changes。
+- No `src` or tests changes。
+- No schema or Alembic migration。
+- No `ExecutionTarget.SIM` enablement。
+- No SimNow, CTP, LIVE, broker, live account or network integration。
+
+### Stage Q.5 SIM E2E scope
+
+SIM E2E may only use：
+
+- local controlled SIM evidence。
+- typed `ExecutionCommand` input。
+- `SimExecutionHarness` output。
+- existing report / accounting pipeline。
+
+SIM E2E must not use：
+
+- real broker。
+- external exchange。
+- live capital。
+- `ExecutionTarget.SIM` enablement。
+
+### Stage Q.5 coordinator boundary
+
+Future implementation must add：
+
+- `SimTradingCoordinator`。
+- `SimRunContext`。
+- `SimRunResult`。
+
+Coordinator rules：
+
+- SIM E2E must not reuse `PaperTradingCoordinator` as the SIM coordinator。
+- A shared orchestration helper may be extracted only if it does not own PAPER / SIM mode semantics。
+- SIM coordinator may only orchestrate `SimExecutionHarness -> normalizer -> OMS event application -> trade bridge -> position -> accounting`。
+
+The accepted SIM E2E path is：
+
+```text
+SimExecutionHarness
+-> RawExecutionReport
+-> ExecutionReportNormalizer
+-> OMSEventApplicationService
+-> OMSToTradeBridgeService
+-> PositionManager
+-> MarginEngine / PnLEngine / SettlementEngine
+```
+
+### Stage Q.5 source-of-truth
+
+SIM coordinator and harness do not own：
+
+- order truth。
+- execution report facts。
+- trade truth。
+- position truth。
+- accounting truth。
+
+Facts remain owned by：
+
+- OMS。
+- `NormalizedExecutionReport`。
+- Trade ledger。
+- Position。
+- Accounting snapshots。
+
+### Stage Q.5 safety preflight
+
+SIM E2E must run safety preflight before invoking `SimExecutionHarness`。
+
+Required gates：
+
+- `RolloutMode.SIM`。
+- explicit operator approval for PAPER -> SIM。
+- Runtime READY。
+- migration compatible。
+- kill switch released。
+- scheduler not paused。
+- replay not paused。
+- capital controls pass。
+- account whitelist。
+- instrument whitelist。
+- no live credentials。
+- no live apply。
+- no unresolved critical incident。
+
+### Stage Q.5 report sequence
+
+- SIM full fill：`ACKED -> FILLED`。
+- SIM reject：`REJECTED` report and no Trade。
+- SIM timeout / post-send uncertain：command result only, no report and no downstream。
+- Future partial fill：`ACKED -> PARTIALLY_FILLED* -> FILLED`。
+- Future partial fill must keep cumulative quantity monotonic, forbid overfill, make duplicate no-op and stop on conflict。
+
+### Stage Q.5 duplicate / conflict policy
+
+- duplicate normalized report no-ops。
+- duplicate OMS event no-ops。
+- duplicate trade no-ops。
+- any conflict or error stops downstream。
+- no later Position or Accounting mutation may occur after stop。
+
+### Stage Q.5 accounting contract
+
+SIM E2E accounting must：
+
+- use consistent `position_version`。
+- use consistent `trading_day`。
+- use consistent `config_hash`。
+- consume run-local margin and PnL snapshots for settlement。
+- preserve settlement identity checks。
+- not fake settlement facts。
+- not use instrument-only fallback。
+
+### Stage Q.5 target policy
+
+- `ExecutionTarget.MOCK` remains the only enabled target。
+- `ExecutionTarget.SIM` remains disabled。
+- `RolloutMode.SIM` does not imply `ExecutionTarget.SIM`。
+- `SimExecutionHarness` may reject non-`MOCK` until target enablement is separately frozen and accepted。
+
+### Stage Q.5 runtime policy
+
+Stage Q.5 does not implement：
+
+- `SimRuntimeJob`。
+- `SimLocalSession`。
+- scheduler wiring。
+- target enablement。
+
+These require later stages。
+
+### Stage Q.5 migration decision
+
+- No schema or Alembic migration。
+- Durable SIM session / audit storage requires a separate contract freeze and acceptance review。
+
+### Stage Q.5 test matrix
+
+Future SIM E2E tests must include：
+
+- non-SIM mode rejected。
+- safety gate blocks。
+- full fill E2E completes。
+- reject no trade。
+- timeout / post-send uncertain no downstream。
+- duplicate no-op。
+- report conflict stop。
+- OMS duplicate stop。
+- trade duplicate stop。
+- accounting settlement identity consistency。
+- no non-`MOCK` gateway enablement。
+- no broker / network / schema。
+
+### Stage Q.5 explicit non-goals
+
+Stage Q.5 does not implement：
+
+- SIM E2E code。
+- SIM runtime / job / session。
+- `ExecutionTarget.SIM`。
+- SimNow / CTP / live。
+- real broker。
+- partial fill implementation。
+- slippage / depth / latency implementation。
+- schema changes。
+
 ### feature_snapshots
 
 Stage H 已新增 `feature_snapshots` 表作为 FeatureSnapshot derived facts ledger。
