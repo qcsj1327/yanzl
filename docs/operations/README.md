@@ -49,3 +49,16 @@ Stage P Core 当前实现 typed rollout safety gates，但仍不实现真实 rol
 - Mode-aware replay policy allows PAPER / SIM replay, keeps LIVE live apply disabled by default, and requires explicit approval plus `allow_live_apply` for LIVE live apply。
 - `FAILED`、`KILLED` and `PAUSED` forbid entering `LIVE`。
 - Stage P does not implement real capital deployment、production CTP、production SimNow、broker certification、exchange certification、remote cluster deployment、durable approval/audit table or non-`MOCK` ExecutionGateway support。
+
+Stage P.1 Paper Trading Enablement contract freeze keeps the next phase local and deterministic：
+
+- PAPER allows local deterministic paper execution only；no real broker、CTP、SimNow、live account、external network execution or real capital。
+- Paper must continue through `Runtime -> ExecutionGateway -> Paper/Mock adapter -> RawExecutionReport -> NormalizedExecutionReport -> OMS Event -> Trade -> Position -> Accounting`。
+- Paper execution owns no order/trade/position/accounting truth；OMS、normalized reports、trade ledger、position and accounting engines keep ownership。
+- `ExecutionTarget.MOCK` remains the only enabled target；`ExecutionTarget.PAPER` requires separate implementation and acceptance。
+- Paper adapter / harness input is typed `ExecutionCommand`；outputs are typed `ExecutionCommandResult` and `RawExecutionReport` evidence。
+- Fill policies must be deterministic、config-bound、replayable and must not mutate OMS directly。
+- Paper reports must not directly apply OMS, create Trade, update Position or update Accounting。
+- Paper still obeys rollout mode `PAPER`、kill switch、scheduler pause、replay pause、migration readiness、capital controls、account whitelist and instrument whitelist。
+- Paper replay is allowed, dry-run remains default unless explicitly applying paper facts, conflicts stop downstream, duplicates no-op, and no live apply or broker network is allowed。
+- Next implementation should first review the paper adapter / harness gap and decide whether to reuse `MockBrokerAdapter` or add `PaperExecutionHarness` while keeping `ExecutionTarget.MOCK` until explicit `PAPER` target acceptance。

@@ -4964,6 +4964,204 @@ Boundary facts：
 - Add promotion / rollback drill reports before enabling live。
 - Keep `LIVE` behind explicit live flag, operator approval, broker credentials, migration compatibility, Runtime `READY`, kill switch release, replay idle state, scheduler health and verified capital controls。
 
+## Stage P.1 Paper Trading Enablement Contract Freeze
+
+Stage P.1 freezes the Paper Trading Enablement contract on baseline `stage-p-paper-sim-live-rollout-core / f48098c`。
+
+This stage is documentation-only. It does not add code, schema, Alembic revisions, `src` changes, tests, real broker integration, CTP, SimNow, live account access, network execution, real capital or remote deployment.
+
+Stage P.1 purpose：
+
+- Freeze paper-only execution scope。
+- Freeze Paper source-of-truth boundaries。
+- Freeze execution target policy。
+- Freeze paper adapter / harness contract。
+- Freeze deterministic fill policy contract。
+- Freeze report ingestion path。
+- Freeze Paper safety gates。
+- Freeze Paper replay policy。
+- Freeze Paper non-goals and implementation recommendation。
+
+### Stage P.1 scope
+
+PAPER only allows：
+
+- Local deterministic paper execution。
+- No real broker。
+- No CTP。
+- No SimNow。
+- No live account。
+- No external network execution。
+- No real capital。
+
+PAPER must continue through the main chain：
+
+```text
+Runtime
+-> ExecutionGateway
+-> Paper/Mock adapter
+-> RawExecutionReport
+-> NormalizedExecutionReport
+-> OMS Event
+-> Trade
+-> Position
+-> Accounting
+```
+
+### Stage P.1 source-of-truth
+
+Paper execution must not own：
+
+- Order truth。
+- Trade truth。
+- Position truth。
+- Accounting truth。
+
+Ownership remains：
+
+- OMS owns order truth。
+- `NormalizedExecutionReport` owns normalized execution report facts。
+- OMS Event Application owns typed OMS event application。
+- Trade ledger owns trade facts。
+- Position owns position projection。
+- Accounting owns MarginSnapshot / PnLSnapshot / SettlementSnapshot / AccountSnapshot facts。
+
+### Stage P.1 execution target policy
+
+- `ExecutionTarget.MOCK` remains the only enabled target。
+- `ExecutionTarget.PAPER` must not be enabled automatically by rollout mode `PAPER`。
+- If a later stage enables `ExecutionTarget.PAPER`, it must be separately implemented and accepted。
+- Paper Enablement may first use `MockBrokerAdapter` or a deterministic paper harness。
+- Paper adapter / harness must never pretend to be CTP、SimNow、live broker or live account execution。
+
+### Paper adapter / harness contract
+
+Input：
+
+- Typed `ExecutionCommand`。
+
+Output：
+
+- Typed `ExecutionCommandResult`。
+- `RawExecutionReport` evidence。
+
+Rules：
+
+- Fill policy must be deterministic。
+- `adapter_order_ref` must be deterministic。
+- No random fill id。
+- No timestamp-now as fact identity。
+- `raw_payload` is diagnostic-only and must not be source-of-truth。
+- The adapter / harness must not mutate OMS、Trade、Position or Accounting。
+
+### Paper fill policy
+
+Allowed policy families：
+
+- Immediate full fill。
+- Immediate reject。
+- Partial fill sequence。
+- Price slippage policy。
+- Timeout / uncertain simulation。
+
+Every policy must be：
+
+- Deterministic。
+- Config-bound。
+- Replayable。
+- Producing `RawExecutionReport` evidence。
+- Not mutating OMS directly。
+
+### Paper reports
+
+Paper reports must enter only through：
+
+```text
+RawExecutionReport
+-> ExecutionReportNormalizer
+-> OMSEventApplication
+-> OMSToTrade
+-> Position
+-> Accounting
+```
+
+Forbidden：
+
+- Direct OMS apply。
+- Direct Trade creation。
+- Direct Position update。
+- Direct Accounting update。
+
+### Stage P.1 safety gates
+
+Paper still obeys：
+
+- Rollout mode `PAPER`。
+- Global kill switch。
+- Scheduler pause。
+- Replay pause。
+- Migration readiness。
+- Capital controls。
+- Account whitelist。
+- Instrument whitelist。
+
+Paper has no real-money exemption from safety gates.
+
+### Stage P.1 replay policy
+
+- Paper replay is allowed。
+- Dry-run remains default unless explicitly applying paper facts。
+- Conflict stops downstream。
+- Duplicate same canonical is no-op。
+- No live apply。
+- No broker network。
+
+### Stage P.1 capital controls
+
+Paper must still enforce：
+
+- Max order size。
+- Max position size。
+- Max daily loss。
+- Account whitelist。
+- Allowed instrument list。
+
+These controls remain Stage P safety gates and are not OMS source-of-truth.
+
+### Stage P.1 runtime interaction
+
+Only allowed entry：
+
+```text
+Runtime
+-> ExecutionGateway
+-> adapter / harness
+```
+
+Forbidden：
+
+- Runtime -> adapter direct。
+- Runtime -> OMS direct。
+- Runtime -> Trade / Position / Accounting direct。
+
+### Stage P.1 explicit non-goals
+
+- No SIM。
+- No LIVE。
+- No real broker。
+- No CTP。
+- No SimNow。
+- No non-`MOCK` gateway target enablement unless separately approved。
+- No real capital。
+- No remote deployment。
+
+### Stage P.1 implementation recommendation
+
+- First perform Paper adapter / harness gap review。
+- Decide whether to reuse `MockBrokerAdapter` or add `PaperExecutionHarness`。
+- Keep `ExecutionTarget.MOCK` until explicit `PAPER` target acceptance。
+- Treat Paper Enablement as local deterministic evidence generation, not live broker integration。
+
 ### feature_snapshots
 
 Stage H 已新增 `feature_snapshots` 表作为 FeatureSnapshot derived facts ledger。

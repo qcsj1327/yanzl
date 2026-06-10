@@ -1284,6 +1284,127 @@ Implementation recommendation：
 - Acceptance criteria：PAPER / SIM / LIVE modes are mutually exclusive；promotion and rollback are typed and auditable；live remains disabled by default；Runtime uses only `Runtime -> ExecutionGateway -> BrokerAdapter`；capital controls and incident policy block unsafe live entry；ExecutionGateway still rejects non-`MOCK` target。
 - Suggested tag：`stage-p-paper-sim-live-rollout-core`。
 
+### Stage P.1: Paper Trading Enablement Contract Freeze
+
+- Goal：冻结 Paper Trading Enablement 契约，只允许 local deterministic paper execution，不进入 Sim / Live / real broker。
+- Baseline：`stage-p-paper-sim-live-rollout-core / f48098c`；Post-Stage-P System Acceptance Review = ACCEPT。
+- Allowed changes：文档契约、paper adapter / harness gap review、paper runbook / checklist contract。
+- Forbidden changes：不写代码，不改 schema，不改 `src` / tests，不启用 `ExecutionTarget.PAPER`，不接 CTP / SimNow / live，不接真实 broker/network，不接 live account，不部署真实资金。
+
+Paper scope：
+
+- PAPER allows local deterministic paper execution only。
+- PAPER must not use real broker、CTP、SimNow、live account、external network execution or real capital。
+- PAPER must continue through the accepted main chain：
+
+```text
+Runtime
+-> ExecutionGateway
+-> Paper/Mock adapter
+-> RawExecutionReport
+-> NormalizedExecutionReport
+-> OMS Event
+-> Trade
+-> Position
+-> Accounting
+```
+
+Paper source-of-truth：
+
+- Paper execution owns no order truth、trade truth、position truth or accounting truth。
+- OMS owns order truth。
+- `NormalizedExecutionReport` owns normalized execution report facts。
+- Trade ledger owns trade facts。
+- Position owns position projection。
+- Accounting engines own margin / pnl / settlement / account snapshots。
+
+Execution target policy：
+
+- `ExecutionTarget.MOCK` remains the only enabled target at this baseline。
+- `ExecutionTarget.PAPER` must not be automatically enabled by PAPER rollout mode。
+- Any future `PAPER` target enablement requires separate implementation and acceptance review。
+- Paper Enablement may reuse `MockBrokerAdapter` or a deterministic paper harness, but it must not claim to be a live broker。
+
+Paper adapter / harness contract：
+
+- Input：typed `ExecutionCommand`。
+- Output：typed `ExecutionCommandResult` plus `RawExecutionReport` evidence。
+- Adapter order reference must be deterministic。
+- Fill identity must be deterministic；no random fill id。
+- Fact identity must not use timestamp-now。
+- `raw_payload` remains diagnostic-only and must not be source-of-truth。
+
+Fill policy：
+
+- Allowed paper policies：immediate full fill、immediate reject、partial fill sequence、price slippage policy and timeout / uncertain simulation。
+- Every policy must be deterministic、config-bound、replayable and produce `RawExecutionReport` evidence。
+- Fill policy must not call OMS directly or mutate Trade / Position / Accounting。
+
+Paper reports：
+
+- Paper reports may enter only through:
+
+```text
+RawExecutionReport
+-> ExecutionReportNormalizer
+-> OMSEventApplication
+-> OMSToTrade
+-> Position
+-> Accounting
+```
+
+- Direct OMS apply is forbidden。
+- Direct Trade creation is forbidden。
+- Direct Position update is forbidden。
+- Direct Accounting update is forbidden。
+
+Paper safety gates：
+
+- Paper still obeys rollout mode `PAPER`、kill switch、scheduler pause、replay pause、migration readiness、capital controls、account whitelist and instrument whitelist。
+- Paper has no real money exemption from capital controls。
+
+Paper replay：
+
+- Paper replay is allowed。
+- Dry-run remains default unless explicitly applying paper facts。
+- Conflict stops downstream。
+- Duplicate same canonical is no-op。
+- No live replay apply。
+- No broker network。
+
+Runtime interaction：
+
+```text
+Runtime
+-> ExecutionGateway
+-> adapter / harness
+```
+
+- Runtime must not call adapter directly。
+- Runtime must not mutate OMS directly。
+- Runtime must not mutate Trade / Position / Accounting directly。
+
+Stage P.1 non-goals：
+
+- No SIM。
+- No LIVE。
+- No real broker。
+- No CTP。
+- No SimNow。
+- No non-`MOCK` gateway target enablement unless separately approved。
+- No real capital。
+- No remote deployment。
+
+Implementation recommendation：
+
+- First run Paper adapter / harness gap review。
+- Decide whether to reuse `MockBrokerAdapter` or add `PaperExecutionHarness`。
+- Keep `ExecutionTarget.MOCK` until explicit `PAPER` target implementation and acceptance review。
+- Treat Paper Enablement as local deterministic evidence generation, not as broker integration。
+
+- Acceptance criteria：Paper execution can be expressed without weakening source-of-truth ownership；paper reports enter only through `RawExecutionReport -> NormalizedExecutionReport -> OMS Event -> Trade -> Position -> Accounting`；non-`MOCK` gateway target remains disabled。
+- Suggested tag：`stage-p1-paper-trading-enablement-contract-freeze`。
+
 ## 7. Stage Dependency Graph
 
 核心执行与会计链：
