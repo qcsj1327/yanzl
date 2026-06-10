@@ -512,7 +512,7 @@ class FakePositionRepository:
             instrument_id=instrument_id,
             realized_pnl=realized_pnl,
             unrealized_pnl=unrealized_pnl,
-            version=(expected_version or 0) + 1,
+            version=expected_version or 0,
         )
 
 

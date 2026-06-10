@@ -422,7 +422,7 @@ class FakePositionRepository:
             account_id=account_id,
             instrument_id=instrument_id,
             margin_used=margin_used,
-            version=(expected_version or 0) + 1,
+            version=expected_version or 0,
         )
 
     def list_by_account(self, account_id: str) -> list[Position]:

@@ -298,31 +298,39 @@ def _position_payload(position: Position) -> dict[str, Any]:
         "id": position.id,
         "account_id": position.account_id,
         "instrument_id": position.instrument_id,
-        "long_today_qty": str(position.long_today_qty),
-        "long_yesterday_qty": str(position.long_yesterday_qty),
-        "short_today_qty": str(position.short_today_qty),
-        "short_yesterday_qty": str(position.short_yesterday_qty),
-        "frozen_long_qty": str(position.frozen_long_qty),
-        "frozen_short_qty": str(position.frozen_short_qty),
-        "long_avg_price": str(position.long_avg_price),
-        "short_avg_price": str(position.short_avg_price),
-        "settlement_price": str(position.settlement_price),
-        "last_price": str(position.last_price),
-        "realized_pnl": str(position.realized_pnl),
-        "unrealized_pnl": str(position.unrealized_pnl),
-        "margin_used": str(position.margin_used),
+        "long_today_qty": _decimal_payload(position.long_today_qty),
+        "long_yesterday_qty": _decimal_payload(position.long_yesterday_qty),
+        "short_today_qty": _decimal_payload(position.short_today_qty),
+        "short_yesterday_qty": _decimal_payload(position.short_yesterday_qty),
+        "frozen_long_qty": _decimal_payload(position.frozen_long_qty),
+        "frozen_short_qty": _decimal_payload(position.frozen_short_qty),
+        "long_avg_price": _decimal_payload(position.long_avg_price),
+        "short_avg_price": _decimal_payload(position.short_avg_price),
+        "settlement_price": _decimal_payload(position.settlement_price),
+        "last_price": _decimal_payload(position.last_price),
+        "realized_pnl": _decimal_payload(position.realized_pnl),
+        "unrealized_pnl": _decimal_payload(position.unrealized_pnl),
+        "margin_used": _decimal_payload(position.margin_used),
         "version": position.version,
     }
 
 
 def _rolled_position_payload(position: Position) -> dict[str, Any]:
     payload = _position_payload(position)
-    payload["long_yesterday_qty"] = str(position.long_yesterday_qty + position.long_today_qty)
-    payload["short_yesterday_qty"] = str(position.short_yesterday_qty + position.short_today_qty)
+    payload["long_yesterday_qty"] = _decimal_payload(
+        position.long_yesterday_qty + position.long_today_qty
+    )
+    payload["short_yesterday_qty"] = _decimal_payload(
+        position.short_yesterday_qty + position.short_today_qty
+    )
     payload["long_today_qty"] = "0"
     payload["short_today_qty"] = "0"
     payload["version"] = position.version + 1
     return payload
+
+
+def _decimal_payload(value: Decimal) -> str:
+    return format(value.normalize(), "f")
 
 
 def _settlement_price_payload(price: SettlementPrice) -> dict[str, Any]:

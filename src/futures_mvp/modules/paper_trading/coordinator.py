@@ -10,6 +10,7 @@ from futures_mvp.domain.enums import (
     ExecutionReportNormalizeResultStatus,
     ExecutionReportStatus,
     MarginResultStatus,
+    Offset,
     OMSEventApplyResultStatus,
     PnLPriceBasis,
     PnLResultStatus,
@@ -24,6 +25,7 @@ from futures_mvp.domain.models import (
     ExecutionReportNormalizeResult,
     MarginResult,
     MarginRule,
+    MarginSnapshot,
     NormalizedExecutionReport,
     OMSEventApplyContext,
     OMSEventApplyResult,
@@ -31,8 +33,11 @@ from futures_mvp.domain.models import (
     OrderEventCandidate,
     OrderState,
     PnLResult,
+    PnLSnapshot,
+    Position,
     PositionManagerResult,
     RawExecutionReport,
+    SettlementContext,
     SettlementResult,
     Trade,
     TradeBridgeContext,
@@ -94,7 +99,7 @@ class _PositionManager(Protocol):
 class _MarginEngine(Protocol):
     def calculate_margin(
         self,
-        position: object,
+        position: Position,
         rule: MarginRule | None,
         account: AccountContext,
         *,
@@ -380,7 +385,7 @@ class PaperTradingCoordinator:
     def _apply_accounting(
         self,
         trade: Trade,
-        position: object,
+        position: Position,
         state: _RunState,
     ) -> PaperRunResult | None:
         accounting = state.context.accounting
@@ -422,7 +427,7 @@ class PaperTradingCoordinator:
                 calculated_at=calculated_at,
                 trading_day=state.context.trading_day,
                 config_hash=state.context.config_hash,
-                trade=trade,
+                trade=trade if trade.offset is not Offset.OPEN else None,
                 close_context=None,
                 margin_snapshot_id=margin_snapshot_id,
             )
@@ -437,8 +442,14 @@ class PaperTradingCoordinator:
                 return state.result(status=PaperRunStatus.ERROR, reason=pnl_result.reason)
 
         if self._settlement_engine is not None and accounting.settlement_context is not None:
-            settlement_result = self._settlement_engine.settle(
+            settlement_context = _paper_settlement_context(
                 accounting.settlement_context,
+                position=position,
+                margin_results=state.margin_results,
+                pnl_results=state.pnl_results,
+            )
+            settlement_result = self._settlement_engine.settle(
+                settlement_context,
                 calendar=accounting.settlement_calendar,
             )
             state.settlement_results.append(settlement_result)
@@ -556,3 +567,46 @@ def _preflight(context: PaperRunContext) -> PaperRunResult | None:
 
 def _calculation_key(prefix: str, context: PaperRunContext, trade: Trade) -> str:
     return f"{prefix}:{context.config_hash}:{trade.exchange_trade_id}"
+
+
+def _paper_settlement_context(
+    context: object,
+    *,
+    position: Position,
+    margin_results: list[MarginResult],
+    pnl_results: list[PnLResult],
+) -> object:
+    if not isinstance(context, SettlementContext):
+        return context
+    margin_snapshot = _latest_margin_snapshot(margin_results)
+    pnl_snapshot = _latest_pnl_snapshot(pnl_results)
+    if margin_snapshot is None or pnl_snapshot is None:
+        return context
+    settlement_position = position.model_copy(
+        update={
+            "margin_used": margin_snapshot.margin_used,
+            "realized_pnl": pnl_snapshot.realized_pnl,
+            "unrealized_pnl": pnl_snapshot.unrealized_pnl,
+        }
+    )
+    return context.model_copy(
+        update={
+            "positions": (settlement_position,),
+            "margin_snapshots": (margin_snapshot,),
+            "pnl_snapshots": (pnl_snapshot,),
+        }
+    )
+
+
+def _latest_margin_snapshot(results: list[MarginResult]) -> MarginSnapshot | None:
+    for result in reversed(results):
+        if result.snapshot is not None:
+            return result.snapshot
+    return None
+
+
+def _latest_pnl_snapshot(results: list[PnLResult]) -> PnLSnapshot | None:
+    for result in reversed(results):
+        if result.snapshot is not None:
+            return result.snapshot
+    return None

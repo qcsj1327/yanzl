@@ -2424,7 +2424,6 @@ class SQLAlchemyPositionRepository:
                 .where(*conditions)
                 .values(
                     margin_used=margin_used,
-                    version=PositionOrm.version + 1,
                 )
                 .execution_options(synchronize_session=False)
             ),
@@ -2466,7 +2465,6 @@ class SQLAlchemyPositionRepository:
                 .values(
                     realized_pnl=realized_pnl,
                     unrealized_pnl=unrealized_pnl,
-                    version=PositionOrm.version + 1,
                 )
                 .execution_options(synchronize_session=False)
             ),

@@ -1847,7 +1847,7 @@ def test_margin_engine_live_duplicate_same_position_version_same_facts_noop(
     assert second.status == MarginResultStatus.CALCULATED
     assert second.snapshot == first.snapshot
     assert updated is not None
-    assert updated.version == 1
+    assert updated.version == 0
     assert updated.margin_used == first.snapshot.margin_used
     assert snapshot_count == 1
 
@@ -1899,7 +1899,7 @@ def test_margin_engine_live_duplicate_same_position_version_different_facts_conf
     assert conflict.status == MarginResultStatus.CONFLICT
     assert conflict.reason == "margin_snapshot_position_version_diverged"
     assert updated is not None
-    assert updated.version == 1
+    assert updated.version == 0
     assert updated.margin_used == first.snapshot.margin_used
     assert snapshot_count == 1
 
@@ -1959,7 +1959,7 @@ def test_margin_engine_margin_only_update_cannot_overwrite_malformed_position_fi
     assert result.status == MarginResultStatus.CALCULATED
     assert result.snapshot is not None
     assert updated is not None
-    assert updated.version == 1
+    assert updated.version == 0
     assert updated.margin_used == result.snapshot.margin_used
     assert updated.long_today_qty == Decimal("1.00000000")
     assert updated.long_yesterday_qty == Decimal("2.00000000")
@@ -2170,7 +2170,7 @@ def test_margin_replay_same_position_version_different_key_same_facts_noop(
     assert replay_conflict.status == MarginResultStatus.CONFLICT
     assert replay_conflict.reason == "margin_snapshot_replay_diverged"
     assert updated is not None
-    assert updated.version == 1
+    assert updated.version == 0
     assert updated.margin_used == first.snapshot.margin_used
     assert snapshot_count == 1
 
@@ -2403,7 +2403,7 @@ def test_position_repository_update_pnl_updates_only_pnl_fields(
             expected_version=0,
         )
 
-    assert updated.version == 1
+    assert updated.version == 0
     assert updated.realized_pnl == Decimal("123")
     assert updated.unrealized_pnl == Decimal("456")
     assert updated.long_today_qty == Decimal("1")
@@ -2611,7 +2611,7 @@ def test_pnl_engine_duplicate_calculate_same_canonical_noop(
     assert duplicate.status == PnLResultStatus.CALCULATED
     assert duplicate.snapshot == first.snapshot
     assert position_after is not None
-    assert position_after.version == 1
+    assert position_after.version == 0
     assert position_after.unrealized_pnl == Decimal("1000.00000000")
     assert snapshot_count == 1
 
@@ -2664,7 +2664,7 @@ def test_pnl_engine_duplicate_calculate_different_canonical_conflicts_without_up
     assert conflict.status == PnLResultStatus.CONFLICT
     assert conflict.reason == "pnl_snapshot_diverged"
     assert position_after is not None
-    assert position_after.version == 1
+    assert position_after.version == 0
     assert position_after.unrealized_pnl == Decimal("1000.00000000")
     assert snapshot_count == 1
 
@@ -2800,7 +2800,7 @@ def test_pnl_replay_uses_live_position_row_for_divergence(
     assert position_after is not None
     assert position_after.realized_pnl == Decimal("999.00000000")
     assert position_after.unrealized_pnl == Decimal("999.00000000")
-    assert position_after.version == 1
+    assert position_after.version == 0
     assert snapshot_count == 1
 
 

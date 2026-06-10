@@ -11,11 +11,54 @@ def build_paper_broker_callback_evidence(
     adapter_order_ref: str,
     policy: PaperFillPolicy,
 ) -> BrokerCallbackEvidence:
+    return build_paper_broker_callback_evidences(
+        command,
+        adapter_order_ref=adapter_order_ref,
+        policy=policy,
+    )[0]
+
+
+def build_paper_broker_callback_evidences(
+    command: ExecutionCommand,
+    *,
+    adapter_order_ref: str,
+    policy: PaperFillPolicy,
+) -> tuple[BrokerCallbackEvidence, ...]:
     if policy is PaperFillPolicy.IMMEDIATE_FULL_FILL:
-        return _filled_evidence(command, adapter_order_ref=adapter_order_ref)
+        return (
+            _acked_evidence(command, adapter_order_ref=adapter_order_ref),
+            _filled_evidence(command, adapter_order_ref=adapter_order_ref),
+        )
     if policy is PaperFillPolicy.IMMEDIATE_REJECT:
-        return _rejected_evidence(command, adapter_order_ref=adapter_order_ref)
+        return (_rejected_evidence(command, adapter_order_ref=adapter_order_ref),)
     raise ValueError(f"{policy.value} does not produce a paper execution report")
+
+
+def _acked_evidence(
+    command: ExecutionCommand,
+    *,
+    adapter_order_ref: str,
+) -> BrokerCallbackEvidence:
+    return BrokerCallbackEvidence(
+        adapter_name="paper_harness",
+        execution_target=command.execution_target,
+        command_id=command.command_id,
+        order_id=command.order_id,
+        client_order_id=command.client_order_id,
+        adapter_order_ref=adapter_order_ref,
+        exchange_order_id=_paper_exchange_order_id(command),
+        exchange_trade_id=None,
+        fill_id=None,
+        report_type="acked",
+        filled_qty=Decimal("0"),
+        fill_price=None,
+        cumulative_filled_qty=Decimal("0"),
+        remaining_qty=command.quantity,
+        report_ts=command.created_at,
+        received_at=command.created_at,
+        raw_payload=None,
+        raw_report_id=_paper_raw_report_id(command, report_type="acked", sequence=1),
+    )
 
 
 def _filled_evidence(
@@ -107,4 +150,3 @@ def _paper_raw_report_id(
             }
         )[:48]
     )
-

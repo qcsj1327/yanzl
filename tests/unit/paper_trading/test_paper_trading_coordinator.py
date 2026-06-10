@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
@@ -42,6 +43,8 @@ from futures_mvp.domain.models import (
     PnLSnapshot,
     Position,
     PositionManagerResult,
+    SettlementContext,
+    SettlementPrice,
     SettlementResult,
     SettlementSnapshot,
     Trade,
@@ -55,6 +58,7 @@ from futures_mvp.modules.execution_reports import (
     ExecutionReportNormalizer,
     canonical_normalized_execution_report_payload,
 )
+from futures_mvp.modules.oms.state_machine import can_transition
 from futures_mvp.modules.oms_event_application import OMSEventApplicationService
 from futures_mvp.modules.oms_to_trade import OMSToTradeBridgeService
 from futures_mvp.modules.ops_safety import (
@@ -69,6 +73,7 @@ from futures_mvp.modules.ops_safety import (
 from futures_mvp.modules.paper_trading import (
     PaperAccountingContext,
     PaperExecutionHarness,
+    PaperExecutionResult,
     PaperFillPolicy,
     PaperRunContext,
     PaperRunStatus,
@@ -159,6 +164,15 @@ class FakeOMSOrderEventApplier:
         self.existing_events: dict[tuple[EventSource, str], OrderEvent] = {}
 
     def apply_order_event(self, event: OrderEvent) -> OrderEventApplicationResult:
+        if event.previous_status is not None and not can_transition(
+            event.previous_status,
+            event.new_status,
+        ):
+            return OrderEventApplicationResult(
+                status=EventApplicationStatus.MISMATCH_REJECTED,
+                order=_order_state(status=event.previous_status),
+                reason="invalid_transition_rejected",
+            )
         self.applied_events.append(event)
         self.existing_events[(event.event_source, event.external_event_id)] = event
         return OrderEventApplicationResult(
@@ -382,6 +396,62 @@ class FakeSettlementEngine:
         )
 
 
+class IdentityCheckingSettlementEngine:
+    def __init__(self) -> None:
+        self.contexts: list[SettlementContext] = []
+
+    def settle(
+        self,
+        context: SettlementContext,
+        *,
+        calendar: object | None = None,
+    ) -> SettlementResult:
+        del calendar
+        self.contexts.append(context)
+        position = context.positions[0]
+        margin_snapshot = context.margin_snapshots[0]
+        pnl_snapshot = context.pnl_snapshots[0]
+        if (
+            margin_snapshot.account_id,
+            margin_snapshot.instrument_id,
+            margin_snapshot.position_version,
+            margin_snapshot.trading_day,
+        ) != (
+            position.account_id,
+            position.instrument_id,
+            position.version,
+            context.trading_day,
+        ):
+            return SettlementResult(
+                status=SettlementResultStatus.CONFLICT,
+                reason="margin_snapshot_identity_mismatch",
+                account_id=context.account_id,
+                trading_day=context.trading_day,
+            )
+        if (
+            pnl_snapshot.account_id,
+            pnl_snapshot.instrument_id,
+            pnl_snapshot.position_version,
+            pnl_snapshot.trading_day,
+        ) != (
+            position.account_id,
+            position.instrument_id,
+            position.version,
+            context.trading_day,
+        ):
+            return SettlementResult(
+                status=SettlementResultStatus.CONFLICT,
+                reason="pnl_snapshot_identity_mismatch",
+                account_id=context.account_id,
+                trading_day=context.trading_day,
+            )
+        return SettlementResult(
+            status=SettlementResultStatus.SETTLED,
+            account_id=context.account_id,
+            trading_day=context.trading_day,
+        )
+
+
 class CountingTradeBridge:
     def __init__(self, result: TradeBridgeResult | None = None) -> None:
         self.calls = 0
@@ -486,6 +556,18 @@ class CountingHarness:
     def execute(self, command: ExecutionCommand) -> object:
         self.calls += 1
         return PaperExecutionHarness().execute(command)
+
+
+class OnlyFilledHarness:
+    def execute(self, command: ExecutionCommand) -> PaperExecutionResult:
+        result = PaperExecutionHarness().execute(command)
+        return PaperExecutionResult(
+            status=result.status,
+            command_result=result.command_result,
+            raw_reports=(result.raw_reports[-1],),
+            translation_result=result.translation_result,
+            reason=result.reason,
+        )
 
 
 def _command() -> ExecutionCommand:
@@ -606,6 +688,75 @@ def _accounting_context() -> PaperAccountingContext:
     )
 
 
+def _settlement_context_with_stale_snapshots() -> SettlementContext:
+    position = Position(
+        id="stale-position",
+        account_id="account-1",
+        instrument_id="rb2601",
+        version=99,
+    )
+    stale_margin = MarginSnapshot(
+        id="stale-margin",
+        account_id="account-1",
+        instrument_id="rb2601",
+        position_version=98,
+        trading_day=TRADING_DAY,
+        config_hash="paper-config-v1",
+        calculation_key="stale-margin",
+        long_qty=Decimal("0"),
+        short_qty=Decimal("0"),
+        price=Decimal("3500"),
+        contract_multiplier=Decimal("10"),
+        initial_margin=Decimal("0"),
+        maintenance_margin=Decimal("0"),
+        margin_used=Decimal("0"),
+        available_cash=Decimal("90000"),
+        equity=Decimal("100000"),
+        calculated_at=NOW,
+    )
+    stale_pnl = PnLSnapshot(
+        id="stale-pnl",
+        account_id="account-1",
+        instrument_id="rb2601",
+        position_version=98,
+        trading_day=TRADING_DAY,
+        config_hash="paper-config-v1",
+        calculation_key="stale-pnl",
+        price_basis=PnLPriceBasis.LAST_PRICE,
+        mark_price=Decimal("3500"),
+        contract_multiplier=Decimal("10"),
+        realized_pnl=Decimal("0"),
+        unrealized_pnl=Decimal("0"),
+        total_pnl=Decimal("0"),
+        calculated_at=NOW,
+    )
+    return SettlementContext(
+        account_id="account-1",
+        trading_day=TRADING_DAY,
+        account_before=AccountContext(
+            account_id="account-1",
+            equity=Decimal("100000"),
+            available_cash=Decimal("90000"),
+            frozen_cash=Decimal("0"),
+            snapshot_time=NOW,
+        ),
+        positions=(position,),
+        pnl_snapshots=(stale_pnl,),
+        margin_snapshots=(stale_margin,),
+        settlement_prices=(
+            SettlementPrice(
+                instrument_id="rb2601",
+                exchange="SHFE",
+                trading_day=TRADING_DAY,
+                price=Decimal("3500"),
+                received_at=NOW,
+            ),
+        ),
+        calculation_key="paper-settlement",
+        settled_at=NOW,
+    )
+
+
 def _context(
     *,
     mode: RolloutMode = RolloutMode.PAPER,
@@ -652,6 +803,7 @@ def _coordinator(
     harness: object | None = None,
     fill_policy: PaperFillPolicy = PaperFillPolicy.IMMEDIATE_FULL_FILL,
     position_manager: FakePositionManager | None = None,
+    settlement_engine: object | None = None,
 ) -> tuple[PaperTradingCoordinator, FakePositionManager, FakeTradeRepository]:
     report_repository = repository or InMemoryExecutionReportRepository()
     oms_applier = FakeOMSOrderEventApplier()
@@ -670,7 +822,7 @@ def _coordinator(
             position_manager=positions,
             margin_engine=FakeMarginEngine(),
             pnl_engine=FakePnLEngine(),
-            settlement_engine=FakeSettlementEngine(),
+            settlement_engine=settlement_engine or FakeSettlementEngine(),
         ),
         positions,
         trades,
@@ -742,15 +894,21 @@ def test_full_fill_e2e_reaches_trade_position_and_accounting() -> None:
     assert result.status is PaperRunStatus.COMPLETED
     assert result.command_result is not None
     assert result.command_result.status is ExecutionCommandResultStatus.ACCEPTED_BY_ADAPTER
-    assert result.raw_reports[0].report_type == "filled"
-    assert result.normalized_reports[0].execution_status is ExecutionReportStatus.FILLED
-    assert result.order_event_candidates[0].execution_status is ExecutionReportStatus.FILLED
-    assert result.oms_results[0].status is not None
-    assert result.applied_order_events[0].new_status is OrderStatus.FILLED
+    assert [report.report_type for report in result.raw_reports] == ["acked", "filled"]
+    assert [
+        report.execution_status for report in result.normalized_reports
+    ] == [ExecutionReportStatus.ACKED, ExecutionReportStatus.FILLED]
+    assert [
+        candidate.execution_status for candidate in result.order_event_candidates
+    ] == [ExecutionReportStatus.ACKED, ExecutionReportStatus.FILLED]
+    assert [event.new_status for event in result.applied_order_events] == [
+        OrderStatus.ACKED,
+        OrderStatus.FILLED,
+    ]
     assert result.trade_results[0].status is TradeBridgeResultStatus.CREATED
     assert (
         result.trades[0].source_order_event_id
-        == result.applied_order_events[0].external_event_id
+        == result.applied_order_events[1].external_event_id
     )
     assert result.position_results[0].status is PositionManagerResultStatus.APPLIED
     assert result.margin_results[0].status is MarginResultStatus.CALCULATED
@@ -758,6 +916,40 @@ def test_full_fill_e2e_reaches_trade_position_and_accounting() -> None:
     assert result.settlement_results[0].status is SettlementResultStatus.SETTLED
     assert positions.trades == [result.trades[0]]
     assert len(trades.trades) == 1
+
+
+def test_paper_settlement_uses_current_run_margin_and_pnl_snapshot_identity() -> None:
+    settlement = IdentityCheckingSettlementEngine()
+    coordinator, _positions, _trades = _coordinator(settlement_engine=settlement)
+    accounting = replace(
+        _accounting_context(),
+        settlement_context=_settlement_context_with_stale_snapshots(),
+    )
+
+    result = coordinator.run(_context(accounting=accounting))
+
+    assert result.status is PaperRunStatus.COMPLETED
+    assert result.settlement_results[0].status is SettlementResultStatus.SETTLED
+    used_context = settlement.contexts[0]
+    assert used_context.positions[0].version == 1
+    assert used_context.margin_snapshots[0].id == "margin-1"
+    assert used_context.margin_snapshots[0].position_version == 1
+    assert used_context.pnl_snapshots[0].id == "pnl-1"
+    assert used_context.pnl_snapshots[0].position_version == 1
+
+
+def test_direct_submitted_to_filled_remains_rejected_by_oms_transition() -> None:
+    coordinator, positions, trades = _coordinator(harness=OnlyFilledHarness())
+
+    result = coordinator.run(_context(accounting=_accounting_context()))
+
+    assert result.status is PaperRunStatus.CONFLICT
+    assert result.reason == "invalid_transition_rejected"
+    assert result.normalized_reports[0].execution_status is ExecutionReportStatus.FILLED
+    assert result.oms_results[0].status is OMSEventApplyResultStatus.CONFLICT
+    assert result.trades == ()
+    assert positions.trades == []
+    assert trades.trades == {}
 
 
 def test_reject_report_applies_oms_but_creates_no_trade_or_position_or_accounting() -> None:

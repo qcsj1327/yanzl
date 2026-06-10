@@ -12,7 +12,7 @@ from futures_mvp.modules.broker_adapter import (
 )
 from futures_mvp.modules.execution_gateway.protocols import ExecutionAdapter
 from futures_mvp.modules.paper_trading.policy import PaperFillPolicy
-from futures_mvp.modules.paper_trading.reports import build_paper_broker_callback_evidence
+from futures_mvp.modules.paper_trading.reports import build_paper_broker_callback_evidences
 
 
 class PaperExecutionStatus(StrEnum):
@@ -83,20 +83,25 @@ class PaperExecutionHarness:
                 reason="adapter_order_ref is required",
             )
 
-        evidence = build_paper_broker_callback_evidence(
+        evidences = build_paper_broker_callback_evidences(
             command,
             adapter_order_ref=command_result.adapter_order_ref,
             policy=self._fill_policy,
         )
-        translated = translate_callback_to_raw_execution_report(evidence)
-        if translated.status is not BrokerCallbackTranslationStatus.TRANSLATED:
-            return PaperExecutionResult(
-                status=PaperExecutionStatus.FAILED,
-                command_result=command_result,
-                translation_result=translated,
-                reason=translated.reason,
-            )
-        assert translated.raw_report is not None
+        raw_reports: list[RawExecutionReport] = []
+        translation_result = None
+        for evidence in evidences:
+            translated = translate_callback_to_raw_execution_report(evidence)
+            translation_result = translated
+            if translated.status is not BrokerCallbackTranslationStatus.TRANSLATED:
+                return PaperExecutionResult(
+                    status=PaperExecutionStatus.FAILED,
+                    command_result=command_result,
+                    translation_result=translated,
+                    reason=translated.reason,
+                )
+            assert translated.raw_report is not None
+            raw_reports.append(translated.raw_report)
         status = (
             PaperExecutionStatus.EXECUTED
             if self._fill_policy is PaperFillPolicy.IMMEDIATE_FULL_FILL
@@ -105,8 +110,8 @@ class PaperExecutionHarness:
         return PaperExecutionResult(
             status=status,
             command_result=command_result,
-            raw_reports=(translated.raw_report,),
-            translation_result=translated,
+            raw_reports=tuple(raw_reports),
+            translation_result=translation_result,
         )
 
     def _submit(self, command: ExecutionCommand) -> ExecutionCommandResult:
@@ -123,4 +128,3 @@ def _submit_mode_for_policy(policy: PaperFillPolicy) -> MockBrokerSubmitMode:
     if policy is PaperFillPolicy.POST_SEND_UNCERTAIN:
         return MockBrokerSubmitMode.POST_SEND_UNCERTAIN
     return MockBrokerSubmitMode.ACCEPT
-

@@ -147,15 +147,22 @@ def test_full_fill_returns_command_result_and_raw_execution_report() -> None:
 
     assert result.status is PaperExecutionStatus.EXECUTED
     assert result.command_result.status is ExecutionCommandResultStatus.ACCEPTED_BY_ADAPTER
-    assert len(result.raw_reports) == 1
-    raw = result.raw_reports[0]
-    assert raw.execution_target is ExecutionTarget.MOCK
-    assert raw.adapter_name == "paper_harness"
-    assert raw.report_type == "filled"
-    assert raw.filled_qty == Decimal("2")
-    assert raw.fill_price == Decimal("500")
-    assert raw.cumulative_filled_qty == Decimal("2")
-    assert raw.remaining_qty == Decimal("0")
+    assert len(result.raw_reports) == 2
+    acked, filled = result.raw_reports
+    assert acked.execution_target is ExecutionTarget.MOCK
+    assert acked.adapter_name == "paper_harness"
+    assert acked.report_type == "acked"
+    assert acked.filled_qty == Decimal("0")
+    assert acked.fill_price is None
+    assert acked.cumulative_filled_qty == Decimal("0")
+    assert acked.remaining_qty == Decimal("2")
+    assert filled.execution_target is ExecutionTarget.MOCK
+    assert filled.adapter_name == "paper_harness"
+    assert filled.report_type == "filled"
+    assert filled.filled_qty == Decimal("2")
+    assert filled.fill_price == Decimal("500")
+    assert filled.cumulative_filled_qty == Decimal("2")
+    assert filled.remaining_qty == Decimal("0")
 
 
 def test_reject_returns_rejected_raw_report_without_trade_fact() -> None:
@@ -203,10 +210,10 @@ def test_identities_are_deterministic_and_not_timestamp_now_or_random() -> None:
     first = PaperExecutionHarness().execute(command)
     second = PaperExecutionHarness().execute(command)
 
-    assert len(first.raw_reports) == 1
-    assert len(second.raw_reports) == 1
-    first_raw = first.raw_reports[0]
-    second_raw = second.raw_reports[0]
+    assert len(first.raw_reports) == 2
+    assert len(second.raw_reports) == 2
+    first_raw = first.raw_reports[1]
+    second_raw = second.raw_reports[1]
 
     assert first.command_result.adapter_order_ref == second.command_result.adapter_order_ref
     assert first_raw.raw_report_id == second_raw.raw_report_id
@@ -232,20 +239,24 @@ def test_duplicate_same_command_uses_mock_submit_duplicate_without_new_identity(
     assert len(adapter.submitted_commands) == 1
 
 
-def test_full_fill_raw_report_enters_normalizer_and_duplicates_noop() -> None:
+def test_full_fill_raw_reports_enter_normalizer_and_duplicates_noop() -> None:
     repository = InMemoryExecutionReportRepository()
     normalizer = _normalizer(repository)
-    raw = PaperExecutionHarness().execute(_command()).raw_reports[0]
+    acked, filled = PaperExecutionHarness().execute(_command()).raw_reports
 
-    first = normalizer.normalize(raw)
-    duplicate = normalizer.normalize(raw)
+    acked_result = normalizer.normalize(acked)
+    first = normalizer.normalize(filled)
+    duplicate = normalizer.normalize(filled)
 
+    assert acked_result.status is ExecutionReportNormalizeResultStatus.NORMALIZED
+    assert acked_result.normalized_report is not None
+    assert acked_result.normalized_report.execution_status is ExecutionReportStatus.ACKED
     assert first.status is ExecutionReportNormalizeResultStatus.NORMALIZED
     assert first.normalized_report is not None
     assert first.normalized_report.execution_status is ExecutionReportStatus.FILLED
     assert first.order_event_candidate is not None
     assert duplicate.status is ExecutionReportNormalizeResultStatus.DUPLICATE
-    assert len(repository.reports) == 1
+    assert len(repository.reports) == 2
 
 
 def test_reject_report_normalizes_to_order_event_candidate_but_no_trade() -> None:
@@ -274,4 +285,3 @@ def test_non_mock_target_rejected_without_enabling_paper_target() -> None:
         assert result.status is PaperExecutionStatus.REJECTED
         assert result.command_result.status is ExecutionCommandResultStatus.REJECTED_BY_ADAPTER
         assert result.raw_reports == ()
-
