@@ -5536,9 +5536,69 @@ Invalid config rejects before job construction.
 - Stage P.3 runtime job wiring complete。
 - Stage P.4 local paper session / runbook complete。
 - Paper Trading local MVP complete。
+- Paper Trading Local MVP = STABLE BASELINE。
+- Stability baseline commit：`dde3e66` on `main`。
+- Previous tag：`stage-p4-paper-local-session-complete`。
+- Current soak evidence：Day 0 rerun passed、Day 1 passed、10x passed、Day-long 30-run passed、Multi-day 3 trading days passed。
 - SIM is still not implemented。
 - LIVE is still not implemented。
 - non-`MOCK` execution target support is still not implemented。
+
+### Paper stable baseline contract
+
+The stable local Paper chain is frozen as：
+
+```text
+ExecutionCommand
+-> PaperExecutionHarness
+-> RawExecutionReport
+-> ExecutionReportNormalizer
+-> OMSEventApplicationService
+-> OMSToTradeBridgeService
+-> PositionManager
+-> MarginEngine
+-> PnLEngine
+-> SettlementEngine
+-> PaperRuntimeJob
+-> PaperLocalSession
+```
+
+Stable Paper invariants：
+
+- dry-run no mutation。
+- apply completed。
+- duplicate no-op。
+- conflict stop。
+- `ExecutionTarget.MOCK` only。
+- no `ExecutionTarget.PAPER` / `SIM` / `LIVE` enablement。
+- no broker、CTP、SimNow、live or network dependency。
+- settlement snapshot created。
+- created trade has `source_order_event_id`。
+
+Stable Paper soak evidence：
+
+- `uv run pytest`：892 passed, 11 xfailed。
+- `uv run ruff check .`：passed。
+- `uv run mypy src`：passed。
+- `uv run alembic current`：`0016_stage_n_report_identity`。
+- 3-day soak：30/30 dry-run ok；30/30 apply completed；30/30 duplicate no-op。
+- 3-day row growth：`normalized_execution_reports +60`, `trades +30`, `positions +30`, `position_events +30`, `margin_snapshots +30`, `pnl_snapshots +30`, `settlement_snapshots +30`。
+- 3-day targets：`MOCK` only。
+
+Still not implemented：
+
+- SIM。
+- LIVE。
+- `ExecutionTarget.PAPER` / `SIM` / `LIVE` enablement。
+- real broker。
+- CTP。
+- SimNow。
+- remote deployment。
+- production rollout。
+
+Next allowed gate：SIM Gap Review / Contract Freeze。
+
+SIM implementation, LIVE work and real broker work are not allowed before that gate.
 
 ### feature_snapshots
 

@@ -1588,8 +1588,66 @@ Paper completion status：
 - Stage P.3 runtime job wiring complete。
 - Stage P.4 local paper session / runbook complete。
 - Paper Trading local MVP complete。
+- Paper Trading Local MVP = STABLE BASELINE。
+- Stability baseline commit：`dde3e66` on `main`。
+- Previous tag：`stage-p4-paper-local-session-complete`。
+- Current soak evidence：Day 0 rerun passed、Day 1 passed、10x passed、Day-long 30-run passed、Multi-day 3 trading days passed。
 - SIM / LIVE remain not implemented。
 - non-`MOCK` execution target remains not implemented。
+
+Paper stable chain：
+
+```text
+ExecutionCommand
+-> PaperExecutionHarness
+-> RawExecutionReport
+-> ExecutionReportNormalizer
+-> OMSEventApplicationService
+-> OMSToTradeBridgeService
+-> PositionManager
+-> MarginEngine
+-> PnLEngine
+-> SettlementEngine
+-> PaperRuntimeJob
+-> PaperLocalSession
+```
+
+Paper stability invariants：
+
+- dry-run no mutation。
+- apply completed。
+- duplicate no-op。
+- conflict stop。
+- `ExecutionTarget.MOCK` only。
+- no `ExecutionTarget.PAPER` / `SIM` / `LIVE` enablement。
+- no broker / CTP / SimNow / live / network dependency。
+- settlement snapshot created。
+- `source_order_event_id` present on created trade。
+
+Paper stability evidence summary：
+
+- `uv run pytest`：892 passed, 11 xfailed。
+- `uv run ruff check .`：passed。
+- `uv run mypy src`：passed。
+- `uv run alembic current`：`0016_stage_n_report_identity`。
+- Multi-day 3 trading days soak：30/30 dry-run ok, 30/30 apply completed, 30/30 duplicate no-op。
+- Multi-day row growth：`normalized_execution_reports +60`, `trades +30`, `positions +30`, `position_events +30`, `margin_snapshots +30`, `pnl_snapshots +30`, `settlement_snapshots +30`。
+- Multi-day targets：`MOCK` only。
+
+Paper explicit non-goals remain：
+
+- SIM。
+- LIVE。
+- `ExecutionTarget.PAPER` / `SIM` / `LIVE` enablement。
+- real broker。
+- CTP。
+- SimNow。
+- remote deployment。
+- production rollout。
+
+Next allowed stage：SIM Gap Review / Contract Freeze。
+
+Not allowed before that gate：SIM implementation、LIVE work or real broker work。
 
 ## 7. Stage Dependency Graph
 
