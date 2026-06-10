@@ -429,6 +429,37 @@ Stage Q.5 non-goals：
 - slippage / depth / latency implementation。
 - schema changes。
 
+Stage Q.7 SIM Runtime + Local Session Finalization：
+
+- Baseline：`stage-q6-minimal-sim-e2e-coordinator / 1c1d595`。
+- Scope：complete the local controlled SIM run loop with `SimRuntimeJob`, `SimLocalSession`, runbook and basic soak validation。
+- SIM remains local controlled simulation only；no `ExecutionTarget.SIM` enablement, no SimNow / CTP / live / broker / network and no schema / Alembic migration。
+- `SimRuntimeJob` is callable and returns typed observability-only `SimJobResult`。
+- `SimLocalSession` accepts only typed `ExecutionCommand` values or an injected typed command provider and calls only an injected `SimRuntimeJob` factory。
+- Dry-run is default and does not call `SimTradingCoordinator`；apply requires explicit confirmation and then calls `SimTradingCoordinator` only。
+- `ExecutionTarget.MOCK` remains the only accepted command target。
+
+SIM local runtime safety gates：
+
+- `SimJobConfig` defaults fail closed：`enabled=False`, `dry_run=True`, `scheduler_enabled=False`, `stop_on_conflict=True`, `stop_on_first_error=True`, `require_migration_ready=True`, `require_capital_controls=True` and `rollout_mode=SIM`。
+- Before coordinator execution, SIM runtime requires `RolloutMode.SIM`, matching SIM safety config, operator approval for SIM trading, Runtime READY, migration compatible, kill switch released, scheduler and replay not paused, capital controls passed, account/instrument allowed, no live credentials, no live apply, no unresolved critical incident and command target `MOCK`。
+- Failed gates return `BLOCKED` and do not call the coordinator。
+- Duplicate returns `DUPLICATE`；conflict returns `CONFLICT` and stops later commands；error returns `ERROR` and stops later commands when configured。
+
+SIM local session runbook：
+
+1. Confirm branch/tag and clean working tree before running SIM local session.
+2. Run validation commands：`uv run pytest tests/unit/sim_trading tests/unit/execution_evidence`、`uv run pytest`、`uv run ruff check .`、`uv run mypy src`。
+3. Confirm migration visibility：`uv run alembic current`。
+4. Confirm safety config：rollout mode `SIM`, live gate disabled, broker credentials absent, kill switch released, scheduler not paused, replay not paused, migration compatible, capital controls configured, account whitelist and instrument whitelist。
+5. Construct typed `ExecutionCommand` input with `ExecutionTarget.MOCK` only；do not use raw payloads or broker callbacks as commands。
+6. Run dry-run session first：`SimLocalSession` default `dry_run=True` should return `DRY_RUN_COMPLETED` and must not call `SimTradingCoordinator` or mutate ledgers。
+7. Run apply only after dry-run is clean：set `dry_run=False` and explicit `apply_confirmed=True`；the session calls `SimRuntimeJob`, and the job calls `SimTradingCoordinator` only after all safety gates pass。
+8. Inspect accepted facts through existing ledgers/services：normalized reports, OMS events, trades, positions, margin snapshots, PnL snapshots and settlement snapshots。
+9. Duplicate rerun must no-op；conflict or error must stop downstream and later commands。
+10. Roll back / halt via kill switch, scheduler pause or replay pause；do not manually repair ledgers。
+11. Forbidden during SIM local session：no `ExecutionTarget.SIM`, no `ExecutionTarget.PAPER`, no `ExecutionTarget.LIVE`, no SimNow, no CTP, no live broker, no network broker, no live credentials, no live apply, no schema edits, no raw payload command source and no direct OMS / Trade / Position / Accounting repository writes。
+
 Paper local session runbook：
 
 1. Confirm branch/tag：verify the working branch and expected tag before any local paper session.

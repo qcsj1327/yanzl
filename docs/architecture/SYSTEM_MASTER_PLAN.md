@@ -2028,6 +2028,62 @@ Stage Q.5 explicit non-goals：
 - slippage / depth / latency implementation。
 - schema changes。
 
+### Stage Q.7: SIM Runtime + Local Session Finalization
+
+- Goal：complete the local controlled SIM runtime and local session loop without enabling `ExecutionTarget.SIM` or external broker connectivity。
+- Baseline：`stage-q6-minimal-sim-e2e-coordinator / 1c1d595`。
+- Implemented changes：新增 `SimJobConfig`、`SimJobStatus`、`SimJobResult`、`SimRuntimeJob`、`SimSessionConfig`、`SimSessionStatus`、`SimSessionResult`、`SimLocalSession` and `run_sim_local_session`；新增 SIM runtime job and local session tests；更新 SIM operations runbook。
+- Scope：SIM runtime/session accepts typed local `ExecutionCommand` sources with `ExecutionTarget.MOCK` and orchestrates only `SimRuntimeJob -> SimTradingCoordinator -> existing report / OMS / trade / position / accounting pipeline`。
+- Forbidden changes preserved：不启用 `ExecutionTarget.SIM`，不改 ExecutionGateway 非 `MOCK` 拒绝逻辑，不接 SimNow / CTP / live / broker / network，不新增 schema / Alembic，不实现 partial / slippage / latency / depth，不复用 Paper runtime/session/coordinator as SIM implementation，不直接写 OMS / Trade / Position / Accounting repositories，不实现 live credentials or live apply。
+
+SIM runtime job boundary：
+
+- `SimJobConfig` defaults are fail closed：disabled, dry-run, scheduler disabled, stop-on-conflict, stop-on-first-error, migration readiness required, capital controls required and rollout mode `SIM`。
+- `SimRuntimeJob` is callable and returns observability-only `SimJobResult`。
+- Dry-run validates typed contexts and safety gates but does not call `SimTradingCoordinator`。
+- Apply requires explicit confirmation and calls `SimTradingCoordinator` only after all safety gates pass。
+- Aggregate statuses are `DISABLED`, `DRY_RUN`, `COMPLETED`, `DUPLICATE`, `BLOCKED`, `CONFLICT` and `ERROR`。
+
+SIM runtime safety gates：
+
+- `RolloutMode.SIM` and `SafetyConfig.rollout.mode == SIM`。
+- SIM operator approval bound to environment `sim`, account id, adapter target `mock`, stage `sim_trading` and command surface。
+- Runtime READY。
+- Migration compatible。
+- Kill switch released。
+- Scheduler and replay not paused。
+- Capital controls passed with account and instrument allowed。
+- No live credentials, no live flags and no live apply。
+- No unresolved critical incident。
+- Command target `ExecutionTarget.MOCK` only。
+
+SIM local session boundary：
+
+- `SimLocalSession` accepts explicit typed `ExecutionCommand` values or an injected typed provider only。
+- Raw payloads and broker callbacks are rejected as command sources。
+- Apply requires `apply_confirmed=True`。
+- Session calls only the injected job factory and does not own business facts。
+- Session result is observability only。
+- Conflict and error stop later commands through `SimRuntimeJob` policy。
+
+SIM Q.7 runbook and validation：
+
+- Operators must run dry-run first, inspect `SimSessionResult` and nested `SimJobResult`, then apply only with explicit confirmation。
+- After apply, facts must be inspected through normalized reports, OMS events, trades, positions and accounting snapshots。
+- Duplicate rerun must no-op；conflict/error must stop downstream。
+- Rollback / halt uses kill switch, scheduler pause or replay pause。
+- Basic validation covers unit SIM runtime/session, execution evidence, full test suite, ruff, mypy and diff-check。
+
+Stage Q.7 explicit non-goals：
+
+- `ExecutionTarget.SIM` enablement。
+- Gateway target policy changes。
+- SimNow / CTP / live / broker / network。
+- partial fill, slippage, latency or depth simulation。
+- schema / Alembic changes。
+- durable SIM audit/session table。
+- production rollout。
+
 ## 7. Stage Dependency Graph
 
 核心执行与会计链：

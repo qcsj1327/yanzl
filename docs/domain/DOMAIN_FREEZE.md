@@ -6163,6 +6163,160 @@ Stage Q.5 does not implement：
 - slippage / depth / latency implementation。
 - schema changes。
 
+## Stage Q.7 SIM Runtime + Local Session Finalization
+
+Stage Q.7 finalizes the local controlled SIM run loop on baseline `stage-q6-minimal-sim-e2e-coordinator / 1c1d595`。
+
+Stage Q.7 implements：
+
+- `SimJobConfig`。
+- `SimJobStatus`。
+- `SimJobResult`。
+- `SimRuntimeJob`。
+- `SimSessionConfig`。
+- `SimSessionStatus`。
+- `SimSessionResult`。
+- `SimLocalSession`。
+- `run_sim_local_session`。
+- SIM runtime job tests。
+- SIM local session tests。
+- SIM local runbook。
+
+Stage Q.7 does not implement：
+
+- `ExecutionTarget.SIM` enablement。
+- ExecutionGateway non-`MOCK` target support。
+- SimNow。
+- CTP。
+- LIVE。
+- real broker。
+- broker network。
+- live credentials。
+- live apply。
+- schema or Alembic migration。
+- durable SIM audit/session table。
+- partial fill。
+- slippage。
+- latency。
+- order book / depth simulation。
+
+### Stage Q.7 SimRuntimeJob contract
+
+`SimJobConfig` defaults are frozen as fail-closed：
+
+- `enabled=False`。
+- `dry_run=True`。
+- `scheduler_enabled=False`。
+- `stop_on_conflict=True`。
+- `stop_on_first_error=True`。
+- `require_migration_ready=True`。
+- `require_capital_controls=True`。
+- `rollout_mode=RolloutMode.SIM`。
+
+`SimRuntimeJob` may only：
+
+- load typed `SimRunContext` values from an injected provider。
+- validate SIM safety gates before coordinator execution。
+- return typed `SimJobResult` observability。
+- call `SimTradingCoordinator.run(...)` in apply mode after explicit confirmation。
+
+`SimRuntimeJob` must not：
+
+- call `SimExecutionHarness` directly。
+- call Paper runtime, Paper session or Paper coordinator。
+- mutate OMS, Trade, Position or Accounting repositories。
+- enable or dispatch `ExecutionTarget.SIM`。
+- connect to broker, SimNow, CTP, live account or network。
+
+`SimJobStatus` is frozen as：
+
+- `DISABLED`。
+- `DRY_RUN`。
+- `COMPLETED`。
+- `DUPLICATE`。
+- `BLOCKED`。
+- `CONFLICT`。
+- `ERROR`。
+
+### Stage Q.7 SIM safety gates
+
+Before apply, SIM runtime requires：
+
+- `RolloutMode.SIM`。
+- `SafetyConfig.rollout.mode == RolloutMode.SIM`。
+- operator approval present and bound to environment `sim`。
+- operator approval account matches run account。
+- operator approval adapter target is `mock`。
+- operator approval stage is `sim_trading`。
+- operator approval command surface matches the typed command。
+- Runtime READY。
+- migration compatible。
+- kill switch released。
+- scheduler not paused。
+- replay not paused。
+- capital controls passed。
+- account whitelist passed。
+- instrument whitelist passed。
+- no live credentials。
+- no live flags。
+- no live apply。
+- no unresolved critical incident。
+- command target is `ExecutionTarget.MOCK`。
+
+Any failed safety gate returns `BLOCKED` and does not call `SimTradingCoordinator`。
+
+### Stage Q.7 SimLocalSession contract
+
+`SimLocalSession` may only accept：
+
+- explicit typed `ExecutionCommand` list。
+- injected typed command provider。
+
+`SimLocalSession` must reject：
+
+- missing command source。
+- ambiguous command source。
+- empty command list。
+- untyped command values。
+- raw payload command source。
+- broker callback as command。
+- any command target other than `ExecutionTarget.MOCK`。
+- apply without explicit `apply_confirmed=True`。
+
+`SimLocalSession` calls only the injected job factory and returns `SimSessionResult` observability。
+
+`SimSessionStatus` is frozen as：
+
+- `DISABLED`。
+- `DRY_RUN_COMPLETED`。
+- `COMPLETED`。
+- `BLOCKED`。
+- `CONFLICT`。
+- `ERROR`。
+
+### Stage Q.7 runbook and validation contract
+
+SIM local runbook requires：
+
+- dry-run first。
+- apply only after explicit confirmation。
+- `ExecutionTarget.MOCK` only。
+- no SimNow / CTP / live / broker / network。
+- inspect normalized reports, OMS events, trades, positions and accounting snapshots after apply。
+- duplicate rerun no-op。
+- conflict/error stops downstream。
+- rollback / halt via kill switch, scheduler pause or replay pause。
+
+Validation must include：
+
+- SIM runtime/session unit tests。
+- execution evidence tests。
+- full pytest suite。
+- ruff。
+- mypy。
+- diff-check。
+- boundary checks that gateway still rejects `ExecutionTarget.SIM` and SIM code has no schema, broker or network imports。
+
 ### feature_snapshots
 
 Stage H 已新增 `feature_snapshots` 表作为 FeatureSnapshot derived facts ledger。

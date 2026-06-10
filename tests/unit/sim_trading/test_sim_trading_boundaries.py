@@ -68,6 +68,19 @@ def test_sim_trading_does_not_call_business_mutation_boundaries() -> None:
     assert ".settle(" in source
 
 
+def test_sim_trading_does_not_reuse_paper_runtime_or_session() -> None:
+    source = _sim_sources()
+
+    forbidden = [
+        "PaperTradingCoordinator",
+        "PaperRuntimeJob",
+        "PaperLocalSession",
+        "futures_mvp.modules.paper_trading",
+    ]
+    for fragment in forbidden:
+        assert fragment not in source
+
+
 def test_sim_trading_has_no_broker_or_network_dependencies() -> None:
     forbidden_fragments = (
         "ctp",
@@ -90,13 +103,13 @@ def test_sim_trading_has_no_broker_or_network_dependencies() -> None:
 
 
 def test_sim_trading_does_not_add_schema_or_alembic_revision() -> None:
-    stage_q4_migrations = [
+    sim_migrations = [
         path
         for path in ALEMBIC_DIR.glob("*.py")
-        if "sim" in path.name.lower() or "stage_q4" in path.name.lower()
+        if "sim" in path.name.lower() or "stage_q" in path.name.lower()
     ]
 
-    assert stage_q4_migrations == []
+    assert sim_migrations == []
 
 
 def test_execution_gateway_still_rejects_non_mock_targets() -> None:
