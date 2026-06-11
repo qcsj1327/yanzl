@@ -248,15 +248,15 @@ def default_console_view_model() -> OperatorConsoleViewModel:
         ),
         diagnostics=DiagnosticViewModel(
             items=(
-                ("pytest", "DISABLED"),
-                ("ruff", "DISABLED"),
-                ("mypy", "DISABLED"),
-                ("alembic current", "DISABLED"),
-                ("git commit/tag", "DISABLED"),
-                ("worktree clean", "DISABLED"),
-                ("DB health", "DISABLED"),
-                ("Redis health", "DISABLED"),
-                ("last error", "无"),
+                ("pytest status", "unknown/not run"),
+                ("ruff status", "unknown/not run"),
+                ("mypy status", "unknown/not run"),
+                ("alembic current", "unknown/not checked"),
+                ("git commit/tag", "unknown/not checked"),
+                ("worktree", "unknown/not checked"),
+                ("DB health", "unknown/not checked"),
+                ("Redis health", "unknown/not checked"),
+                ("last error", "none"),
             )
         ),
         live_locked=LiveLockedViewModel(

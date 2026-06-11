@@ -356,3 +356,26 @@ Stage R.2 preserves these boundaries：
 - no FastAPI control plane。
 - no `ExecutionTarget.PAPER` / `SIM` / `LIVE` enablement。
 - no schema or Alembic migration。
+
+## Stage R.3 UI polish and read-only diagnostics facts
+
+Baseline：`stage-r2-operator-console-skeleton / e1b3f73`。
+
+Stage R.3 keeps the Operator Console as a local UI skeleton and improves display polish：
+
+- residual UI field names such as Operator Console, Runtime, rollout mode, mode, target, health, latest result, diagnostics and history are centralized in `labels.py` with Chinese display labels。
+- diagnostics display labels and values are centralized in `labels.py`。
+- `diagnostics.py` returns read-only unknown/not-run or unknown/not-checked placeholder values for pytest, ruff, mypy, Alembic, git, worktree, DB health, Redis health and last error。
+- diagnostics provider does not execute shell commands or inspect external services。
+- Paper/SIM apply remains disabled/placeholder。
+- forbidden actions remain display-only text and have no enable/unlock buttons。
+
+Stage R.3 preserves these boundaries：
+
+- no PaperLocalSession / SimLocalSession wiring。
+- no Paper/SIM apply execution。
+- no DB or ledger writes。
+- no Streamlit dependency addition。
+- no FastAPI / broker / CTP / SimNow / LIVE / network integration。
+- no `ExecutionTarget.PAPER` / `SIM` / `LIVE` enablement。
+- no schema or Alembic migration。

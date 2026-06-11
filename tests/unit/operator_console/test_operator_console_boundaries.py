@@ -39,6 +39,7 @@ def test_operator_console_has_no_forbidden_imports() -> None:
         "futures_mvp.modules.paper_trading",
         "futures_mvp.modules.sim_trading",
         "alembic",
+        "subprocess",
     )
     imported: set[str] = set()
     for path in CONSOLE_DIR.glob("*.py"):
@@ -65,6 +66,10 @@ def test_operator_console_has_no_direct_ledger_mutation_calls() -> None:
         "apply_trade(",
         "commit(",
         "rollback(",
+        "Popen(",
+        "check_call(",
+        "check_output(",
+        "os.system(",
     )
 
     for call in forbidden_calls:

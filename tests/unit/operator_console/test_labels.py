@@ -93,6 +93,41 @@ def test_required_safety_action_risk_and_result_labels_exist() -> None:
         assert value in labels.RESULT_LABELS.values()
 
 
+def test_ui_polish_field_and_diagnostic_labels_exist() -> None:
+    expected_fields = {
+        "Operator Console": "本地操作台",
+        "Runtime": "运行时",
+        "rollout mode": "运行模式",
+        "mode": "模式",
+        "target": "目标类型",
+        "health": "健康状态",
+        "latest result": "最近结果",
+        "diagnostics": "诊断",
+        "history": "历史记录",
+    }
+    for key, value in expected_fields.items():
+        lookup = labels.section_label(key) if key == "Operator Console" else labels.field_label(key)
+        assert lookup == value
+
+    expected_diagnostics = {
+        "pytest status": "pytest 状态",
+        "ruff status": "ruff 状态",
+        "mypy status": "mypy 状态",
+        "alembic current": "Alembic 当前版本",
+        "git commit/tag": "Git commit/tag",
+        "worktree": "工作区状态",
+        "DB health": "DB 健康状态",
+        "Redis health": "Redis 健康状态",
+        "last error": "最近错误",
+    }
+    for key, value in expected_diagnostics.items():
+        assert labels.diagnostic_label(key) == value
+
+    assert labels.diagnostic_value_label("unknown/not run") == "未知/未运行"
+    assert labels.diagnostic_value_label("unknown/not checked") == "未知/未检查"
+    assert labels.diagnostic_value_label("none") == "无"
+
+
 def test_forbidden_action_labels_exist() -> None:
     expected = {
         "LIVE Enable": "LIVE 启用：禁止",

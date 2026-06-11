@@ -109,6 +109,7 @@ FORBIDDEN_ACTION_LABELS: dict[str, str] = {
 }
 
 SECTION_LABELS: dict[str, str] = {
+    "Operator Console": "本地操作台",
     "status_overview": "状态概览",
     "risk_notices": "风险提示",
     "allowed_actions": "允许操作",
@@ -118,6 +119,54 @@ SECTION_LABELS: dict[str, str] = {
     "diagnostic_items": "诊断项目",
     "placeholder": "第一版仅展示占位，不执行真实动作",
     "disabled_placeholder": "当前为禁用占位",
+}
+
+FIELD_LABELS: dict[str, str] = {
+    "Runtime": "运行时",
+    "rollout mode": "运行模式",
+    "mode": "模式",
+    "target": "目标类型",
+    "health": "健康状态",
+    "latest result": "最近结果",
+    "diagnostics": "诊断",
+    "history": "历史记录",
+    "ExecutionTarget": "目标类型",
+    "migration": "迁移状态",
+    "Paper": "Paper 最近结果",
+    "SIM": "SIM 最近结果",
+    "Kill Switch": "紧急停止",
+    "Scheduler Pause": "调度暂停",
+    "Replay Pause": "回放暂停",
+    "account_id": "账户 ID",
+    "trading_day": "交易日",
+    "instrument whitelist": "合约白名单",
+    "max order size": "最大委托数量",
+    "max position size": "最大持仓数量",
+    "max daily loss": "最大日亏损",
+    "Paper/SIM mode": "Paper/SIM 模式",
+    "dry-run/apply": "预演/写入",
+    "runtime_id": "运行时 ID",
+    "config_hash": "配置哈希",
+    "migration revision": "迁移版本",
+    "capital control details": "资金控制详情",
+}
+
+DIAGNOSTIC_LABELS: dict[str, str] = {
+    "pytest status": "pytest 状态",
+    "ruff status": "ruff 状态",
+    "mypy status": "mypy 状态",
+    "alembic current": "Alembic 当前版本",
+    "git commit/tag": "Git commit/tag",
+    "worktree": "工作区状态",
+    "DB health": "DB 健康状态",
+    "Redis health": "Redis 健康状态",
+    "last error": "最近错误",
+}
+
+DIAGNOSTIC_VALUE_LABELS: dict[str, str] = {
+    "unknown/not run": "未知/未运行",
+    "unknown/not checked": "未知/未检查",
+    "none": "无",
 }
 
 
@@ -152,6 +201,18 @@ def forbidden_action_label(key: str) -> str:
 
 def section_label(key: str) -> str:
     return SECTION_LABELS.get(key, key)
+
+
+def field_label(key: str) -> str:
+    return FIELD_LABELS.get(key, key)
+
+
+def diagnostic_label(key: str) -> str:
+    return DIAGNOSTIC_LABELS.get(key, key)
+
+
+def diagnostic_value_label(value: str) -> str:
+    return DIAGNOSTIC_VALUE_LABELS.get(value, value)
 
 
 def _label_key(value: object) -> str:

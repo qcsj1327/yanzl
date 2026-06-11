@@ -57,7 +57,7 @@ def render_console(
     view_model: OperatorConsoleViewModel | None = None,
 ) -> None:
     model = view_model or default_console_view_model()
-    ui.title("Operator Console")
+    ui.title(labels.section_label("Operator Console"))
     for page in model.pages:
         ui.header(labels.page_title(page.value))
         if page is OperatorPage.DASHBOARD:
@@ -97,13 +97,13 @@ def _render_dashboard(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) ->
         ("Paper", labels.status_label(dashboard.latest_paper_result)),
         ("SIM", labels.status_label(dashboard.latest_sim_result)),
     ):
-        ui.write(f"{name}: {value}")
+        ui.write(f"{labels.field_label(name)}: {value}")
     _render_notices(ui, dashboard.notices)
 
 
 def _render_session(ui: OperatorConsoleUI, session: SessionPageViewModel) -> None:
-    ui.write(f"mode: {session.mode_name}")
-    ui.write(f"target: {labels.safety_label(session.target)}")
+    ui.write(f"{labels.field_label('mode')}: {session.mode_name}")
+    ui.write(f"{labels.field_label('target')}: {labels.safety_label(session.target)}")
     _render_notices(ui, session.notices)
     _render_button(ui, session.dry_run_button)
     _render_button(ui, session.apply_button)
@@ -127,10 +127,10 @@ def _render_safety(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> No
 def _render_configuration(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> None:
     ui.subheader(labels.section_label("normal_config"))
     for key, value in model.configuration.normal:
-        ui.write(f"{key}: {value}")
+        ui.write(f"{labels.field_label(key)}: {value}")
     ui.subheader(labels.section_label("advanced_config"))
     for key, value in model.configuration.advanced:
-        ui.write(f"{key}: {value}")
+        ui.write(f"{labels.field_label(key)}: {value}")
     for source in model.configuration.sources:
         ui.markdown(source)
 
@@ -147,7 +147,9 @@ def _render_results(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> N
 def _render_diagnostics(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> None:
     ui.subheader(labels.section_label("diagnostic_items"))
     for key, value in model.diagnostics.items:
-        ui.write(f"{key}: {labels.status_label(value)}")
+        ui.write(
+            f"{labels.diagnostic_label(key)}: {labels.diagnostic_value_label(value)}"
+        )
 
 
 def _render_live_locked(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> None:

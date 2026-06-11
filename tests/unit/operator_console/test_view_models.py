@@ -35,3 +35,19 @@ def test_apply_buttons_are_disabled_placeholders() -> None:
     assert model.paper.apply_button.status is ConsoleActionStatus.DISABLED_PLACEHOLDER
     assert model.sim.apply_button.disabled is True
     assert model.sim.apply_button.status is ConsoleActionStatus.DISABLED_PLACEHOLDER
+
+
+def test_default_diagnostics_are_unknown_read_only_values() -> None:
+    model = default_console_view_model()
+
+    assert dict(model.diagnostics.items) == {
+        "pytest status": "unknown/not run",
+        "ruff status": "unknown/not run",
+        "mypy status": "unknown/not run",
+        "alembic current": "unknown/not checked",
+        "git commit/tag": "unknown/not checked",
+        "worktree": "unknown/not checked",
+        "DB health": "unknown/not checked",
+        "Redis health": "unknown/not checked",
+        "last error": "none",
+    }

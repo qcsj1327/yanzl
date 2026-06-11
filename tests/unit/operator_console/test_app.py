@@ -45,6 +45,28 @@ def test_render_console_renders_all_page_titles_from_labels() -> None:
 
     expected_headers = [labels.page_title(page.value) for page in OperatorPage]
     assert ui.headers == expected_headers
+    assert ui.titles == ["本地操作台"]
+
+
+def test_render_console_uses_chinese_field_and_diagnostic_labels() -> None:
+    ui = FakeUI()
+
+    render_console(ui, default_console_view_model())
+
+    rendered = "\n".join(str(item) for item in [*ui.writes, *ui.markdowns])
+    assert "运行时: 正常" in rendered
+    assert "运行模式: PAPER" in rendered
+    assert "模式: PAPER" in rendered
+    assert "目标类型: 仅 MOCK，本地模拟" in rendered
+    assert "pytest 状态: 未知/未运行" in rendered
+    assert "Alembic 当前版本: 未知/未检查" in rendered
+    assert "最近错误: 无" in rendered
+
+    assert "Operator Console" not in ui.titles
+    assert "Runtime:" not in rendered
+    assert "rollout mode:" not in rendered
+    assert "mode:" not in rendered
+    assert "target:" not in rendered
 
 
 def test_apply_buttons_are_rendered_disabled() -> None:
