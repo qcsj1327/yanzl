@@ -332,3 +332,27 @@ git diff --check
 ```
 
 No pytest, ruff, mypy, schema migration or app run is required for this contract freeze unless later implementation changes code.
+
+## Stage R.2 skeleton implementation facts
+
+Baseline：`stage-r1-operator-console-contract-freeze / bb1d063`。
+
+Stage R.2 implements the first local Operator Console skeleton only：
+
+- package：`src/futures_mvp/modules/operator_console/`。
+- pages：Dashboard、Paper Session、SIM Session、Safety Controls、Configuration、Results / History、Diagnostics and Live Locked Page。
+- Chinese UI text is centralized in `labels.py`。
+- `view_models.py` provides display-only frozen view models and `default_console_view_model()`。
+- `actions.py` contains disabled/placeholder actions only；Paper/SIM apply does not call real sessions。
+- `diagnostics.py` is read-only placeholder display data；it does not run commands。
+- `safety.py` is display-only placeholder safety data；it does not mutate safety state。
+- `app.py` is Streamlit-compatible through a small UI protocol and lazy Streamlit import；Stage R.2 adds no Streamlit dependency。
+
+Stage R.2 preserves these boundaries：
+
+- no Paper/SIM apply execution。
+- no DB writes。
+- no broker / CTP / SimNow / LIVE / network integration。
+- no FastAPI control plane。
+- no `ExecutionTarget.PAPER` / `SIM` / `LIVE` enablement。
+- no schema or Alembic migration。
