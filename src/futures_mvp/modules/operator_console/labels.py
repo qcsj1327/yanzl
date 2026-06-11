@@ -132,6 +132,10 @@ SECTION_LABELS: dict[str, str] = {
     "normal_config": "普通配置",
     "advanced_config": "高级配置",
     "diagnostic_items": "诊断项目",
+    "dry_run_required_config": "预演所需配置",
+    "blocked_dry_run_title": "⚠️ 本次预演未执行",
+    "blocked_next_steps": "下一步：",
+    "blocked_safe_result": "安全结果：",
     "placeholder": "第一版仅展示占位，不执行真实动作",
     "disabled_placeholder": "当前为禁用占位",
     "live_locked_notice": "🔒 当前不是实盘环境",
@@ -166,6 +170,8 @@ FIELD_LABELS: dict[str, str] = {
     "config_hash": "配置哈希",
     "migration revision": "迁移版本",
     "capital control details": "资金控制详情",
+    "command source / typed command provider": "命令来源 / typed command provider",
+    "job_factory": "job_factory",
 }
 
 DIAGNOSTIC_LABELS: dict[str, str] = {
@@ -241,6 +247,37 @@ RESULT_STATUS_TEXT: dict[str, str] = {
     "settlement_snapshot": "结算快照：尚未生成",
 }
 
+REASON_LABELS: dict[str, str] = {
+    "paper dry-run requires complete session config": "当前缺少完整的 Paper 预演配置，因此没有执行",
+    "sim dry-run requires complete session config": "当前缺少完整的 SIM 预演配置，因此没有执行",
+    "paper dry-run requires a session job factory": "当前缺少完整的 Paper 预演配置，因此没有执行",
+    "sim dry-run requires a session job factory": "当前缺少完整的 SIM 预演配置，因此没有执行",
+    "paper dry-run requires typed commands or command_provider": (
+        "当前缺少完整的 Paper 预演配置，因此没有执行"
+    ),
+    "sim dry-run requires typed commands or command_provider": (
+        "当前缺少完整的 SIM 预演配置，因此没有执行"
+    ),
+    "dry-run provider is not configured": "当前没有可用的预演执行器",
+    "missing provider": "当前没有可用的预演执行器",
+    "dry-run returned non-MOCK target": "当前目标不是 MOCK，已阻止执行",
+    "paper console dry-run supports MOCK target only": "当前目标不是 MOCK，已阻止执行",
+    "sim console dry-run supports MOCK target only": "当前目标不是 MOCK，已阻止执行",
+    "non-MOCK target": "当前目标不是 MOCK，已阻止执行",
+    "dry-run returned non-zero DB delta": "预演出现数据库写入变化，已阻止标记为成功",
+    "db_delta nonzero": "预演出现数据库写入变化，已阻止标记为成功",
+}
+
+BLOCKED_RESULT_TEXT: dict[str, str] = {
+    "description": "系统已安全阻断本次操作，没有写入数据库，也没有连接真实交易所。",
+    "next_step_config": "1. 打开配置中心",
+    "next_step_check": "2. 检查账户 ID、交易日、合约白名单、最大单笔数量、最大持仓数量、最大日亏损",
+    "next_step_retry": "3. 回到 Paper/SIM 页面重新运行预演",
+    "safe_db_delta_zero": "✅ 数据库写入变化：0",
+    "safe_target_mock": "✅ 目标类型：仅本地模拟，不连接真实交易所",
+    "safe_no_capital": "✅ 真实资金：未使用",
+}
+
 LIVE_LOCKED_TEXT: dict[str, str] = {
     "no_exchange": "不会连接真实交易所",
     "no_ctp": "不会连接 CTP",
@@ -313,6 +350,16 @@ def safety_explanation(key: str) -> str:
 
 def result_status_text(key: str) -> str:
     return RESULT_STATUS_TEXT.get(key, key)
+
+
+def reason_label(reason: str | None) -> str:
+    if reason is None:
+        return ""
+    return REASON_LABELS.get(reason, reason)
+
+
+def blocked_result_text(key: str) -> str:
+    return BLOCKED_RESULT_TEXT.get(key, key)
 
 
 def live_locked_text(key: str) -> str:

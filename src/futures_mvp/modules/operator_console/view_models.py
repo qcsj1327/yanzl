@@ -111,6 +111,16 @@ class ConfigurationViewModel:
     normal: tuple[tuple[str, str], ...]
     advanced: tuple[tuple[str, str], ...]
     sources: tuple[str, ...]
+    dry_run_required: tuple[tuple[str, str], ...] = (
+        ("account_id", "未配置"),
+        ("trading_day", "未配置"),
+        ("instrument whitelist", "未配置"),
+        ("max order size", "未配置"),
+        ("max position size", "未配置"),
+        ("max daily loss", "未配置"),
+        ("command source / typed command provider", "未配置"),
+        ("job_factory", "未配置"),
+    )
 
 
 @dataclass(frozen=True)

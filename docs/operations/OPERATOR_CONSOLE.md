@@ -471,3 +471,34 @@ Stage R.5 preserves these boundaries：
 - no `ExecutionTarget.PAPER` / `SIM` / `LIVE` enablement。
 - no schema or Alembic migration。
 - no new dependency。
+
+## Stage R.5.1 blocked result UX polish facts
+
+Baseline：`stage-r5-console-real-dry-run-wiring / 48a1978`。
+
+Stage R.5.1 changes display wording only. It does not change dry-run provider
+semantics or safety decisions：
+
+- English blocked reasons are mapped to user-facing Chinese in `labels.py`。
+- Paper/SIM pages render a blocked dry-run card when the latest dry-run status
+  is `BLOCKED`。
+- Results / History renders the same blocked dry-run card for blocked latest
+  results。
+- The blocked card explains why the operation was blocked, whether it was safe,
+  and what the operator should do next。
+- The blocked card states that no database write happened, no real exchange was
+  connected, the target remains local MOCK, and real capital was not used。
+- Configuration now includes a `预演所需配置` section with account ID, trading
+  day, instrument whitelist, max order size, max position size, max daily loss,
+  typed command provider and job factory readiness。
+
+Stage R.5.1 preserves these boundaries：
+
+- no dry-run safety semantic change。
+- no Paper/SIM apply execution。
+- no DB or ledger writes。
+- no broker / CTP / SimNow / LIVE / network integration。
+- no FastAPI control plane。
+- no `ExecutionTarget.PAPER` / `SIM` / `LIVE` enablement。
+- no schema or Alembic migration。
+- no new dependency。

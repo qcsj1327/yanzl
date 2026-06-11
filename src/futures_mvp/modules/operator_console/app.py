@@ -303,6 +303,9 @@ def _render_configuration(ui: OperatorConsoleUI, model: OperatorConsoleViewModel
     ui.subheader(labels.section_label("normal_config"))
     for key, value in model.configuration.normal:
         ui.write(f"{labels.field_label(key)}: {value}")
+    ui.subheader(labels.section_label("dry_run_required_config"))
+    for key, value in model.configuration.dry_run_required:
+        ui.write(f"{labels.field_label(key)}: {value}")
     ui.subheader(labels.section_label("advanced_config"))
     for key, value in model.configuration.advanced:
         ui.write(f"{labels.field_label(key)}: {value}")
@@ -424,6 +427,9 @@ def _render_dry_run_result_summary(
     ui: OperatorConsoleUI,
     result: ResultHistoryViewModel,
 ) -> None:
+    if result.session_status == "BLOCKED":
+        _render_blocked_dry_run_result(ui, result)
+        return
     ui.subheader(labels.section_label("latest_result_card"))
     ui.markdown(
         f"{labels.result_label('session status')}: "
@@ -438,7 +444,24 @@ def _render_dry_run_result_summary(
     ui.markdown(f"{labels.result_label('db delta')}: {result.db_delta}")
     ui.markdown(f"{labels.result_label('target type')}: {labels.safety_label(result.target)}")
     if result.reason:
-        ui.markdown(f"{labels.result_label('reason')}: {result.reason}")
+        ui.markdown(f"{labels.result_label('reason')}: {labels.reason_label(result.reason)}")
+
+
+def _render_blocked_dry_run_result(
+    ui: OperatorConsoleUI,
+    result: ResultHistoryViewModel,
+) -> None:
+    ui.subheader(labels.section_label("blocked_dry_run_title"))
+    ui.markdown(labels.blocked_result_text("description"))
+    if result.reason:
+        ui.markdown(f"{labels.result_label('reason')}: {labels.reason_label(result.reason)}")
+    ui.markdown(labels.section_label("blocked_next_steps"))
+    for key in ("next_step_config", "next_step_check", "next_step_retry"):
+        ui.markdown(labels.blocked_result_text(key))
+    ui.markdown(labels.section_label("blocked_safe_result"))
+    ui.markdown(labels.blocked_result_text("safe_db_delta_zero"))
+    ui.markdown(labels.blocked_result_text("safe_target_mock"))
+    ui.markdown(labels.blocked_result_text("safe_no_capital"))
 
 
 def _render_forbidden_actions(

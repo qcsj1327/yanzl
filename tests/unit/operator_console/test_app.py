@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from futures_mvp.modules.operator_console import app, labels
 from futures_mvp.modules.operator_console.actions import DryRunActionResult
 from futures_mvp.modules.operator_console.app import render_console
 from futures_mvp.modules.operator_console.view_models import (
     OperatorPage,
+    ResultHistoryViewModel,
     default_console_view_model,
 )
 
@@ -278,6 +279,23 @@ def test_results_page_renders_not_run_language_without_disabled_list() -> None:
     assert "已禁用" not in rendered
 
 
+def test_configuration_page_renders_dry_run_required_config() -> None:
+    ui = FakeUI(selected_label=labels.page_title(OperatorPage.CONFIGURATION.value))
+
+    render_console(ui, default_console_view_model())
+
+    rendered = "\n".join(str(item) for item in [*ui.writes, *ui.subheaders])
+    assert "预演所需配置" in rendered
+    assert "账户 ID: 未配置" in rendered
+    assert "交易日: 未配置" in rendered
+    assert "合约白名单: 未配置" in rendered
+    assert "最大委托数量: 未配置" in rendered
+    assert "最大持仓数量: 未配置" in rendered
+    assert "最大日亏损: 未配置" in rendered
+    assert "命令来源 / typed command provider: 未配置" in rendered
+    assert "job_factory: 未配置" in rendered
+
+
 def test_live_locked_page_renders_strong_warning() -> None:
     ui = FakeUI(selected_label=labels.page_title(OperatorPage.LIVE_LOCKED_PAGE.value))
 
@@ -336,6 +354,33 @@ def test_paper_dry_run_click_calls_provider_and_renders_result() -> None:
     assert "目标类型: 仅本地模拟，不连接真实交易所" in rendered
 
 
+def test_paper_blocked_dry_run_renders_user_guidance() -> None:
+    def provider() -> DryRunActionResult:
+        return DryRunActionResult(
+            session_status="BLOCKED",
+            job_status="BLOCKED",
+            run_status="BLOCKED",
+            reason="paper dry-run requires complete session config",
+        )
+
+    ui = FakeUI(
+        selected_label=labels.page_title(OperatorPage.PAPER_SESSION.value),
+        clicked_labels={"运行 Paper 预演"},
+    )
+
+    render_console(ui, default_console_view_model(), paper_dry_run=provider)
+
+    rendered = "\n".join(str(item) for item in [*ui.markdowns, *ui.subheaders])
+    assert "⚠️ 本次预演未执行" in rendered
+    assert "系统已安全阻断本次操作，没有写入数据库，也没有连接真实交易所。" in rendered
+    assert "当前缺少完整的 Paper 预演配置，因此没有执行" in rendered
+    assert "1. 打开配置中心" in rendered
+    assert "✅ 数据库写入变化：0" in rendered
+    assert "✅ 目标类型：仅本地模拟，不连接真实交易所" in rendered
+    assert "✅ 真实资金：未使用" in rendered
+    assert "requires complete session config" not in rendered
+
+
 def test_sim_dry_run_click_calls_provider_and_renders_result() -> None:
     calls = 0
 
@@ -361,6 +406,28 @@ def test_sim_dry_run_click_calls_provider_and_renders_result() -> None:
     assert calls == 1
     assert "会话状态: 预演完成" in rendered
     assert "数据库写入变化: 0" in rendered
+
+
+def test_sim_blocked_dry_run_renders_user_guidance() -> None:
+    def provider() -> DryRunActionResult:
+        return DryRunActionResult(
+            session_status="BLOCKED",
+            job_status="BLOCKED",
+            run_status="BLOCKED",
+            reason="sim dry-run requires complete session config",
+        )
+
+    ui = FakeUI(
+        selected_label=labels.page_title(OperatorPage.SIM_SESSION.value),
+        clicked_labels={"运行 SIM 预演"},
+    )
+
+    render_console(ui, default_console_view_model(), sim_dry_run=provider)
+
+    rendered = "\n".join(str(item) for item in [*ui.markdowns, *ui.subheaders])
+    assert "⚠️ 本次预演未执行" in rendered
+    assert "当前缺少完整的 SIM 预演配置，因此没有执行" in rendered
+    assert "2. 检查账户 ID、交易日、合约白名单、最大单笔数量、最大持仓数量、最大日亏损" in rendered
 
 
 def test_apply_click_does_not_call_dry_run_provider() -> None:
@@ -399,9 +466,34 @@ def test_dry_run_unsafe_result_renders_blocked_reason() -> None:
     render_console(ui, default_console_view_model(), paper_dry_run=provider)
 
     rendered = "\n".join(str(item) for item in [*ui.markdowns, *ui.subheaders])
-    assert "会话状态: 已阻断" in rendered
-    assert "数据库写入变化: 1" in rendered
-    assert "原因: dry-run returned non-zero DB delta" in rendered
+    assert "⚠️ 本次预演未执行" in rendered
+    assert "✅ 数据库写入变化：0" in rendered
+    assert "原因: 预演出现数据库写入变化，已阻止标记为成功" in rendered
+
+
+def test_results_blocked_dry_run_renders_safe_result_card() -> None:
+    model = default_console_view_model()
+    blocked = replace(
+        model,
+        results=ResultHistoryViewModel(
+            items=model.results.items,
+            session_status="BLOCKED",
+            job_status="BLOCKED",
+            run_status="BLOCKED",
+            latest_run="dry-run",
+            reason="non-MOCK target",
+        ),
+    )
+    ui = FakeUI(selected_label=labels.page_title(OperatorPage.RESULTS_HISTORY.value))
+
+    render_console(ui, blocked)
+
+    rendered = "\n".join(str(item) for item in [*ui.markdowns, *ui.subheaders])
+    assert "⚠️ 本次预演未执行" in rendered
+    assert "当前目标不是 MOCK，已阻止执行" in rendered
+    assert "✅ 数据库写入变化：0" in rendered
+    assert "✅ 目标类型：仅本地模拟，不连接真实交易所" in rendered
+    assert "✅ 真实资金：未使用" in rendered
 
 
 def test_forbidden_actions_are_text_only_without_enable_buttons() -> None:

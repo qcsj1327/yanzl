@@ -94,6 +94,21 @@ def test_required_safety_action_risk_and_result_labels_exist() -> None:
         assert value in labels.RESULT_LABELS.values()
 
 
+def test_blocked_reason_labels_are_user_facing_chinese() -> None:
+    expected = {
+        "paper dry-run requires complete session config": (
+            "当前缺少完整的 Paper 预演配置，因此没有执行"
+        ),
+        "sim dry-run requires complete session config": "当前缺少完整的 SIM 预演配置，因此没有执行",
+        "missing provider": "当前没有可用的预演执行器",
+        "non-MOCK target": "当前目标不是 MOCK，已阻止执行",
+        "db_delta nonzero": "预演出现数据库写入变化，已阻止标记为成功",
+    }
+
+    for reason, display in expected.items():
+        assert labels.reason_label(reason) == display
+
+
 def test_ui_polish_field_and_diagnostic_labels_exist() -> None:
     expected_fields = {
         "Operator Console": "本地操作台",
