@@ -79,3 +79,39 @@ def test_apply_placeholder_is_blocked() -> None:
 
         assert result.status is PlaceholderActionStatus.BLOCKED
         assert result.executed is False
+
+
+def test_dry_run_db_delta_nonzero_is_not_marked_safe() -> None:
+    def provider() -> DryRunActionResult:
+        return DryRunActionResult(
+            "DRY_RUN_COMPLETED",
+            "DRY_RUN",
+            "DRY_RUN_COMPLETED",
+            db_delta=1,
+        )
+
+    result = run_paper_dry_run(provider)
+
+    assert result.status is PlaceholderActionStatus.BLOCKED
+    assert result.executed is True
+    assert result.dry_run_result is not None
+    assert result.dry_run_result.session_status == "BLOCKED"
+    assert result.dry_run_result.db_delta == 1
+
+
+def test_dry_run_non_mock_result_is_not_marked_safe() -> None:
+    def provider() -> DryRunActionResult:
+        return DryRunActionResult(
+            "DRY_RUN_COMPLETED",
+            "DRY_RUN",
+            "DRY_RUN_COMPLETED",
+            target="SIM",
+        )
+
+    result = run_sim_dry_run(provider)
+
+    assert result.status is PlaceholderActionStatus.BLOCKED
+    assert result.executed is True
+    assert result.dry_run_result is not None
+    assert result.dry_run_result.session_status == "BLOCKED"
+    assert result.dry_run_result.target == "SIM"

@@ -381,6 +381,29 @@ def test_apply_click_does_not_call_dry_run_provider() -> None:
     assert calls == 0
 
 
+def test_dry_run_unsafe_result_renders_blocked_reason() -> None:
+    def provider() -> DryRunActionResult:
+        return DryRunActionResult(
+            session_status="DRY_RUN_COMPLETED",
+            job_status="DRY_RUN",
+            run_status="DRY_RUN_COMPLETED",
+            db_delta=1,
+            target="MOCK only",
+        )
+
+    ui = FakeUI(
+        selected_label=labels.page_title(OperatorPage.PAPER_SESSION.value),
+        clicked_labels={"运行 Paper 预演"},
+    )
+
+    render_console(ui, default_console_view_model(), paper_dry_run=provider)
+
+    rendered = "\n".join(str(item) for item in [*ui.markdowns, *ui.subheaders])
+    assert "会话状态: 已阻断" in rendered
+    assert "数据库写入变化: 1" in rendered
+    assert "原因: dry-run returned non-zero DB delta" in rendered
+
+
 def test_forbidden_actions_are_text_only_without_enable_buttons() -> None:
     ui = FakeUI(selected_label=labels.page_title(OperatorPage.LIVE_LOCKED_PAGE.value))
 

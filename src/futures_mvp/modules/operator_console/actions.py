@@ -102,9 +102,32 @@ def _run_dry_run(
             executed=False,
         )
     dry_run_result = provider()
+    blocked_reason = _unsafe_dry_run_reason(dry_run_result)
+    if blocked_reason is not None:
+        return ConsoleActionResult(
+            status=PlaceholderActionStatus.BLOCKED,
+            reason=blocked_reason,
+            executed=True,
+            dry_run_result=DryRunActionResult(
+                session_status=PlaceholderActionStatus.BLOCKED.value,
+                job_status=PlaceholderActionStatus.BLOCKED.value,
+                run_status=PlaceholderActionStatus.BLOCKED.value,
+                db_delta=dry_run_result.db_delta,
+                target=dry_run_result.target,
+                reason=blocked_reason,
+            ),
+        )
     return ConsoleActionResult(
         status=PlaceholderActionStatus.DRY_RUN_COMPLETED,
         reason=descriptor.reason,
         executed=True,
         dry_run_result=dry_run_result,
     )
+
+
+def _unsafe_dry_run_reason(result: DryRunActionResult) -> str | None:
+    if result.target not in {"MOCK only", "MOCK"}:
+        return "dry-run returned non-MOCK target"
+    if result.db_delta != 0:
+        return "dry-run returned non-zero DB delta"
+    return None

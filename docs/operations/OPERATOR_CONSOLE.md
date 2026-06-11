@@ -435,3 +435,39 @@ Stage R.4 preserves these boundaries：
 - no FastAPI control plane。
 - no `ExecutionTarget.PAPER` / `SIM` / `LIVE` enablement。
 - no schema or Alembic migration。
+
+## Stage R.5 real LocalSession dry-run wiring facts
+
+Baseline：`stage-r4-console-dry-run-actions / f368736`。
+
+Stage R.5 wires the console dry-run buttons to the accepted local session
+entrypoints, but only for dry-run：
+
+- `dry_run_wiring.py` is the only Operator Console module allowed to import
+  `PaperLocalSession` and `SimLocalSession`。
+- Paper dry-run provider creates a callable that runs `PaperLocalSession.run()`
+  only when complete Paper session config, job factory and command source are
+  injected。
+- SIM dry-run provider creates a callable that runs `SimLocalSession.run()`
+  only when complete SIM session config, job factory and command source are
+  injected。
+- Default Streamlit startup creates both provider callables, but without local
+  fixture/config they fail closed as `BLOCKED`。
+- Providers require `dry_run=True`, `apply_confirmed=False`, no
+  `apply_requested`, and `MOCK only` target。
+- Providers map LocalSession result into console display fields：session
+  status, job status, run status, `DB delta = 0`, target and reason。
+- Action layer rejects provider output with non-`MOCK` target or non-zero DB
+  delta and displays it as `BLOCKED` instead of success。
+
+Stage R.5 preserves these boundaries：
+
+- no Paper/SIM apply execution。
+- apply buttons remain disabled/placeholder。
+- no DB or ledger writes。
+- no direct coordinator, harness or repository call from the console。
+- no broker / CTP / SimNow / LIVE / network integration。
+- no FastAPI control plane。
+- no `ExecutionTarget.PAPER` / `SIM` / `LIVE` enablement。
+- no schema or Alembic migration。
+- no new dependency。

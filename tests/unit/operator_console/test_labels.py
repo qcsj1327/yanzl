@@ -89,6 +89,7 @@ def test_required_safety_action_risk_and_result_labels_exist() -> None:
         "重复检测",
         "数据库写入变化",
         "目标类型",
+        "原因",
     ):
         assert value in labels.RESULT_LABELS.values()
 

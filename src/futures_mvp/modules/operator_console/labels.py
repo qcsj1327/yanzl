@@ -89,6 +89,7 @@ RESULT_LABELS: dict[str, str] = {
     "session status": "会话状态",
     "job status": "任务状态",
     "run status": "运行状态",
+    "reason": "原因",
     "execution reports": "执行报告",
     "order status": "订单状态",
     "trades": "成交记录",

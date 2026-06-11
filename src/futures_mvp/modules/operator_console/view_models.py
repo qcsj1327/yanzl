@@ -122,6 +122,7 @@ class ResultHistoryViewModel:
     db_delta: int = 0
     target: str = "MOCK only"
     latest_run: str = "无"
+    reason: str | None = None
 
 
 @dataclass(frozen=True)

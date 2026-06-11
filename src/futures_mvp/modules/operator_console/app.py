@@ -11,6 +11,10 @@ from futures_mvp.modules.operator_console.actions import (
     run_paper_dry_run,
     run_sim_dry_run,
 )
+from futures_mvp.modules.operator_console.dry_run_wiring import (
+    create_paper_dry_run_provider,
+    create_sim_dry_run_provider,
+)
 from futures_mvp.modules.operator_console.view_models import (
     ButtonViewModel,
     ForbiddenActionViewModel,
@@ -125,7 +129,11 @@ def render_console(
 
 def main() -> None:
     streamlit = import_module("streamlit")
-    render_console(StreamlitUI(streamlit))
+    render_console(
+        StreamlitUI(streamlit),
+        paper_dry_run=create_paper_dry_run_provider(),
+        sim_dry_run=create_sim_dry_run_provider(),
+    )
 
 
 def _select_page(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> OperatorPage:
@@ -401,6 +409,7 @@ def _with_result(
             db_delta=result.db_delta,
             target=result.target,
             latest_run="dry-run",
+            reason=result.reason,
         ),
         diagnostics=model.diagnostics,
         live_locked=model.live_locked,
@@ -428,6 +437,8 @@ def _render_dry_run_result_summary(
     )
     ui.markdown(f"{labels.result_label('db delta')}: {result.db_delta}")
     ui.markdown(f"{labels.result_label('target type')}: {labels.safety_label(result.target)}")
+    if result.reason:
+        ui.markdown(f"{labels.result_label('reason')}: {result.reason}")
 
 
 def _render_forbidden_actions(

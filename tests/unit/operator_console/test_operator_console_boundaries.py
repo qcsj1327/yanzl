@@ -36,19 +36,36 @@ def test_operator_console_has_no_forbidden_imports() -> None:
         "futures_mvp.modules.margin",
         "futures_mvp.modules.pnl",
         "futures_mvp.modules.settlement",
-        "futures_mvp.modules.paper_trading",
-        "futures_mvp.modules.sim_trading",
+        "futures_mvp.modules.paper_trading.coordinator",
+        "futures_mvp.modules.paper_trading.job",
+        "futures_mvp.modules.sim_trading.coordinator",
+        "futures_mvp.modules.sim_trading.job",
         "alembic",
         "subprocess",
     )
-    imported: set[str] = set()
     for path in CONSOLE_DIR.glob("*.py"):
-        imported.update(name.lower() for name in _imports(path))
+        imported = {name.lower() for name in _imports(path)}
+        assert all(
+            not any(fragment in imported_name for fragment in forbidden_fragments)
+            for imported_name in imported
+        )
+        if path.name != "dry_run_wiring.py":
+            assert all(
+                "futures_mvp.modules.paper_trading" not in imported_name
+                and "futures_mvp.modules.sim_trading" not in imported_name
+                for imported_name in imported
+            )
 
-    assert all(
-        not any(fragment in imported_name for fragment in forbidden_fragments)
-        for imported_name in imported
-    )
+
+def test_operator_console_local_session_imports_are_limited_to_wiring() -> None:
+    for path in CONSOLE_DIR.glob("*.py"):
+        imported = {name.lower() for name in _imports(path)}
+        if path.name == "dry_run_wiring.py":
+            assert "futures_mvp.modules.paper_trading.session" in imported
+            assert "futures_mvp.modules.sim_trading.session" in imported
+        else:
+            assert "futures_mvp.modules.paper_trading.session" not in imported
+            assert "futures_mvp.modules.sim_trading.session" not in imported
 
 
 def test_operator_console_has_no_direct_ledger_mutation_calls() -> None:
