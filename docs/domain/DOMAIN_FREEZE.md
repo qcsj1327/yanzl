@@ -6373,6 +6373,231 @@ Known P3：
 - Duplicate outer session status remains `COMPLETED` while nested job/run status is `DUPLICATE`。
 - The duplicate flag is true and duplicate DB delta is zero；this is an observability status limitation, not a ledger safety issue。
 
+## Stage R.1 Operator Console Contract Freeze
+
+Stage R.1 freezes the local Operator Console contract on baseline `sim-local-mvp-stable-baseline / 5f28114`。
+
+Stage R.1 is documentation-only：
+
+- no Domain model。
+- no enum。
+- no interface change。
+- no schema or Alembic migration。
+- no `src` / tests。
+- no broker, CTP, SimNow or LIVE。
+- no `ExecutionTarget.PAPER` / `ExecutionTarget.SIM` / `ExecutionTarget.LIVE` enablement。
+
+### Stage R.1 purpose
+
+The Operator Console is a local Streamlit-first control panel for non-code / non-CLI operators.
+
+It may help operators：
+
+- run local Paper dry-run/apply sessions。
+- run local controlled SIM dry-run/apply sessions。
+- view Runtime and Ops health。
+- view safety state。
+- inspect Paper/SIM results。
+- inspect read-only diagnostics。
+
+It must not become：
+
+- a strategy development surface。
+- a database edit surface。
+- a LIVE control surface。
+- a broker/CTP/SimNow control surface。
+- a public network or FastAPI control plane。
+
+### Stage R.1 page and action contract
+
+Frozen pages：
+
+- Dashboard。
+- Paper Session。
+- SIM Session。
+- Safety Controls。
+- Configuration。
+- Results / History。
+- Diagnostics。
+- Live Locked Page。
+
+Allowed actions：
+
+- `Run Paper Dry-run`。
+- `Run Paper Apply` with explicit confirmation。
+- `View Paper Result`。
+- `Run SIM Dry-run`。
+- `Run SIM Apply` with explicit confirmation。
+- `View SIM Result`。
+- Toggle Kill Switch。
+- Toggle Scheduler Pause。
+- Toggle Replay Pause。
+- Read-only configuration preview。
+- Read-only result/history inspection。
+- Read-only diagnostics inspection。
+
+Forbidden actions：
+
+- Live Enable。
+- Broker Enable。
+- CTP Enable。
+- SimNow Enable。
+- Manual DB edit。
+- Force Order。
+- Force Trade。
+- Force Position。
+- `ExecutionTarget.PAPER` selection or enablement。
+- `ExecutionTarget.SIM` selection or enablement。
+- `ExecutionTarget.LIVE` selection or enablement。
+
+### Stage R.1 safety contract
+
+Dangerous actions must：
+
+- default disabled。
+- require second confirmation。
+- show impact explanation。
+- distinguish dry-run from apply。
+- state whether DB rows may be written。
+- state `MOCK only`。
+- state the accepted LocalSession -> RuntimeJob -> Coordinator chain。
+
+Paper dry-run must not mutate ledgers.
+
+Paper apply may mutate local ledgers only through：
+
+```text
+PaperLocalSession
+-> PaperRuntimeJob
+-> PaperTradingCoordinator
+```
+
+SIM dry-run must not mutate ledgers.
+
+SIM apply may mutate local ledgers only through：
+
+```text
+SimLocalSession
+-> SimRuntimeJob
+-> SimTradingCoordinator
+```
+
+All Paper/SIM commands remain `ExecutionTarget.MOCK` only.
+
+### Stage R.1 configuration contract
+
+Normal configuration：
+
+- `account_id`。
+- `trading_day`。
+- instrument whitelist。
+- max order size。
+- max position size。
+- max daily loss。
+- Paper/SIM mode。
+- dry-run/apply intent。
+
+Advanced configuration：
+
+- `runtime_id`。
+- `config_hash`。
+- migration revision。
+- capital control details。
+
+Initial configuration sources：
+
+- typed config object。
+- local TOML/YAML file。
+- environment variables。
+- UI session state。
+
+Stage R.1 does not add persistent Console configuration. Persisted configuration, durable approvals, durable audit/session tables, auth, remote access and UI profiles require a separate contract freeze.
+
+### Stage R.1 result and diagnostics contract
+
+Results / History must display：
+
+- session status。
+- job status。
+- run status。
+- raw reports。
+- normalized reports。
+- OMS status。
+- trade status。
+- position status。
+- margin status。
+- PnL status。
+- settlement status。
+- duplicate flag。
+- DB delta。
+- target list。
+
+Diagnostics must display read-only：
+
+- pytest result。
+- ruff result。
+- mypy result。
+- alembic current。
+- git commit/tag。
+- worktree clean status。
+- DB health。
+- Redis health if configured。
+- last error。
+
+Results, history and diagnostics are observability only. They do not become source-of-truth and must not mutate DB state.
+
+### Stage R.1 architecture boundary
+
+Console may call only：
+
+- `PaperLocalSession`。
+- `SimLocalSession`。
+- Runtime / Ops health。
+- read-only diagnostics。
+
+Console must not：
+
+- directly call OMS repository mutation。
+- directly call Trade repository mutation。
+- directly call Position repository mutation。
+- directly call Accounting repository mutation。
+- bypass RuntimeJob / LocalSession。
+- call Paper/SIM coordinators directly。
+- call execution harnesses directly。
+- construct commands from raw payloads。
+- use broker callbacks as commands。
+- write ledgers directly。
+- connect to broker, CTP, SimNow, live account or broker network。
+- modify schema。
+- run Alembic migrations。
+- expose FastAPI, public network or remote control endpoints。
+
+The Live Locked Page must show LIVE, CTP, SimNow, Broker and real capital disabled and must not provide enable buttons.
+
+### Stage R.1 future implementation recommendation
+
+Future package：
+
+- `src/futures_mvp/modules/operator_console/app.py`。
+- `src/futures_mvp/modules/operator_console/view_models.py`。
+- `src/futures_mvp/modules/operator_console/actions.py`。
+- `src/futures_mvp/modules/operator_console/diagnostics.py`。
+- `src/futures_mvp/modules/operator_console/safety.py`。
+
+Future tests should assert：
+
+- actions do not bypass `PaperLocalSession` or `SimLocalSession`。
+- forbidden actions do not exist。
+- live buttons do not exist。
+- Paper apply requires confirmation。
+- SIM apply requires confirmation。
+- non-`MOCK` target cannot be selected。
+- diagnostics are read-only。
+
+Stage R.1 validation：
+
+- `git diff --check`。
+
 ### feature_snapshots
 
 Stage H 已新增 `feature_snapshots` 表作为 FeatureSnapshot derived facts ledger。

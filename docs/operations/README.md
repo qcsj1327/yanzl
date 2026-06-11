@@ -6,12 +6,24 @@
 
 不得提前新增 live、production、remote、kms、cloud 或真实交易运行流程。
 
-Stage M Runtime / Infrastructure contract freeze、Stage O Operations / Safety / Production Readiness contract freeze 和 Stage P Paper / Sim / Live Rollout Contract Freeze 当前记录在：
+Stage M Runtime / Infrastructure contract freeze、Stage O Operations / Safety / Production Readiness contract freeze、Stage P Paper / Sim / Live Rollout Contract Freeze 和 Stage R.1 Operator Console Contract Freeze 当前记录在：
 
 - `docs/architecture/SYSTEM_MASTER_PLAN.md`
 - `docs/domain/DOMAIN_FREEZE.md`
+- `docs/operations/OPERATOR_CONSOLE.md`
 
 Operations 文档不得绕过该契约定义 runtime 行为。Runtime 只编排应用服务，不拥有或修改 Position、Margin、PnL、Settlement 或 OMS state。
+
+Stage R.1 Operator Console 是本地 Streamlit-first 操作台契约冻结：
+
+- 面向非代码 / 非 CLI 用户，用于 Paper/SIM 运行、状态查看、安全控制、结果检查和只读诊断。
+- 页面固定为 Dashboard、Paper Session、SIM Session、Safety Controls、Configuration、Results / History、Diagnostics 和 Live Locked Page。
+- 允许按钮仅限 Paper/SIM dry-run、confirmed apply、view result，以及 Kill Switch、Scheduler Pause、Replay Pause。
+- apply 默认 disabled，必须二次确认，并明确 dry-run/apply 差异、是否写 DB、`MOCK only` 和 accepted LocalSession -> RuntimeJob -> Coordinator 链路。
+- Console 只能调用 `PaperLocalSession`、`SimLocalSession`、Runtime/Ops health 和 read-only diagnostics。
+- Console 禁止直接写 OMS / Trade / Position / Accounting repositories，禁止绕过 RuntimeJob / LocalSession，禁止直接写 ledger，禁止 schema mutation。
+- 永远不得出现 Live Enable、Broker Enable、CTP Enable、SimNow Enable、Manual DB edit、Force Order、Force Trade、Force Position 或 `ExecutionTarget.PAPER` / `SIM` / `LIVE` 选择/启用按钮。
+- 初期配置只允许 typed config object、本地 TOML/YAML、environment variables 或 UI session state；持久化配置另开 contract。
 
 Stage M implementation 当前新增 `src/futures_mvp/modules/runtime`：
 

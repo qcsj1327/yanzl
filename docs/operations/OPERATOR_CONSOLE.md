@@ -1,0 +1,334 @@
+# Stage R.1 Operator Console Contract Freeze
+
+Baseline：`sim-local-mvp-stable-baseline / 5f28114`。
+
+Stage R.1 is documentation-only. It freezes the local Operator Console UX, functions, configuration, safety boundary and forbidden actions before any implementation.
+
+This stage does not add code, schema, Alembic migration, `src` changes, tests, commit or tag.
+
+## Console positioning
+
+The Operator Console is a local Streamlit-first control panel for users who are not comfortable reading code or using CLI commands.
+
+The Console is used for：
+
+- local Paper run control。
+- local controlled SIM run control。
+- Runtime and Ops status viewing。
+- safety control visibility and safe toggles。
+- Paper / SIM result inspection。
+- read-only diagnostics。
+
+The Console is not：
+
+- a strategy developer。
+- a database editor。
+- a LIVE console。
+- a broker console。
+- a CTP console。
+- a SimNow console。
+- a FastAPI control plane。
+- a public-network service。
+
+The Console must run locally only, keep `ExecutionTarget.MOCK` as the only selectable/usable target, and must not expose any path to `ExecutionTarget.PAPER`, `ExecutionTarget.SIM` or `ExecutionTarget.LIVE` enablement.
+
+## Page layout
+
+The initial Console layout is frozen as these pages：
+
+- Dashboard。
+- Paper Session。
+- SIM Session。
+- Safety Controls。
+- Configuration。
+- Results / History。
+- Diagnostics。
+- Live Locked Page。
+
+Navigation labels should be plain and operator-facing. The first opened page should be Dashboard.
+
+## Dashboard
+
+Dashboard must answer what state the local system is in before the operator clicks anything.
+
+Dashboard displays：
+
+- Runtime status。
+- current rollout mode。
+- ExecutionTarget status。
+- migration status。
+- kill switch status。
+- scheduler pause status。
+- replay pause status。
+- most recent Paper result。
+- most recent SIM result。
+- `MOCK only / no live` notice。
+
+Dashboard must make these facts visually obvious：
+
+- LIVE is disabled。
+- Broker is disabled。
+- CTP is disabled。
+- SimNow is disabled。
+- real capital is disabled。
+- `ExecutionTarget.MOCK` is the only allowed target。
+
+Dashboard must not contain run/apply buttons except links or navigation affordances into the Paper and SIM pages.
+
+## Paper Session page
+
+Allowed buttons：
+
+- `Run Paper Dry-run`。
+- `Run Paper Apply`。
+- `View Paper Result`。
+
+Display requirements：
+
+- dry-run does not write ledgers or mutate business facts。
+- apply may write local ledgers only through `PaperLocalSession -> PaperRuntimeJob -> PaperTradingCoordinator`。
+- apply requires explicit confirmation before it becomes enabled。
+- Paper runs use `ExecutionTarget.MOCK` only。
+- ACKED and FILLED report sequence must be visible when produced。
+- Trade, Position, Margin, PnL and Settlement completion status must be visible after apply。
+- duplicate/no-op and conflict stop results must be visible。
+
+`Run Paper Apply` is a dangerous action. It must default disabled until the UI captures an explicit confirmation that states the run may write local business ledgers through the accepted Paper chain.
+
+Paper page must not expose direct OMS, Trade, Position or Accounting mutation controls.
+
+## SIM Session page
+
+Allowed buttons：
+
+- `Run SIM Dry-run`。
+- `Run SIM Apply`。
+- `View SIM Result`。
+
+Display requirements：
+
+- SIM is local controlled simulation。
+- SIM is not SimNow。
+- SIM is not CTP。
+- SIM is not Live。
+- `ExecutionTarget.SIM` remains disabled。
+- target is `ExecutionTarget.MOCK` only。
+- dry-run does not write ledgers or mutate business facts。
+- apply may write local ledgers only through `SimLocalSession -> SimRuntimeJob -> SimTradingCoordinator`。
+- apply requires explicit confirmation before it becomes enabled。
+- ACKED and FILLED report sequence must be visible when produced。
+- Trade, Position, Margin, PnL and Settlement completion status must be visible after apply。
+- duplicate/no-op and conflict stop results must be visible。
+
+`Run SIM Apply` is a dangerous action. It must default disabled until the UI captures an explicit confirmation that states the run may write local business ledgers through the accepted SIM chain.
+
+SIM page must not expose `ExecutionTarget.SIM` selection or any SimNow / CTP / broker option.
+
+## Safety Controls page
+
+Allowed safety toggles：
+
+- Kill Switch。
+- Scheduler Pause。
+- Replay Pause。
+
+The page must explain whether each toggle blocks new work, scheduler work, replay work, or all apply actions.
+
+Forbidden controls：
+
+- Live Enable。
+- Broker Enable。
+- CTP Enable。
+- SimNow Enable。
+- Manual DB edit。
+- Force Order。
+- Force Trade。
+- Force Position。
+
+Safety Controls must not offer an override that bypasses RuntimeJob, LocalSession or application service gates.
+
+## Configuration page
+
+Normal configuration fields：
+
+- `account_id`。
+- `trading_day`。
+- instrument whitelist。
+- max order size。
+- max position size。
+- max daily loss。
+- Paper/SIM mode。
+- dry-run/apply intent。
+
+Advanced configuration fields：
+
+- `runtime_id`。
+- `config_hash`。
+- migration revision。
+- capital control details。
+
+Initial configuration sources are limited to：
+
+- typed config object。
+- local TOML/YAML file。
+- environment variables。
+- UI session state。
+
+Stage R.1 does not add durable configuration storage. Persisted Console configuration, durable approvals, durable audit/session tables, multi-user auth or UI profile storage require a separate contract freeze.
+
+Configuration UI must not allow selecting or enabling `ExecutionTarget.PAPER`, `ExecutionTarget.SIM`, `ExecutionTarget.LIVE`, live broker, CTP or SimNow.
+
+## Results / History page
+
+Results / History displays local observability and accepted ledger inspection results. It is not a business source-of-truth.
+
+Required display fields：
+
+- session status。
+- job status。
+- run status。
+- raw reports。
+- normalized reports。
+- OMS status。
+- trade status。
+- position status。
+- margin status。
+- PnL status。
+- settlement status。
+- duplicate flag。
+- DB delta。
+- target list。
+
+The page should make it easy to see：
+
+- whether dry-run wrote zero rows。
+- whether apply wrote the expected local rows。
+- whether the final target list is `MOCK` only。
+- whether duplicate rerun produced zero DB delta。
+- where a conflict/error stopped downstream processing。
+
+Results / History must not provide edit, repair, force, retry-as-new-order or manual ledger mutation controls.
+
+## Diagnostics page
+
+Diagnostics is read-only.
+
+Required display fields：
+
+- pytest result。
+- ruff result。
+- mypy result。
+- alembic current。
+- git commit。
+- git tag。
+- worktree clean status。
+- DB health。
+- Redis health if configured。
+- last error。
+
+Diagnostics may run or display read-only checks only. It must not run schema migrations, mutate DB state, repair ledgers, enable broker, enable LIVE or start network services.
+
+## Live Locked Page
+
+Live Locked Page must clearly display：
+
+- LIVE disabled。
+- CTP disabled。
+- SimNow disabled。
+- Broker disabled。
+- Real capital disabled。
+
+The page must not provide enable buttons, unlock buttons, credential inputs, broker target selectors, CTP selectors or SimNow selectors.
+
+Any future live, CTP, SimNow, broker or real capital enablement requires a separate contract freeze, implementation stage and acceptance review. Stage R.1 provides no hidden enable path.
+
+## Operation safety
+
+Dangerous actions must：
+
+- require second confirmation。
+- show impact explanation。
+- default disabled。
+- distinguish dry-run from apply。
+- state whether the action writes database rows。
+- state `MOCK only`。
+- state the exact accepted chain used for mutation。
+
+Dry-run semantics：
+
+- Paper dry-run must not write business ledgers。
+- SIM dry-run must not write business ledgers。
+- dry-run results are observability only。
+
+Apply semantics：
+
+- Paper apply may write local ledgers only through `PaperLocalSession -> PaperRuntimeJob -> PaperTradingCoordinator` after all gates pass。
+- SIM apply may write local ledgers only through `SimLocalSession -> SimRuntimeJob -> SimTradingCoordinator` after all gates pass。
+- apply must preserve duplicate/no-op and conflict-stop behavior。
+- apply must not use broker, CTP, SimNow, LIVE or non-`MOCK` targets。
+
+## Architecture boundary
+
+Console may call only：
+
+- `PaperLocalSession`。
+- `SimLocalSession`。
+- Runtime / Ops health surfaces。
+- read-only diagnostics。
+
+Console must not：
+
+- directly call OMS repository mutation。
+- directly call Trade repository mutation。
+- directly call Position repository mutation。
+- directly call Accounting repository mutation。
+- directly call `PaperTradingCoordinator` or `SimTradingCoordinator` by bypassing LocalSession / RuntimeJob。
+- directly call `PaperRuntimeJob` or `SimRuntimeJob` in a way that bypasses LocalSession confirmation semantics。
+- call execution harnesses directly。
+- construct commands from raw payloads。
+- use broker callbacks as commands。
+- write ledgers directly。
+- connect to broker, CTP, SimNow, live account or broker network。
+- modify schema or run Alembic migrations。
+- expose FastAPI, public network or remote control endpoints。
+
+Console result objects are observability only and never replace DB business ledgers as source-of-truth.
+
+## Implementation recommendation
+
+Future implementation package：
+
+- `src/futures_mvp/modules/operator_console/app.py`。
+- `src/futures_mvp/modules/operator_console/view_models.py`。
+- `src/futures_mvp/modules/operator_console/actions.py`。
+- `src/futures_mvp/modules/operator_console/diagnostics.py`。
+- `src/futures_mvp/modules/operator_console/safety.py`。
+
+Recommended responsibilities：
+
+- `app.py` owns Streamlit layout/navigation only。
+- `view_models.py` converts typed session/job/run/health results into display-only view models。
+- `actions.py` calls only `PaperLocalSession` and `SimLocalSession` entrypoints。
+- `diagnostics.py` gathers read-only diagnostics。
+- `safety.py` renders and validates allowed safety controls without adding forbidden enable paths。
+
+Future tests should cover：
+
+- Console actions do not bypass `PaperLocalSession` or `SimLocalSession`。
+- forbidden actions do not exist。
+- live buttons do not exist。
+- Paper apply requires confirmation。
+- SIM apply requires confirmation。
+- non-`MOCK` target cannot be selected。
+- diagnostics are read-only。
+- configuration cannot enable broker, CTP, SimNow, LIVE or non-`MOCK` targets。
+
+## Validation
+
+Stage R.1 validation is documentation-only：
+
+```bash
+git diff --check
+```
+
+No pytest, ruff, mypy, schema migration or app run is required for this contract freeze unless later implementation changes code.
