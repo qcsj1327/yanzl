@@ -130,6 +130,7 @@ FIELD_LABELS: dict[str, str] = {
     "latest result": "最近结果",
     "diagnostics": "诊断",
     "history": "历史记录",
+    "page": "页面",
     "ExecutionTarget": "目标类型",
     "migration": "迁移状态",
     "Paper": "Paper 最近结果",

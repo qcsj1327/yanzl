@@ -86,3 +86,13 @@ def test_operator_console_does_not_enable_non_mock_targets() -> None:
                 and node.value.id == "ExecutionTarget"
                 and node.attr in {"PAPER", "SIM", "LIVE"}
             )
+
+
+def test_operator_console_does_not_use_missing_page_key_attribute() -> None:
+    for path in CONSOLE_DIR.glob("*.py"):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            assert not (
+                isinstance(node, ast.Attribute)
+                and node.attr == "key"
+            )

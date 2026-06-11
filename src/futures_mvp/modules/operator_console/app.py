@@ -28,6 +28,15 @@ class OperatorConsoleUI(Protocol):
 
     def button(self, label: str, *, disabled: bool = False, key: str | None = None) -> bool: ...
 
+    def selectbox(
+        self,
+        label: str,
+        options: tuple[str, ...],
+        *,
+        index: int = 0,
+        key: str | None = None,
+    ) -> str: ...
+
 
 @dataclass(frozen=True)
 class StreamlitUI:
@@ -51,6 +60,23 @@ class StreamlitUI:
     def button(self, label: str, *, disabled: bool = False, key: str | None = None) -> bool:
         return bool(self.streamlit.button(label, disabled=disabled, key=key))
 
+    def selectbox(
+        self,
+        label: str,
+        options: tuple[str, ...],
+        *,
+        index: int = 0,
+        key: str | None = None,
+    ) -> str:
+        return str(
+            self.streamlit.sidebar.selectbox(
+                label,
+                options,
+                index=index,
+                key=key,
+            )
+        )
+
 
 def render_console(
     ui: OperatorConsoleUI,
@@ -58,29 +84,52 @@ def render_console(
 ) -> None:
     model = view_model or default_console_view_model()
     ui.title(labels.section_label("Operator Console"))
-    for page in model.pages:
-        ui.header(labels.page_title(page.value))
-        if page is OperatorPage.DASHBOARD:
-            _render_dashboard(ui, model)
-        elif page is OperatorPage.PAPER_SESSION:
-            _render_session(ui, model.paper)
-        elif page is OperatorPage.SIM_SESSION:
-            _render_session(ui, model.sim)
-        elif page is OperatorPage.SAFETY_CONTROLS:
-            _render_safety(ui, model)
-        elif page is OperatorPage.CONFIGURATION:
-            _render_configuration(ui, model)
-        elif page is OperatorPage.RESULTS_HISTORY:
-            _render_results(ui, model)
-        elif page is OperatorPage.DIAGNOSTICS:
-            _render_diagnostics(ui, model)
-        elif page is OperatorPage.LIVE_LOCKED_PAGE:
-            _render_live_locked(ui, model)
+    selected_page = _select_page(ui, model)
+    ui.header(labels.page_title(selected_page.value))
+    _render_page(ui, model, selected_page)
 
 
 def main() -> None:
     streamlit = import_module("streamlit")
     render_console(StreamlitUI(streamlit))
+
+
+def _select_page(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> OperatorPage:
+    page_titles = tuple(labels.page_title(page.value) for page in model.pages)
+    selected_title = ui.selectbox(
+        labels.field_label("page"),
+        page_titles,
+        index=0,
+        key="operator_console_page",
+    )
+    page_by_title = {
+        labels.page_title(page.value): page
+        for page in model.pages
+    }
+    return page_by_title.get(selected_title, OperatorPage.DASHBOARD)
+
+
+def _render_page(
+    ui: OperatorConsoleUI,
+    model: OperatorConsoleViewModel,
+    page: OperatorPage,
+) -> None:
+    if page is OperatorPage.DASHBOARD:
+        _render_dashboard(ui, model)
+    elif page is OperatorPage.PAPER_SESSION:
+        _render_session(ui, model.paper)
+    elif page is OperatorPage.SIM_SESSION:
+        _render_session(ui, model.sim)
+    elif page is OperatorPage.SAFETY_CONTROLS:
+        _render_safety(ui, model)
+    elif page is OperatorPage.CONFIGURATION:
+        _render_configuration(ui, model)
+    elif page is OperatorPage.RESULTS_HISTORY:
+        _render_results(ui, model)
+    elif page is OperatorPage.DIAGNOSTICS:
+        _render_diagnostics(ui, model)
+    elif page is OperatorPage.LIVE_LOCKED_PAGE:
+        _render_live_locked(ui, model)
 
 
 def _render_dashboard(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> None:
@@ -181,3 +230,7 @@ def _render_forbidden_actions(
     ui.subheader(labels.section_label("forbidden_actions"))
     for action in forbidden_actions:
         ui.markdown(labels.forbidden_action_label(action.label_key))
+
+
+if __name__ == "__main__":
+    main()
