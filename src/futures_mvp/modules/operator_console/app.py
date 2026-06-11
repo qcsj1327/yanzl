@@ -37,6 +37,12 @@ class OperatorConsoleUI(Protocol):
         key: str | None = None,
     ) -> str: ...
 
+    def columns(self, count: int) -> tuple[OperatorConsoleUI, ...]: ...
+
+    def container(self) -> OperatorConsoleUI: ...
+
+    def divider(self) -> None: ...
+
 
 @dataclass(frozen=True)
 class StreamlitUI:
@@ -76,6 +82,15 @@ class StreamlitUI:
                 key=key,
             )
         )
+
+    def columns(self, count: int) -> tuple[StreamlitUI, ...]:
+        return tuple(StreamlitUI(column) for column in self.streamlit.columns(count))
+
+    def container(self) -> StreamlitUI:
+        return StreamlitUI(self.streamlit.container())
+
+    def divider(self) -> None:
+        self.streamlit.divider()
 
 
 def render_console(
@@ -133,43 +148,113 @@ def _render_page(
 
 
 def _render_dashboard(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> None:
-    dashboard = model.dashboard
-    ui.subheader(labels.section_label("status_overview"))
-    for name, value in (
-        ("Runtime", labels.status_label(dashboard.runtime_status)),
-        ("rollout mode", dashboard.rollout_mode),
-        ("ExecutionTarget", labels.safety_label(dashboard.execution_target_status)),
-        ("migration", labels.status_label(dashboard.migration_status)),
-        ("Kill Switch", labels.status_label(dashboard.kill_switch_status)),
-        ("Scheduler Pause", labels.status_label(dashboard.scheduler_pause_status)),
-        ("Replay Pause", labels.status_label(dashboard.replay_pause_status)),
-        ("Paper", labels.status_label(dashboard.latest_paper_result)),
-        ("SIM", labels.status_label(dashboard.latest_sim_result)),
-    ):
-        ui.write(f"{labels.field_label(name)}: {value}")
-    _render_notices(ui, dashboard.notices)
+    first_row = ui.columns(2)
+    _render_card(
+        first_row[0],
+        labels.section_label("system_status_card"),
+        (
+            labels.dashboard_text("system_ready"),
+            labels.dashboard_text("current_mode"),
+            labels.dashboard_text("current_target"),
+            labels.dashboard_text("migration_ready"),
+        ),
+    )
+    _render_card(
+        first_row[1],
+        labels.section_label("safety_lock_card"),
+        (
+            "🔒 LIVE 禁用",
+            "🔒 Broker 禁用",
+            "🔒 CTP 禁用",
+            "🔒 SimNow 禁用",
+            "🔒 真实资金禁用",
+        ),
+    )
+    second_row = ui.columns(2)
+    _render_card(
+        second_row[0],
+        labels.section_label("next_step_card"),
+        (
+            labels.dashboard_text("recommended_actions"),
+            labels.dashboard_text("paper_dry_run_first"),
+            labels.dashboard_text("view_result_second"),
+            labels.dashboard_text("sim_after_safety"),
+        ),
+    )
+    _render_card(
+        second_row[1],
+        labels.section_label("latest_result_card"),
+        (
+            labels.dashboard_text("not_run_yet"),
+            labels.dashboard_text("db_delta_zero"),
+            labels.dashboard_text("latest_status_none"),
+        ),
+    )
 
 
 def _render_session(ui: OperatorConsoleUI, session: SessionPageViewModel) -> None:
-    ui.write(f"{labels.field_label('mode')}: {session.mode_name}")
-    ui.write(f"{labels.field_label('target')}: {labels.safety_label(session.target)}")
-    _render_notices(ui, session.notices)
+    if session.page is OperatorPage.PAPER_SESSION:
+        _render_paper_session(ui, session)
+    elif session.page is OperatorPage.SIM_SESSION:
+        _render_sim_session(ui, session)
+    else:
+        ui.write(f"{labels.field_label('mode')}: {session.mode_name}")
+        ui.write(f"{labels.field_label('target')}: {labels.safety_label(session.target)}")
     _render_button(ui, session.dry_run_button)
     _render_button(ui, session.apply_button)
     _render_button(ui, session.view_result_button)
     ui.markdown(labels.section_label("placeholder"))
 
 
+def _render_paper_session(ui: OperatorConsoleUI, session: SessionPageViewModel) -> None:
+    ui.subheader(f"🧪 {labels.section_label('what_is_this')}")
+    for key in ("purpose_ledger", "not_exchange", "no_capital", "mock_only"):
+        ui.markdown(f"- {labels.paper_text(key)}")
+    ui.divider()
+    ui.subheader(f"🧭 {labels.section_label('operation_flow')}")
+    for key in ("step_dry_run", "step_view_result", "step_future_apply"):
+        ui.markdown(labels.paper_text(key))
+    ui.divider()
+    ui.subheader(f"📄 {labels.section_label('current_buttons')}")
+    ui.markdown(f"⚠️ {labels.paper_text('dry_run_hint')}")
+    ui.markdown(f"⚠️ {labels.paper_text('apply_disabled_hint')}")
+    ui.write(f"{labels.field_label('target')}: {labels.safety_label(session.target)}")
+
+
+def _render_sim_session(ui: OperatorConsoleUI, session: SessionPageViewModel) -> None:
+    ui.subheader(f"🧪 {labels.section_label('what_is_this')}")
+    for key in ("local_sim", "not_simnow", "not_ctp", "not_live", "mock_only"):
+        ui.markdown(f"- {labels.sim_text(key)}")
+    ui.divider()
+    ui.subheader(f"🧭 {labels.section_label('paper_vs_sim')}")
+    for key in ("paper_difference", "sim_difference", "future_behaviors"):
+        ui.markdown(f"- {labels.sim_text(key)}")
+    ui.divider()
+    ui.subheader(f"📄 {labels.section_label('current_buttons')}")
+    ui.markdown(f"⚠️ {labels.paper_text('dry_run_hint')}")
+    ui.markdown(f"⚠️ {labels.paper_text('apply_disabled_hint')}")
+    ui.write(f"{labels.field_label('target')}: {labels.safety_label(session.target)}")
+
+
 def _render_safety(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> None:
     for control in model.safety.controls:
-        ui.write(f"{labels.safety_label(control.label_key)}: {labels.status_label(control.status)}")
+        ui.subheader(labels.safety_label(control.label_key))
+        ui.markdown(labels.safety_explanation(control.label_key))
+        ui.write(f"{labels.field_label('health')}: {labels.status_label(control.status)}")
         ui.button(
             labels.action_label(control.button_key),
             disabled=control.disabled,
             key=f"safety:{control.button_key}",
         )
-    for state in model.safety.disabled_states:
-        ui.markdown(labels.safety_label(state))
+    ui.divider()
+    _render_card(
+        ui,
+        labels.section_label("locked_actions"),
+        tuple(
+            labels.forbidden_action_label(action.label_key)
+            for action in model.safety.forbidden_actions
+        ),
+    )
     _render_forbidden_actions(ui, model.safety.forbidden_actions)
 
 
@@ -185,12 +270,19 @@ def _render_configuration(ui: OperatorConsoleUI, model: OperatorConsoleViewModel
 
 
 def _render_results(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> None:
-    for key, value in model.results.items:
-        display_key = labels.result_label(key)
-        display_value = (
-            labels.safety_label(value) if value == "MOCK only" else labels.status_label(value)
-        )
-        ui.write(f"{display_key}: {display_value}")
+    del model
+    for key in (
+        "current_status",
+        "latest_run",
+        "db_delta",
+        "execution_reports",
+        "order_status",
+        "trades",
+        "position_updates",
+        "margin_pnl",
+        "settlement_snapshot",
+    ):
+        ui.markdown(labels.result_status_text(key))
 
 
 def _render_diagnostics(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> None:
@@ -202,8 +294,10 @@ def _render_diagnostics(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) 
 
 
 def _render_live_locked(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> None:
-    for state in model.live_locked.disabled_states:
-        ui.markdown(labels.safety_label(state))
+    ui.subheader(labels.section_label("live_locked_notice"))
+    for key in ("no_exchange", "no_ctp", "no_simnow", "no_capital", "no_live_button"):
+        ui.markdown(f"- {labels.live_locked_text(key)}")
+    ui.divider()
     _render_forbidden_actions(ui, model.live_locked.forbidden_actions)
 
 
@@ -230,6 +324,13 @@ def _render_forbidden_actions(
     ui.subheader(labels.section_label("forbidden_actions"))
     for action in forbidden_actions:
         ui.markdown(labels.forbidden_action_label(action.label_key))
+
+
+def _render_card(ui: OperatorConsoleUI, title: str, lines: tuple[str, ...]) -> None:
+    container = ui.container()
+    container.markdown(f"### {title}")
+    for line in lines:
+        container.markdown(line)
 
 
 if __name__ == "__main__":

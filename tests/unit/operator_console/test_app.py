@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 
 from futures_mvp.modules.operator_console import app, labels
@@ -17,6 +19,7 @@ class FakeUI:
     writes: list[object] = field(default_factory=list)
     buttons: list[tuple[str, bool, str | None]] = field(default_factory=list)
     selectboxes: list[tuple[str, tuple[str, ...], int, str | None]] = field(default_factory=list)
+    dividers: int = 0
     selected_label: str | None = None
 
     def title(self, body: str) -> None:
@@ -48,6 +51,15 @@ class FakeUI:
     ) -> str:
         self.selectboxes.append((label, options, index, key))
         return self.selected_label or options[index]
+
+    def columns(self, count: int) -> tuple[FakeUI, ...]:
+        return tuple(self for _ in range(count))
+
+    def container(self) -> FakeUI:
+        return self
+
+    def divider(self) -> None:
+        self.dividers += 1
 
 
 def test_render_console_renders_all_page_titles_from_labels() -> None:
@@ -112,6 +124,15 @@ def test_main_lazy_import_renders_streamlit_adapter(monkeypatch) -> None:
             self.ui.button(label, disabled=disabled, key=key)
             return False
 
+        def columns(self, count: int):
+            return tuple(self for _ in range(count))
+
+        def container(self):
+            return self
+
+        def divider(self) -> None:
+            self.ui.divider()
+
     fake_streamlit = FakeStreamlit()
     monkeypatch.setattr(app, "import_module", lambda name: fake_streamlit)
 
@@ -120,7 +141,7 @@ def test_main_lazy_import_renders_streamlit_adapter(monkeypatch) -> None:
     assert fake_streamlit.ui.titles == ["本地操作台"]
     assert fake_streamlit.ui.headers == ["总览"]
     assert fake_streamlit.selectboxes[0][0] == "页面"
-    assert "运行时: 正常" in "\n".join(str(item) for item in fake_streamlit.ui.writes)
+    assert "✅ 运行正常" in "\n".join(str(item) for item in fake_streamlit.ui.markdowns)
 
 
 def test_render_console_uses_chinese_field_and_diagnostic_labels() -> None:
@@ -129,9 +150,9 @@ def test_render_console_uses_chinese_field_and_diagnostic_labels() -> None:
     render_console(ui, default_console_view_model())
 
     rendered = "\n".join(str(item) for item in [*ui.writes, *ui.markdowns])
-    assert "运行时: 正常" in rendered
-    assert "运行模式: PAPER" in rendered
-    assert "目标类型: 仅 MOCK，本地模拟" in rendered
+    assert "✅ 运行正常" in rendered
+    assert "当前模式：PAPER" in rendered
+    assert "当前目标：仅 MOCK" in rendered
 
     diagnostics_ui = FakeUI(selected_label=labels.page_title(OperatorPage.DIAGNOSTICS.value))
     render_console(diagnostics_ui, default_console_view_model())
@@ -147,14 +168,126 @@ def test_render_console_uses_chinese_field_and_diagnostic_labels() -> None:
     render_console(paper_ui, default_console_view_model())
     paper_rendered = "\n".join(str(item) for item in [*paper_ui.writes, *paper_ui.markdowns])
 
-    assert "模式: PAPER" in paper_rendered
-    assert "目标类型: 仅 MOCK，本地模拟" in paper_rendered
+    assert "目标类型: 仅本地模拟，不连接真实交易所" in paper_rendered
 
     assert "Operator Console" not in ui.titles
     assert "Runtime:" not in rendered
     assert "rollout mode:" not in rendered
     assert "mode:" not in paper_rendered
     assert "target:" not in paper_rendered
+
+
+def test_dashboard_renders_four_core_cards() -> None:
+    ui = FakeUI()
+
+    render_console(ui, default_console_view_model())
+
+    rendered = "\n".join(str(item) for item in [*ui.writes, *ui.markdowns])
+    assert "### 系统状态" in rendered
+    assert "✅ 运行正常" in rendered
+    assert "当前模式：PAPER" in rendered
+    assert "当前目标：仅 MOCK" in rendered
+    assert "数据库迁移：正常" in rendered
+    assert "### 安全锁定" in rendered
+    assert "🔒 LIVE 禁用" in rendered
+    assert "🔒 Broker 禁用" in rendered
+    assert "🔒 CTP 禁用" in rendered
+    assert "🔒 SimNow 禁用" in rendered
+    assert "🔒 真实资金禁用" in rendered
+    assert "### 下一步操作" in rendered
+    assert "1. 先运行 Paper 预演" in rendered
+    assert "2. 再查看运行结果" in rendered
+    assert "3. 确认安全后再考虑 SIM 预演" in rendered
+    assert "### 最近结果" in rendered
+    assert "当前尚未运行" in rendered
+    assert "数据库写入变化：0" in rendered
+    assert "最近状态：无" in rendered
+
+
+def test_paper_page_renders_flow_sections() -> None:
+    ui = FakeUI(selected_label=labels.page_title(OperatorPage.PAPER_SESSION.value))
+
+    render_console(ui, default_console_view_model())
+
+    rendered = "\n".join(str(item) for item in [*ui.writes, *ui.markdowns, *ui.subheaders])
+    assert "🧪 这是什么" in rendered
+    assert "Paper 用于验证交易账本链路" in rendered
+    assert "不模拟真实交易所" in rendered
+    assert "不涉及真实资金" in rendered
+    assert "当前仅 MOCK" in rendered
+    assert "🧭 操作流程" in rendered
+    assert "1. 运行 Paper 预演" in rendered
+    assert "2. 查看预演结果" in rendered
+    assert "3. 确认后未来才允许 Paper 写入" in rendered
+    assert "📄 当前按钮" in rendered
+    assert "预演不会写数据库" in rendered
+    assert "写入会改本地账本，所以当前禁用" in rendered
+
+
+def test_sim_page_renders_difference_section() -> None:
+    ui = FakeUI(selected_label=labels.page_title(OperatorPage.SIM_SESSION.value))
+
+    render_console(ui, default_console_view_model())
+
+    rendered = "\n".join(str(item) for item in [*ui.writes, *ui.markdowns, *ui.subheaders])
+    assert "SIM 是本地仿真" in rendered
+    assert "不是 SimNow" in rendered
+    assert "不是 CTP" in rendered
+    assert "不是实盘" in rendered
+    assert "当前仍然 MOCK only" in rendered
+    assert "🧭 与 Paper 的区别" in rendered
+    assert "Paper：验证账本链路" in rendered
+    assert "SIM：验证仿真交易行为" in rendered
+    assert "SIM 未来才可能支持部分成交、滑点、延迟" in rendered
+
+
+def test_safety_page_renders_control_explanations_and_locked_card() -> None:
+    ui = FakeUI(selected_label=labels.page_title(OperatorPage.SAFETY_CONTROLS.value))
+
+    render_console(ui, default_console_view_model())
+
+    rendered = "\n".join(str(item) for item in [*ui.writes, *ui.markdowns, *ui.subheaders])
+    assert "紧急停止" in rendered
+    assert "说明：开启后阻止 Paper/SIM 运行" in rendered
+    assert "调度暂停" in rendered
+    assert "说明：暂停自动任务" in rendered
+    assert "回放暂停" in rendered
+    assert "说明：暂停历史回放或重放流程" in rendered
+    assert "### 锁定项目" in rendered
+    assert "LIVE 启用：禁止" in rendered
+    assert "手动改账本：禁止" in rendered
+
+
+def test_results_page_renders_not_run_language_without_disabled_list() -> None:
+    ui = FakeUI(selected_label=labels.page_title(OperatorPage.RESULTS_HISTORY.value))
+
+    render_console(ui, default_console_view_model())
+
+    rendered = "\n".join(str(item) for item in [*ui.writes, *ui.markdowns])
+    assert "当前状态：尚未运行" in rendered
+    assert "最近运行：无" in rendered
+    assert "数据库写入变化：0" in rendered
+    assert "执行报告：尚未生成" in rendered
+    assert "订单状态：尚未更新" in rendered
+    assert "成交记录：尚未生成" in rendered
+    assert "仓位更新：尚未生成" in rendered
+    assert "保证金 / PnL：尚未计算" in rendered
+    assert "结算快照：尚未生成" in rendered
+    assert "已禁用" not in rendered
+
+
+def test_live_locked_page_renders_strong_warning() -> None:
+    ui = FakeUI(selected_label=labels.page_title(OperatorPage.LIVE_LOCKED_PAGE.value))
+
+    render_console(ui, default_console_view_model())
+
+    rendered = "\n".join(str(item) for item in [*ui.markdowns, *ui.subheaders])
+    assert "🔒 当前不是实盘环境" in rendered
+    assert "不会连接真实交易所" in rendered
+    assert "不会连接 CTP" in rendered
+    assert "不会连接 SimNow" in rendered
+    assert "不会使用真实资金" in rendered
+    assert "没有任何启用 LIVE 的按钮" in rendered
 
 
 def test_apply_buttons_are_rendered_disabled() -> None:

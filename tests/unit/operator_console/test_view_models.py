@@ -17,7 +17,7 @@ def test_default_view_model_is_mock_only_and_live_locked() -> None:
     model = default_console_view_model()
 
     assert model.dashboard.execution_target_status == "MOCK only"
-    assert safety_label(model.dashboard.execution_target_status) == "仅 MOCK，本地模拟"
+    assert safety_label(model.dashboard.execution_target_status) == "仅本地模拟，不连接真实交易所"
     assert set(model.live_locked.disabled_states) == {
         "Live Disabled",
         "Broker Disabled",

@@ -379,3 +379,27 @@ Stage R.3 preserves these boundaries：
 - no FastAPI / broker / CTP / SimNow / LIVE / network integration。
 - no `ExecutionTarget.PAPER` / `SIM` / `LIVE` enablement。
 - no schema or Alembic migration。
+
+## Stage R.3.1 UX redesign facts
+
+Baseline：`stage-r3-console-streamlit-preview / 550440b`。
+
+Stage R.3.1 keeps the console local and action-free while improving visual hierarchy for non-code / non-CLI users：
+
+- Dashboard is redesigned into four cards：system status, safety locks, next recommended steps and latest result。
+- Paper page is redesigned as a guided flow：what it is, operation flow and current disabled/placeholder buttons。
+- SIM page is redesigned as a guided flow with a clear Paper-vs-SIM distinction。
+- Safety page explains Kill Switch, Scheduler Pause and Replay Pause, then shows locked forbidden actions prominently。
+- Results / History defaults to not-run language instead of a list of disabled statuses。
+- Live Locked page starts with `🔒 当前不是实盘环境` and explains no exchange, CTP, SimNow, real capital or LIVE enable button exists。
+- Labels use more natural Chinese, including `仅本地模拟，不连接真实交易所` for MOCK-only display。
+
+Stage R.3.1 preserves these boundaries：
+
+- no PaperLocalSession / SimLocalSession wiring。
+- no Paper/SIM apply execution。
+- no DB or ledger writes。
+- no new dependency。
+- no FastAPI / broker / CTP / SimNow / LIVE / network integration。
+- no `ExecutionTarget.PAPER` / `SIM` / `LIVE` enablement。
+- no schema or Alembic migration。

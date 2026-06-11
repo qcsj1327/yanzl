@@ -51,7 +51,7 @@ def test_required_safety_action_risk_and_result_labels_exist() -> None:
     assert labels.safety_label("Live Disabled") == "LIVE 已禁用"
     assert labels.safety_label("CTP Disabled") == "CTP 已禁用"
     assert labels.safety_label("SimNow Disabled") == "SimNow 已禁用"
-    assert labels.safety_label("MOCK only") == "仅 MOCK，本地模拟"
+    assert labels.safety_label("MOCK only") == "仅本地模拟，不连接真实交易所"
 
     assert labels.action_label("Run Paper Dry-run") == "运行 Paper 预演"
     assert labels.action_label("Run Paper Apply") == "确认运行 Paper 写入"
