@@ -2084,6 +2084,57 @@ Stage Q.7 explicit non-goals：
 - durable SIM audit/session table。
 - production rollout。
 
+### SIM Stability Freeze
+
+- Baseline：`b894ce6 / stage-q7-sim-runtime-local-session`。
+- SIM Local MVP = STABLE BASELINE。
+- `ExecutionTarget.SIM` remains disabled。
+- `ExecutionTarget.MOCK` remains the only enabled target。
+- No SimNow / CTP / live / broker / network integration is present。
+- No schema / Alembic change is part of the SIM stability freeze。
+
+Stable SIM local chain：
+
+```text
+ExecutionCommand
+-> SimExecutionHarness
+-> RawExecutionReport
+-> ExecutionReportNormalizer
+-> OMSEventApplicationService
+-> OMSToTradeBridgeService
+-> PositionManager
+-> MarginEngine / PnLEngine / SettlementEngine
+-> SimRuntimeJob
+-> SimLocalSession
+```
+
+Frozen SIM safety invariants：
+
+- dry-run no mutation。
+- apply completed。
+- duplicate no-op。
+- conflict stop。
+- command target `ExecutionTarget.MOCK` only。
+- no `ExecutionTarget.SIM` enablement。
+- no `ExecutionTarget.PAPER` / `ExecutionTarget.LIVE` target use。
+- no SimNow / CTP / live / broker / network。
+- settlement snapshot created on completed full-fill apply。
+- `source_order_event_id` present on created trade。
+
+SIM local soak evidence：
+
+- SIM Day 0 passed。
+- SIM 10x passed。
+- SIM Day-long 30-run passed。
+- Day-long evidence：30/30 dry-run ok、30/30 apply completed、30/30 duplicate no-op。
+- Day-long row growth matched expected：`normalized_execution_reports +60`、`order_events +60`、`trades +30`、`positions +30`、`position_events +30`、`margin_snapshots +30`、`pnl_snapshots +30`、`settlement_snapshots +30`。
+- Targets remained `MOCK` only。
+
+Known P3：
+
+- Duplicate rerun outer session status remains `COMPLETED` while nested job/run status is `DUPLICATE` and DB delta is zero。
+- This is an observability enum limitation only and does not affect idempotency or ledger safety。
+
 ## 7. Stage Dependency Graph
 
 核心执行与会计链：

@@ -6317,6 +6317,62 @@ Validation must include：
 - diff-check。
 - boundary checks that gateway still rejects `ExecutionTarget.SIM` and SIM code has no schema, broker or network imports。
 
+## SIM Stability Freeze
+
+SIM Stability Freeze is recorded on baseline `b894ce6 / stage-q7-sim-runtime-local-session`。
+
+SIM Local MVP status：
+
+- SIM Local MVP = STABLE BASELINE。
+- `ExecutionTarget.SIM` remains disabled。
+- `ExecutionTarget.MOCK` remains the only enabled target。
+- SIM local runtime remains local controlled simulation only。
+- SIM local runtime has no SimNow, CTP, live account, real broker or network dependency。
+- No schema or Alembic migration is included in this freeze。
+
+Frozen SIM local evidence chain：
+
+```text
+ExecutionCommand
+-> SimExecutionHarness
+-> RawExecutionReport
+-> ExecutionReportNormalizer
+-> OMSEventApplicationService
+-> OMSToTradeBridgeService
+-> PositionManager
+-> MarginEngine / PnLEngine / SettlementEngine
+-> SimRuntimeJob
+-> SimLocalSession
+```
+
+Frozen safety invariants：
+
+- dry-run does not mutate ledgers。
+- confirmed apply completes through the accepted report, OMS, trade, position and accounting chain。
+- duplicate rerun is no-op。
+- conflict stops downstream processing。
+- completed full-fill apply creates settlement snapshot。
+- created Trade has `source_order_event_id`。
+- command target is `ExecutionTarget.MOCK` only。
+- `ExecutionTarget.SIM`, `ExecutionTarget.PAPER` and `ExecutionTarget.LIVE` remain disabled for local SIM。
+- SIM local runtime must not connect to SimNow, CTP, live broker, broker network or live credentials。
+
+Soak evidence accepted for this freeze：
+
+- SIM Day 0 passed。
+- SIM 10x passed。
+- SIM Day-long 30-run passed。
+- Day-long：30/30 dry-run ok。
+- Day-long：30/30 apply completed。
+- Day-long：30/30 duplicate no-op。
+- Day-long actual row growth matched expected：`normalized_execution_reports +60`, `order_events +60`, `trades +30`, `positions +30`, `position_events +30`, `margin_snapshots +30`, `pnl_snapshots +30`, `settlement_snapshots +30`。
+- Targets remained `MOCK` only throughout accepted soak。
+
+Known P3：
+
+- Duplicate outer session status remains `COMPLETED` while nested job/run status is `DUPLICATE`。
+- The duplicate flag is true and duplicate DB delta is zero；this is an observability status limitation, not a ledger safety issue。
+
 ### feature_snapshots
 
 Stage H 已新增 `feature_snapshots` 表作为 FeatureSnapshot derived facts ledger。

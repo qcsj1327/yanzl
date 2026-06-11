@@ -460,6 +460,19 @@ SIM local session runbook：
 10. Roll back / halt via kill switch, scheduler pause or replay pause；do not manually repair ledgers。
 11. Forbidden during SIM local session：no `ExecutionTarget.SIM`, no `ExecutionTarget.PAPER`, no `ExecutionTarget.LIVE`, no SimNow, no CTP, no live broker, no network broker, no live credentials, no live apply, no schema edits, no raw payload command source and no direct OMS / Trade / Position / Accounting repository writes。
 
+SIM local stability baseline：
+
+- Baseline：`b894ce6 / stage-q7-sim-runtime-local-session`。
+- SIM Local MVP = STABLE BASELINE。
+- `ExecutionTarget.MOCK` remains the only enabled target。
+- `ExecutionTarget.SIM` remains disabled。
+- No SimNow / CTP / live / broker / network integration is allowed or present。
+- Stable local chain：`ExecutionCommand -> SimExecutionHarness -> RawExecutionReport -> ExecutionReportNormalizer -> OMSEventApplicationService -> OMSToTradeBridgeService -> PositionManager -> MarginEngine / PnLEngine / SettlementEngine -> SimRuntimeJob -> SimLocalSession`。
+- Safety invariants：dry-run no mutation, apply completed, duplicate no-op, conflict stop, settlement snapshot created and `source_order_event_id` present。
+- Soak evidence：SIM Day 0 passed, SIM 10x passed and SIM Day-long 30-run passed。
+- Day-long accepted facts：30/30 dry-run ok, 30/30 apply completed, 30/30 duplicate no-op, `normalized_execution_reports +60`, `order_events +60`, `trades +30`, `positions +30`, `position_events +30`, `margin_snapshots +30`, `pnl_snapshots +30`, `settlement_snapshots +30`, targets `MOCK` only。
+- Known P3：duplicate outer session status may remain `COMPLETED` while nested job/run status is `DUPLICATE`；duplicate flag is true and DB delta is zero。
+
 Paper local session runbook：
 
 1. Confirm branch/tag：verify the working branch and expected tag before any local paper session.
