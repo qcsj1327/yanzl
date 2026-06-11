@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from futures_mvp.modules.operator_console import app, labels
+from futures_mvp.modules.operator_console.actions import DryRunActionResult
 from futures_mvp.modules.operator_console.app import render_console
 from futures_mvp.modules.operator_console.view_models import (
     OperatorPage,
@@ -21,6 +22,7 @@ class FakeUI:
     selectboxes: list[tuple[str, tuple[str, ...], int, str | None]] = field(default_factory=list)
     dividers: int = 0
     selected_label: str | None = None
+    clicked_labels: set[str] = field(default_factory=set)
 
     def title(self, body: str) -> None:
         self.titles.append(body)
@@ -39,7 +41,7 @@ class FakeUI:
 
     def button(self, label: str, *, disabled: bool = False, key: str | None = None) -> bool:
         self.buttons.append((label, disabled, key))
-        return False
+        return (not disabled) and label in self.clicked_labels
 
     def selectbox(
         self,
@@ -302,6 +304,81 @@ def test_apply_buttons_are_rendered_disabled() -> None:
     render_console(sim_ui, default_console_view_model())
     sim_buttons = {label: disabled for label, disabled, _key in sim_ui.buttons}
     assert sim_buttons["确认运行 SIM 写入"] is True
+
+
+def test_paper_dry_run_click_calls_provider_and_renders_result() -> None:
+    calls = 0
+
+    def provider() -> DryRunActionResult:
+        nonlocal calls
+        calls += 1
+        return DryRunActionResult(
+            session_status="DRY_RUN_COMPLETED",
+            job_status="DRY_RUN",
+            run_status="DRY_RUN_COMPLETED",
+            db_delta=0,
+            target="MOCK only",
+        )
+
+    ui = FakeUI(
+        selected_label=labels.page_title(OperatorPage.PAPER_SESSION.value),
+        clicked_labels={"运行 Paper 预演"},
+    )
+
+    render_console(ui, default_console_view_model(), paper_dry_run=provider)
+
+    rendered = "\n".join(str(item) for item in [*ui.writes, *ui.markdowns, *ui.subheaders])
+    assert calls == 1
+    assert "会话状态: 预演完成" in rendered
+    assert "任务状态: 预演" in rendered
+    assert "运行状态: 预演完成" in rendered
+    assert "数据库写入变化: 0" in rendered
+    assert "目标类型: 仅本地模拟，不连接真实交易所" in rendered
+
+
+def test_sim_dry_run_click_calls_provider_and_renders_result() -> None:
+    calls = 0
+
+    def provider() -> DryRunActionResult:
+        nonlocal calls
+        calls += 1
+        return DryRunActionResult(
+            session_status="DRY_RUN_COMPLETED",
+            job_status="DRY_RUN",
+            run_status="DRY_RUN_COMPLETED",
+            db_delta=0,
+            target="MOCK only",
+        )
+
+    ui = FakeUI(
+        selected_label=labels.page_title(OperatorPage.SIM_SESSION.value),
+        clicked_labels={"运行 SIM 预演"},
+    )
+
+    render_console(ui, default_console_view_model(), sim_dry_run=provider)
+
+    rendered = "\n".join(str(item) for item in [*ui.writes, *ui.markdowns, *ui.subheaders])
+    assert calls == 1
+    assert "会话状态: 预演完成" in rendered
+    assert "数据库写入变化: 0" in rendered
+
+
+def test_apply_click_does_not_call_dry_run_provider() -> None:
+    calls = 0
+
+    def provider() -> DryRunActionResult:
+        nonlocal calls
+        calls += 1
+        return DryRunActionResult("DRY_RUN_COMPLETED", "DRY_RUN", "DRY_RUN_COMPLETED")
+
+    ui = FakeUI(
+        selected_label=labels.page_title(OperatorPage.PAPER_SESSION.value),
+        clicked_labels={"确认运行 Paper 写入"},
+    )
+
+    render_console(ui, default_console_view_model(), paper_dry_run=provider)
+
+    assert calls == 0
 
 
 def test_forbidden_actions_are_text_only_without_enable_buttons() -> None:

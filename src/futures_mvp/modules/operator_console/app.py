@@ -5,11 +5,18 @@ from importlib import import_module
 from typing import Any, Protocol
 
 from futures_mvp.modules.operator_console import labels
+from futures_mvp.modules.operator_console.actions import (
+    DryRunActionResult,
+    DryRunProvider,
+    run_paper_dry_run,
+    run_sim_dry_run,
+)
 from futures_mvp.modules.operator_console.view_models import (
     ButtonViewModel,
     ForbiddenActionViewModel,
     OperatorConsoleViewModel,
     OperatorPage,
+    ResultHistoryViewModel,
     SessionPageViewModel,
     default_console_view_model,
 )
@@ -96,12 +103,24 @@ class StreamlitUI:
 def render_console(
     ui: OperatorConsoleUI,
     view_model: OperatorConsoleViewModel | None = None,
+    *,
+    paper_dry_run: DryRunProvider | None = None,
+    sim_dry_run: DryRunProvider | None = None,
 ) -> None:
     model = view_model or default_console_view_model()
     ui.title(labels.section_label("Operator Console"))
     selected_page = _select_page(ui, model)
     ui.header(labels.page_title(selected_page.value))
-    _render_page(ui, model, selected_page)
+    rendered_model = _render_page(
+        ui,
+        model,
+        selected_page,
+        paper_dry_run=paper_dry_run,
+        sim_dry_run=sim_dry_run,
+    )
+    if selected_page is not OperatorPage.RESULTS_HISTORY and _has_result(rendered_model.results):
+        ui.divider()
+        _render_dry_run_result_summary(ui, rendered_model.results)
 
 
 def main() -> None:
@@ -128,13 +147,20 @@ def _render_page(
     ui: OperatorConsoleUI,
     model: OperatorConsoleViewModel,
     page: OperatorPage,
-) -> None:
+    *,
+    paper_dry_run: DryRunProvider | None,
+    sim_dry_run: DryRunProvider | None,
+) -> OperatorConsoleViewModel:
     if page is OperatorPage.DASHBOARD:
         _render_dashboard(ui, model)
     elif page is OperatorPage.PAPER_SESSION:
-        _render_session(ui, model.paper)
+        result = _render_session(ui, model.paper, dry_run_provider=paper_dry_run)
+        if result is not None:
+            return _with_result(model, result)
     elif page is OperatorPage.SIM_SESSION:
-        _render_session(ui, model.sim)
+        result = _render_session(ui, model.sim, dry_run_provider=sim_dry_run)
+        if result is not None:
+            return _with_result(model, result)
     elif page is OperatorPage.SAFETY_CONTROLS:
         _render_safety(ui, model)
     elif page is OperatorPage.CONFIGURATION:
@@ -145,6 +171,7 @@ def _render_page(
         _render_diagnostics(ui, model)
     elif page is OperatorPage.LIVE_LOCKED_PAGE:
         _render_live_locked(ui, model)
+    return model
 
 
 def _render_dashboard(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> None:
@@ -192,7 +219,12 @@ def _render_dashboard(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) ->
     )
 
 
-def _render_session(ui: OperatorConsoleUI, session: SessionPageViewModel) -> None:
+def _render_session(
+    ui: OperatorConsoleUI,
+    session: SessionPageViewModel,
+    *,
+    dry_run_provider: DryRunProvider | None,
+) -> DryRunActionResult | None:
     if session.page is OperatorPage.PAPER_SESSION:
         _render_paper_session(ui, session)
     elif session.page is OperatorPage.SIM_SESSION:
@@ -200,10 +232,11 @@ def _render_session(ui: OperatorConsoleUI, session: SessionPageViewModel) -> Non
     else:
         ui.write(f"{labels.field_label('mode')}: {session.mode_name}")
         ui.write(f"{labels.field_label('target')}: {labels.safety_label(session.target)}")
-    _render_button(ui, session.dry_run_button)
+    result = _render_dry_run_button(ui, session, dry_run_provider)
     _render_button(ui, session.apply_button)
     _render_button(ui, session.view_result_button)
     ui.markdown(labels.section_label("placeholder"))
+    return result
 
 
 def _render_paper_session(ui: OperatorConsoleUI, session: SessionPageViewModel) -> None:
@@ -270,7 +303,9 @@ def _render_configuration(ui: OperatorConsoleUI, model: OperatorConsoleViewModel
 
 
 def _render_results(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> None:
-    del model
+    if _has_result(model.results):
+        _render_dry_run_result_summary(ui, model.results)
+        return
     for key in (
         "current_status",
         "latest_run",
@@ -315,6 +350,84 @@ def _render_button(ui: OperatorConsoleUI, button: ButtonViewModel) -> None:
     )
     if button.disabled:
         ui.markdown(labels.section_label("disabled_placeholder"))
+
+
+def _render_dry_run_button(
+    ui: OperatorConsoleUI,
+    session: SessionPageViewModel,
+    provider: DryRunProvider | None,
+) -> DryRunActionResult | None:
+    clicked = ui.button(
+        labels.action_label(session.dry_run_button.action_key),
+        disabled=session.dry_run_button.disabled,
+        key=f"action:{session.dry_run_button.action_key}",
+    )
+    if not clicked:
+        return None
+    if session.page is OperatorPage.PAPER_SESSION:
+        action_result = run_paper_dry_run(provider)
+    elif session.page is OperatorPage.SIM_SESSION:
+        action_result = run_sim_dry_run(provider)
+    else:
+        action_result = run_paper_dry_run(None)
+    if action_result.dry_run_result is not None:
+        return action_result.dry_run_result
+    return DryRunActionResult(
+        session_status=action_result.status.value,
+        job_status=action_result.status.value,
+        run_status=action_result.status.value,
+        db_delta=0,
+        target="MOCK only",
+        reason=action_result.reason,
+    )
+
+
+def _with_result(
+    model: OperatorConsoleViewModel,
+    result: DryRunActionResult,
+) -> OperatorConsoleViewModel:
+    return OperatorConsoleViewModel(
+        pages=model.pages,
+        dashboard=model.dashboard,
+        paper=model.paper,
+        sim=model.sim,
+        safety=model.safety,
+        configuration=model.configuration,
+        results=ResultHistoryViewModel(
+            items=model.results.items,
+            session_status=result.session_status,
+            job_status=result.job_status,
+            run_status=result.run_status,
+            db_delta=result.db_delta,
+            target=result.target,
+            latest_run="dry-run",
+        ),
+        diagnostics=model.diagnostics,
+        live_locked=model.live_locked,
+    )
+
+
+def _has_result(result: ResultHistoryViewModel) -> bool:
+    return result.latest_run != "无"
+
+
+def _render_dry_run_result_summary(
+    ui: OperatorConsoleUI,
+    result: ResultHistoryViewModel,
+) -> None:
+    ui.subheader(labels.section_label("latest_result_card"))
+    ui.markdown(
+        f"{labels.result_label('session status')}: "
+        f"{labels.status_label(result.session_status)}"
+    )
+    ui.markdown(
+        f"{labels.result_label('job status')}: {labels.status_label(result.job_status)}"
+    )
+    ui.markdown(
+        f"{labels.result_label('run status')}: {labels.status_label(result.run_status)}"
+    )
+    ui.markdown(f"{labels.result_label('db delta')}: {result.db_delta}")
+    ui.markdown(f"{labels.result_label('target type')}: {labels.safety_label(result.target)}")
 
 
 def _render_forbidden_actions(

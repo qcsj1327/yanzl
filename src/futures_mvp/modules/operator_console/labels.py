@@ -44,6 +44,7 @@ STATUS_LABELS: dict[str, str] = {
     "ACKED": "已确认",
     "FILLED": "已成交",
     "REJECTED": "已拒绝",
+    "NOT_RUN": "尚未运行",
 }
 
 SAFETY_LABELS: dict[str, str] = {
@@ -85,6 +86,9 @@ RISK_NOTICES: dict[str, str] = {
 }
 
 RESULT_LABELS: dict[str, str] = {
+    "session status": "会话状态",
+    "job status": "任务状态",
+    "run status": "运行状态",
     "execution reports": "执行报告",
     "order status": "订单状态",
     "trades": "成交记录",

@@ -403,3 +403,35 @@ Stage R.3.1 preserves these boundaries：
 - no FastAPI / broker / CTP / SimNow / LIVE / network integration。
 - no `ExecutionTarget.PAPER` / `SIM` / `LIVE` enablement。
 - no schema or Alembic migration。
+
+## Stage R.4 dry-run action implementation facts
+
+Baseline：`stage-r31-console-ux-redesign / 56ebcf4`。
+
+Stage R.4 allows the local Operator Console skeleton to trigger Paper/SIM
+dry-run through injected callables only：
+
+- `actions.py` defines a dry-run action interface with injected Paper and SIM
+  provider callables。
+- no provider returns `BLOCKED` and does not execute any session logic。
+- Paper dry-run invokes only the injected Paper provider。
+- SIM dry-run invokes only the injected SIM provider。
+- dry-run action results are display data：session status, job status, run
+  status, DB delta and target。
+- UI stores the latest dry-run result in the view model for display during the
+  current render path。
+- Paper/SIM pages show the latest dry-run result after a dry-run click。
+- Results / History can show the latest dry-run summary：session status, job
+  status, run status, `DB delta = 0` and `MOCK only` target。
+- Chinese labels for dry-run result fields remain centralized in `labels.py`。
+
+Stage R.4 preserves these boundaries：
+
+- no Paper/SIM apply execution。
+- apply buttons remain disabled/placeholder。
+- no DB or ledger writes。
+- no PaperLocalSession / SimLocalSession import or direct wiring。
+- no broker / CTP / SimNow / LIVE / network integration。
+- no FastAPI control plane。
+- no `ExecutionTarget.PAPER` / `SIM` / `LIVE` enablement。
+- no schema or Alembic migration。

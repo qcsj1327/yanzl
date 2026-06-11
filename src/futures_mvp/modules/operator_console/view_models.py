@@ -116,6 +116,12 @@ class ConfigurationViewModel:
 @dataclass(frozen=True)
 class ResultHistoryViewModel:
     items: tuple[tuple[str, str], ...]
+    session_status: str = "NOT_RUN"
+    job_status: str = "NOT_RUN"
+    run_status: str = "NOT_RUN"
+    db_delta: int = 0
+    target: str = "MOCK only"
+    latest_run: str = "无"
 
 
 @dataclass(frozen=True)
