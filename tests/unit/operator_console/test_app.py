@@ -145,7 +145,7 @@ def test_main_lazy_import_renders_streamlit_adapter(monkeypatch) -> None:
         def subheader(self, body: str) -> None:
             self.ui.subheader(body)
 
-        def markdown(self, body: str) -> None:
+        def markdown(self, body: str, **_kwargs: object) -> None:
             self.ui.markdown(body)
 
         def write(self, body: object) -> None:
@@ -223,7 +223,7 @@ def test_main_default_entry_uses_session_state_config_provider(monkeypatch) -> N
         def subheader(self, body: str) -> None:
             self.ui.subheader(body)
 
-        def markdown(self, body: str) -> None:
+        def markdown(self, body: str, **_kwargs: object) -> None:
             self.ui.markdown(body)
 
         def write(self, body: object) -> None:
@@ -410,16 +410,19 @@ def test_configuration_page_renders_dry_run_required_config() -> None:
 
     render_console(ui, default_console_view_model())
 
-    rendered = "\n".join(str(item) for item in [*ui.writes, *ui.subheaders])
+    rendered = "\n".join(str(item) for item in [*ui.writes, *ui.markdowns, *ui.subheaders])
     assert "预演所需配置" in rendered
-    assert "账户 ID: 未配置" in rendered
-    assert "交易日: 未配置" in rendered
-    assert "合约白名单: 未配置" in rendered
-    assert "最大委托数量: 未配置" in rendered
-    assert "最大持仓数量: 未配置" in rendered
-    assert "最大日亏损: 未配置" in rendered
-    assert "命令来源 / typed command provider: 由 typed UI config 生成 preview command" in rendered
-    assert "job_factory: 未配置" in rendered
+    assert "**账户 ID:** 未配置" in rendered
+    assert "**交易日:** 未配置" in rendered
+    assert "**合约白名单:** 未配置" in rendered
+    assert "**最大委托数量:** 未配置" in rendered
+    assert "**最大持仓数量:** 未配置" in rendered
+    assert "**最大日亏损:** 未配置" in rendered
+    assert (
+        "**命令来源 / typed command provider:** UI config preview command"
+        in rendered
+    )
+    assert "**job_factory:** 未配置" in rendered
 
 
 def test_configuration_page_renders_typed_command_preview_from_filled_form() -> None:
@@ -432,16 +435,16 @@ def test_configuration_page_renders_typed_command_preview_from_filled_form() -> 
 
     rendered = "\n".join(str(item) for item in [*ui.writes, *ui.markdowns, *ui.subheaders])
     assert "typed 命令预览" in rendered
-    assert "账户 ID: account-1" in rendered
-    assert "交易日: 2026-06-12" in rendered
-    assert "行情合约: au2608" in rendered
-    assert "交易合约: au2608" in rendered
-    assert "方向/开平: BUY / OPEN" in rendered
-    assert "数量: 1" in rendered
-    assert "价格: 500" in rendered
-    assert "目标类型: 仅本地模拟，不连接真实交易所" in rendered
-    assert "dry-run: 是" in rendered
-    assert "写库: 否" in rendered
+    assert "**账户 ID:** account-1" in rendered
+    assert "**交易日:** 2026-06-12" in rendered
+    assert "**行情合约:** au2608" in rendered
+    assert "**交易合约:** au2608" in rendered
+    assert "**方向/开平:** BUY / OPEN" in rendered
+    assert "**数量:** 1" in rendered
+    assert "**价格:** 500" in rendered
+    assert "**目标类型:** 仅本地模拟，不连接真实交易所" in rendered
+    assert "**dry-run:** 是" in rendered
+    assert "**写库:** 否" in rendered
 
 
 def test_configuration_page_renders_missing_fields_list() -> None:
@@ -451,7 +454,7 @@ def test_configuration_page_renders_missing_fields_list() -> None:
 
     rendered = "\n".join(str(item) for item in [*ui.markdowns, *ui.subheaders])
     assert "当前配置还不能生成 typed dry-run command preview。" in rendered
-    assert "原因: 当前缺少必填配置，因此没有执行" in rendered
+    assert "原因: 缺少必填配置" in rendered
     assert "缺少字段: 账户 ID, 交易日, 行情合约, 交易合约" in rendered
 
 

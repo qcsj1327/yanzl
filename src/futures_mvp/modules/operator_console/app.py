@@ -175,6 +175,67 @@ def render_console(
 
 def main() -> None:
     streamlit = import_module("streamlit")
+    if hasattr(streamlit, "set_page_config"):
+        streamlit.set_page_config(
+            page_title=labels.section_label("Operator Console"),
+            layout="wide",
+            initial_sidebar_state="expanded",
+        )
+    streamlit.markdown(
+        """
+        <style>
+        [data-testid="stHeader"] {height: 0rem !important;}
+        .block-container {
+            padding-top: 0.25rem !important;
+            padding-bottom: 0.25rem !important;
+            max-width: 100% !important;
+        }
+        h1 {
+            font-size: 1.55rem !important;
+            line-height: 1.05 !important;
+            margin: 0.1rem 0 0.2rem 0 !important;
+        }
+        h2 {
+            font-size: 1.35rem !important;
+            line-height: 1.05 !important;
+            margin: 0.1rem 0 0.2rem 0 !important;
+        }
+        h3 {
+            font-size: 0.95rem !important;
+            line-height: 1.05 !important;
+            margin: 0.03rem 0 0.08rem 0 !important;
+        }
+        p, li {
+            font-size: 0.74rem !important;
+            line-height: 1.02 !important;
+            margin-bottom: 0 !important;
+        }
+        ul {margin: 0.02rem 0 0.08rem 0 !important;}
+        label, input, textarea {
+            font-size: 0.72rem !important;
+            line-height: 1.05 !important;
+        }
+        section[data-testid="stSidebar"] {
+            width: 12rem !important;
+            min-width: 12rem !important;
+        }
+        section[data-testid="stSidebar"] > div {
+            width: 12rem !important;
+            min-width: 12rem !important;
+        }
+        div[data-testid="stTextInput"] {margin-bottom: -0.05rem !important;}
+        div[data-testid="stTextInput"] input {
+            min-height: 1.35rem !important;
+            padding-top: 0.1rem !important;
+            padding-bottom: 0.1rem !important;
+        }
+        div[data-testid="stVerticalBlock"] {gap: 0.02rem !important;}
+        div[data-testid="stHorizontalBlock"] {gap: 0.4rem !important;}
+        div[data-testid="stMarkdownContainer"] {margin-bottom: 0 !important;}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
     render_console(StreamlitUI(streamlit))
 
 
@@ -289,41 +350,37 @@ def _render_session(
     else:
         ui.write(f"{labels.field_label('mode')}: {session.mode_name}")
         ui.write(f"{labels.field_label('target')}: {labels.safety_label(session.target)}")
-    result = _render_dry_run_button(ui, session, dry_run_provider)
-    _render_button(ui, session.apply_button)
-    _render_button(ui, session.view_result_button)
+    result = _render_session_actions(ui, session, dry_run_provider)
     ui.markdown(labels.section_label("placeholder"))
     return result
 
 
 def _render_paper_session(ui: OperatorConsoleUI, session: SessionPageViewModel) -> None:
-    ui.subheader(f"🧪 {labels.section_label('what_is_this')}")
+    info_col, flow_col, state_col = ui.columns(3)
+    info_col.subheader(f"🧪 {labels.section_label('what_is_this')}")
     for key in ("purpose_ledger", "not_exchange", "no_capital", "mock_only"):
-        ui.markdown(f"- {labels.paper_text(key)}")
-    ui.divider()
-    ui.subheader(f"🧭 {labels.section_label('operation_flow')}")
+        info_col.markdown(f"- {labels.paper_text(key)}")
+    flow_col.subheader(f"🧭 {labels.section_label('operation_flow')}")
     for key in ("step_dry_run", "step_view_result", "step_future_apply"):
-        ui.markdown(labels.paper_text(key))
-    ui.divider()
-    ui.subheader(f"📄 {labels.section_label('current_buttons')}")
-    ui.markdown(f"⚠️ {labels.paper_text('dry_run_hint')}")
-    ui.markdown(f"⚠️ {labels.paper_text('apply_disabled_hint')}")
-    ui.write(f"{labels.field_label('target')}: {labels.safety_label(session.target)}")
+        flow_col.markdown(labels.paper_text(key))
+    state_col.subheader(f"📄 {labels.section_label('current_buttons')}")
+    state_col.markdown(f"⚠️ {labels.paper_text('dry_run_hint')}")
+    state_col.markdown(f"⚠️ {labels.paper_text('apply_disabled_hint')}")
+    state_col.write(f"{labels.field_label('target')}: {labels.safety_label(session.target)}")
 
 
 def _render_sim_session(ui: OperatorConsoleUI, session: SessionPageViewModel) -> None:
-    ui.subheader(f"🧪 {labels.section_label('what_is_this')}")
+    info_col, compare_col, state_col = ui.columns(3)
+    info_col.subheader(f"🧪 {labels.section_label('what_is_this')}")
     for key in ("local_sim", "not_simnow", "not_ctp", "not_live", "mock_only"):
-        ui.markdown(f"- {labels.sim_text(key)}")
-    ui.divider()
-    ui.subheader(f"🧭 {labels.section_label('paper_vs_sim')}")
+        info_col.markdown(f"- {labels.sim_text(key)}")
+    compare_col.subheader(f"🧭 {labels.section_label('paper_vs_sim')}")
     for key in ("paper_difference", "sim_difference", "future_behaviors"):
-        ui.markdown(f"- {labels.sim_text(key)}")
-    ui.divider()
-    ui.subheader(f"📄 {labels.section_label('current_buttons')}")
-    ui.markdown(f"⚠️ {labels.paper_text('dry_run_hint')}")
-    ui.markdown(f"⚠️ {labels.paper_text('apply_disabled_hint')}")
-    ui.write(f"{labels.field_label('target')}: {labels.safety_label(session.target)}")
+        compare_col.markdown(f"- {labels.sim_text(key)}")
+    state_col.subheader(f"📄 {labels.section_label('current_buttons')}")
+    state_col.markdown(f"⚠️ {labels.paper_text('dry_run_hint')}")
+    state_col.markdown(f"⚠️ {labels.paper_text('apply_disabled_hint')}")
+    state_col.write(f"{labels.field_label('target')}: {labels.safety_label(session.target)}")
 
 
 def _render_safety(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> None:
@@ -354,36 +411,38 @@ def _render_configuration(
 ) -> ConfigurationViewModel:
     config = _read_config_form(ui, model.configuration.dry_run_config)
     assembly = assemble_config(config)
-    ui.subheader(labels.section_label("normal_config"))
-    for key, value in _normal_config_items(config):
-        ui.write(f"{labels.field_label(key)}: {value}")
-    ui.subheader(labels.section_label("dry_run_required_config"))
-    for key, value in _dry_run_required_items(config, assembly.validation.missing_fields):
-        ui.write(f"{labels.field_label(key)}: {value}")
-    ui.subheader(labels.section_label("typed_command_preview"))
+    summary_col, required_col, preview_col, source_col = ui.columns(4)
+    summary_col.subheader(labels.section_label("normal_config"))
+    _render_key_values(summary_col, _normal_config_items(config))
+    required_col.subheader(labels.section_label("dry_run_required_config"))
+    _render_key_values(
+        required_col,
+        _dry_run_required_items(config, assembly.validation.missing_fields),
+    )
+    preview_col.subheader(labels.section_label("typed_command_preview"))
     if assembly.preview is None:
-        ui.markdown(labels.config_text("preview_blocked"))
+        preview_col.markdown(labels.config_text("preview_blocked"))
         if assembly.validation.reason:
-            ui.markdown(
+            preview_col.markdown(
                 f"{labels.result_label('reason')}: "
-                f"{labels.reason_label(assembly.validation.reason)}"
+                f"{assembly.validation.reason}"
             )
         if assembly.validation.missing_fields:
             missing_fields = ", ".join(
                 labels.field_label(field)
                 for field in assembly.validation.missing_fields
             )
-            ui.markdown(
+            preview_col.markdown(
                 f"{labels.config_label('missing_fields')}: "
                 f"{missing_fields}"
             )
     else:
-        _render_command_preview(ui, assembly.preview)
-    ui.subheader(labels.section_label("advanced_config"))
-    for key, value in model.configuration.advanced:
-        ui.write(f"{labels.field_label(key)}: {value}")
+        _render_command_preview(preview_col, assembly.preview)
+    source_col.subheader(labels.section_label("advanced_config"))
+    _render_key_values(source_col, model.configuration.advanced)
+    source_col.markdown(labels.section_label("command_sources"))
     for source in model.configuration.sources:
-        ui.markdown(source)
+        source_col.markdown(source)
     return ConfigurationViewModel(
         normal=_normal_config_items(config),
         advanced=model.configuration.advanced,
@@ -423,11 +482,11 @@ def _render_diagnostics(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) 
 
 
 def _render_live_locked(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> None:
-    ui.subheader(labels.section_label("live_locked_notice"))
+    notice_col, forbidden_col = ui.columns(2)
+    notice_col.subheader(labels.section_label("live_locked_notice"))
     for key in ("no_exchange", "no_ctp", "no_simnow", "no_capital", "no_live_button"):
-        ui.markdown(f"- {labels.live_locked_text(key)}")
-    ui.divider()
-    _render_forbidden_actions(ui, model.live_locked.forbidden_actions)
+        notice_col.markdown(f"- {labels.live_locked_text(key)}")
+    _render_forbidden_actions(forbidden_col, model.live_locked.forbidden_actions)
 
 
 def _render_notices(ui: OperatorConsoleUI, notices: tuple[str, ...]) -> None:
@@ -474,6 +533,18 @@ def _render_dry_run_button(
         target="MOCK only",
         reason=action_result.reason,
     )
+
+
+def _render_session_actions(
+    ui: OperatorConsoleUI,
+    session: SessionPageViewModel,
+    provider: DryRunProvider | None,
+) -> DryRunActionResult | None:
+    dry_run_col, apply_col, result_col = ui.columns(3)
+    result = _render_dry_run_button(dry_run_col, session, provider)
+    _render_button(apply_col, session.apply_button)
+    _render_button(result_col, session.view_result_button)
+    return result
 
 
 def _with_result(
@@ -570,21 +641,23 @@ def _render_result_history(ui: OperatorConsoleUI, result: ResultHistoryViewModel
 
 
 def _render_command_preview(ui: OperatorConsoleUI, preview: CommandPreview) -> None:
-    for key, value in (
-        ("account_id", preview.account_id),
-        ("trading_day", preview.trading_day),
-        ("instrument_id", preview.instrument_id),
-        ("trade_instrument_id", preview.trade_instrument_id),
-        ("symbol", preview.symbol),
-        ("exchange", preview.exchange),
-        ("direction_offset", f"{preview.direction} / {preview.offset}"),
-        ("quantity", preview.quantity),
-        ("price", preview.price),
-        ("target", labels.safety_label(preview.target)),
-        ("dry_run", preview.dry_run),
-        ("db_write", preview.db_write),
-    ):
-        ui.write(f"{labels.field_label(key)}: {value}")
+    _render_key_values(
+        ui,
+        (
+            ("account_id", preview.account_id),
+            ("trading_day", preview.trading_day),
+            ("instrument_id", preview.instrument_id),
+            ("trade_instrument_id", preview.trade_instrument_id),
+            ("symbol", preview.symbol),
+            ("exchange", preview.exchange),
+            ("direction_offset", f"{preview.direction} / {preview.offset}"),
+            ("quantity", preview.quantity),
+            ("price", preview.price),
+            ("target", labels.safety_label(preview.target)),
+            ("dry_run", preview.dry_run),
+            ("db_write", preview.db_write),
+        ),
+    )
 
 
 def _render_blocked_dry_run_result(
@@ -620,66 +693,77 @@ def _render_card(ui: OperatorConsoleUI, title: str, lines: tuple[str, ...]) -> N
         container.markdown(line)
 
 
+def _render_key_values(
+    ui: OperatorConsoleUI,
+    items: tuple[tuple[str, str], ...],
+) -> None:
+    lines = tuple(f"- **{labels.field_label(key)}:** {value}" for key, value in items)
+    ui.markdown("\n".join(lines))
+
+
 def _read_config_form(
     ui: OperatorConsoleUI,
     current: ConsoleDryRunConfig,
 ) -> ConsoleDryRunConfig:
-    account_id = ui.text_input(
+    first_row = ui.columns(4)
+    second_row = ui.columns(4)
+    third_row = ui.columns(4)
+    account_id = first_row[0].text_input(
         labels.field_label("account_id"),
         value=current.account_id,
         key="operator_console_config_account_id",
     )
-    trading_day = ui.text_input(
+    trading_day = first_row[1].text_input(
         labels.field_label("trading_day"),
         value=current.trading_day,
         key="operator_console_config_trading_day",
     )
-    instrument_id = ui.text_input(
+    instrument_id = first_row[2].text_input(
         labels.field_label("instrument_id"),
         value=current.instrument_id,
         key="operator_console_config_instrument_id",
     )
-    trade_instrument_id = ui.text_input(
+    trade_instrument_id = first_row[3].text_input(
         labels.field_label("trade_instrument_id"),
         value=current.trade_instrument_id,
         key="operator_console_config_trade_instrument_id",
     )
-    symbol = ui.text_input(
+    symbol = second_row[0].text_input(
         labels.field_label("symbol"),
         value=current.symbol,
         key="operator_console_config_symbol",
     )
-    exchange = ui.text_input(
+    exchange = second_row[1].text_input(
         labels.field_label("exchange"),
         value=current.exchange,
         key="operator_console_config_exchange",
     )
-    quantity = ui.number_input(
+    quantity = second_row[2].number_input(
         labels.field_label("quantity"),
         value=current.quantity,
         key="operator_console_config_quantity",
     )
-    price = ui.number_input(
+    price = second_row[3].number_input(
         labels.field_label("price"),
         value=current.price,
         key="operator_console_config_price",
     )
-    max_order_size = ui.number_input(
+    max_order_size = third_row[0].number_input(
         labels.field_label("max_order_size"),
         value=current.max_order_size,
         key="operator_console_config_max_order_size",
     )
-    max_position_size = ui.number_input(
+    max_position_size = third_row[1].number_input(
         labels.field_label("max_position_size"),
         value=current.max_position_size,
         key="operator_console_config_max_position_size",
     )
-    max_daily_loss = ui.number_input(
+    max_daily_loss = third_row[2].number_input(
         labels.field_label("max_daily_loss"),
         value=current.max_daily_loss,
         key="operator_console_config_max_daily_loss",
     )
-    allowed_instruments = ui.text_area(
+    allowed_instruments = third_row[3].text_input(
         labels.field_label("allowed instruments"),
         value=format_allowed_instruments(current.allowed_instruments),
         key="operator_console_config_allowed_instruments",
@@ -761,7 +845,7 @@ def _dry_run_required_items(
         ("max order size", _display_config_value(config.max_order_size, config.is_example)),
         ("max position size", _display_config_value(config.max_position_size, config.is_example)),
         ("max daily loss", _display_config_value(config.max_daily_loss, config.is_example)),
-        ("command source / typed command provider", "由 typed UI config 生成 preview command"),
+        ("command source / typed command provider", "UI config preview command"),
         ("job_factory", "未配置"),
     )
 
