@@ -2,12 +2,18 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import date
 from typing import Protocol
 
 from futures_mvp.domain.models import ExecutionCommand
 from futures_mvp.modules.operator_console.actions import (
     DryRunActionResult,
     DryRunProvider,
+)
+from futures_mvp.modules.operator_console.config_assembly import (
+    ConsoleDryRunConfig,
+    assemble_config,
+    blocked_config_result,
 )
 from futures_mvp.modules.paper_trading.session import (
     PaperCommandProvider,
@@ -83,6 +89,33 @@ def create_paper_dry_run_provider(
     return provider
 
 
+def create_paper_config_dry_run_provider(
+    config: ConsoleDryRunConfig,
+    *,
+    job_factory: PaperRuntimeJobFactory | None = None,
+    session_factory: PaperSessionFactory = PaperLocalSession,
+) -> DryRunProvider:
+    assembly = assemble_config(config)
+    if assembly.validation.blocked:
+        reason = assembly.validation.reason or "配置无效"
+
+        def blocked_provider() -> DryRunActionResult:
+            return blocked_config_result(reason, assembly.validation.missing_fields)
+
+        return blocked_provider
+    assert assembly.command is not None
+    return create_paper_dry_run_provider(
+        PaperDryRunWiring(
+            config=_paper_session_config(config),
+            job_factory=job_factory,
+            commands=(assembly.command,),
+            session_factory=session_factory,
+            target=MOCK_TARGET,
+            apply_requested=False,
+        )
+    )
+
+
 def create_sim_dry_run_provider(
     wiring: SimDryRunWiring | None = None,
 ) -> DryRunProvider:
@@ -103,6 +136,33 @@ def create_sim_dry_run_provider(
         return _map_sim_result(session.run())
 
     return provider
+
+
+def create_sim_config_dry_run_provider(
+    config: ConsoleDryRunConfig,
+    *,
+    job_factory: SimRuntimeJobFactory | None = None,
+    session_factory: SimSessionFactory = SimLocalSession,
+) -> DryRunProvider:
+    assembly = assemble_config(config)
+    if assembly.validation.blocked:
+        reason = assembly.validation.reason or "配置无效"
+
+        def blocked_provider() -> DryRunActionResult:
+            return blocked_config_result(reason, assembly.validation.missing_fields)
+
+        return blocked_provider
+    assert assembly.command is not None
+    return create_sim_dry_run_provider(
+        SimDryRunWiring(
+            config=_sim_session_config(config),
+            job_factory=job_factory,
+            commands=(assembly.command,),
+            session_factory=session_factory,
+            target=MOCK_TARGET,
+            apply_requested=False,
+        )
+    )
 
 
 def _paper_blocked_reason(wiring: PaperDryRunWiring) -> str | None:
@@ -196,6 +256,28 @@ def _blocked_result(reason: str) -> DryRunActionResult:
         db_delta=0,
         target=MOCK_TARGET,
         reason=reason,
+    )
+
+
+def _paper_session_config(config: ConsoleDryRunConfig) -> PaperSessionConfig:
+    return PaperSessionConfig(
+        session_name="console-paper-dry-run",
+        runtime_id="operator-console",
+        trading_day=date.fromisoformat(config.trading_day.strip()),
+        account_id=config.account_id.strip(),
+        dry_run=True,
+        apply_confirmed=False,
+    )
+
+
+def _sim_session_config(config: ConsoleDryRunConfig) -> SimSessionConfig:
+    return SimSessionConfig(
+        session_name="console-sim-dry-run",
+        runtime_id="operator-console",
+        trading_day=date.fromisoformat(config.trading_day.strip()),
+        account_id=config.account_id.strip(),
+        dry_run=True,
+        apply_confirmed=False,
     )
 
 

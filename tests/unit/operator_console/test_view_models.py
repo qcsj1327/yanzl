@@ -51,3 +51,14 @@ def test_default_diagnostics_are_unknown_read_only_values() -> None:
         "Redis health": "unknown/not checked",
         "last error": "none",
     }
+
+
+def test_default_config_view_model_is_unconfigured_and_mock_only() -> None:
+    model = default_console_view_model()
+
+    assert model.configuration.dry_run_config.target == "MOCK only"
+    assert model.configuration.dry_run_config.apply_requested is False
+    assert model.configuration.validation.blocked is True
+    assert "instrument_id" in dict(model.configuration.dry_run_required)
+    assert "trade_instrument_id" in dict(model.configuration.dry_run_required)
+    assert model.results.history == ()

@@ -93,6 +93,14 @@ def test_required_safety_action_risk_and_result_labels_exist() -> None:
     ):
         assert value in labels.RESULT_LABELS.values()
 
+    assert labels.config_label("missing_fields") == "缺少字段"
+    assert labels.section_label("typed_command_preview") == "typed 命令预览"
+    assert labels.section_label("result_history") == "最近预演历史"
+    assert (
+        labels.config_text("preview_blocked")
+        == "当前配置还不能生成 typed dry-run command preview。"
+    )
+
 
 def test_blocked_reason_labels_are_user_facing_chinese() -> None:
     expected = {
@@ -101,6 +109,10 @@ def test_blocked_reason_labels_are_user_facing_chinese() -> None:
         ),
         "sim dry-run requires complete session config": "当前缺少完整的 SIM 预演配置，因此没有执行",
         "missing provider": "当前没有可用的预演执行器",
+        "缺少必填配置": "当前缺少必填配置，因此没有执行",
+        "数量必须大于 0": "数量必须大于 0，已阻断",
+        "价格必须大于 0": "价格必须大于 0，已阻断",
+        "合约不在允许列表中": "合约不在允许列表中，已阻断",
         "non-MOCK target": "当前目标不是 MOCK，已阻止执行",
         "db_delta nonzero": "预演出现数据库写入变化，已阻止标记为成功",
     }

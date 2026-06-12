@@ -3,6 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from futures_mvp.modules.operator_console.config_assembly import (
+    CommandPreview,
+    ConfigValidationResult,
+    ConsoleDryRunConfig,
+    DryRunHistoryEntry,
+)
+
 
 class OperatorPage(StrEnum):
     DASHBOARD = "Dashboard"
@@ -111,9 +118,29 @@ class ConfigurationViewModel:
     normal: tuple[tuple[str, str], ...]
     advanced: tuple[tuple[str, str], ...]
     sources: tuple[str, ...]
+    dry_run_config: ConsoleDryRunConfig = field(default_factory=ConsoleDryRunConfig)
+    preview: CommandPreview | None = None
+    validation: ConfigValidationResult = field(
+        default_factory=lambda: ConfigValidationResult(
+            blocked=True,
+            reason="缺少必填配置",
+            missing_fields=(
+                "account_id",
+                "trading_day",
+                "instrument_id",
+                "trade_instrument_id",
+            ),
+        )
+    )
     dry_run_required: tuple[tuple[str, str], ...] = (
         ("account_id", "未配置"),
         ("trading_day", "未配置"),
+        ("instrument_id", "未配置"),
+        ("trade_instrument_id", "未配置"),
+        ("symbol", "未配置"),
+        ("exchange", "未配置"),
+        ("quantity", "未配置"),
+        ("price", "未配置"),
         ("instrument whitelist", "未配置"),
         ("max order size", "未配置"),
         ("max position size", "未配置"),
@@ -133,6 +160,7 @@ class ResultHistoryViewModel:
     target: str = "MOCK only"
     latest_run: str = "无"
     reason: str | None = None
+    history: tuple[DryRunHistoryEntry, ...] = ()
 
 
 @dataclass(frozen=True)

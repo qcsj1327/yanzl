@@ -3,10 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
+from futures_mvp.modules.operator_console.config_assembly import ConsoleDryRunConfig
 from futures_mvp.modules.operator_console.dry_run_wiring import (
     PaperDryRunWiring,
     SimDryRunWiring,
+    create_paper_config_dry_run_provider,
     create_paper_dry_run_provider,
+    create_sim_config_dry_run_provider,
     create_sim_dry_run_provider,
 )
 from futures_mvp.modules.paper_trading.job import PaperJobResult, PaperJobStatus
@@ -175,6 +178,52 @@ def test_apply_requested_and_non_mock_target_are_blocked() -> None:
     assert FakeSimSession.calls == 0
 
 
+def test_config_provider_blocks_when_runtime_dependencies_are_missing() -> None:
+    FakePaperSession.calls = 0
+
+    result = create_paper_config_dry_run_provider(
+        _console_config(),
+        session_factory=FakePaperSession,
+    )()
+
+    assert result.session_status == "BLOCKED"
+    assert result.target == "MOCK only"
+    assert result.reason == "paper dry-run requires a session job factory"
+    assert FakePaperSession.calls == 0
+
+
+def test_config_provider_uses_typed_ui_config_when_dependencies_are_injected() -> None:
+    FakePaperSession.calls = 0
+    FakePaperSession.configs = []
+
+    result = create_paper_config_dry_run_provider(
+        _console_config(),
+        job_factory=_paper_job_factory,
+        session_factory=FakePaperSession,
+    )()
+
+    assert FakePaperSession.calls == 1
+    assert FakePaperSession.configs[0].account_id == "account-1"
+    assert FakePaperSession.configs[0].dry_run is True
+    assert FakePaperSession.configs[0].apply_confirmed is False
+    assert result.session_status == "DRY_RUN_COMPLETED"
+    assert result.target == "MOCK only"
+
+
+def test_invalid_config_provider_blocks_before_session_run() -> None:
+    FakeSimSession.calls = 0
+
+    result = create_sim_config_dry_run_provider(
+        _console_config(quantity="0"),
+        job_factory=_sim_job_factory,
+        session_factory=FakeSimSession,
+    )()
+
+    assert result.session_status == "BLOCKED"
+    assert result.reason == "数量必须大于 0：quantity"
+    assert FakeSimSession.calls == 0
+
+
 def _paper_config() -> PaperSessionConfig:
     return PaperSessionConfig(
         session_name="console-paper-dry-run",
@@ -195,6 +244,25 @@ def _sim_config() -> SimSessionConfig:
         dry_run=True,
         apply_confirmed=False,
     )
+
+
+def _console_config(**overrides: object) -> ConsoleDryRunConfig:
+    values: dict[str, object] = {
+        "account_id": "account-1",
+        "trading_day": "2026-06-12",
+        "instrument_id": "au2608",
+        "trade_instrument_id": "au2608",
+        "symbol": "au",
+        "exchange": "SHFE",
+        "quantity": "1",
+        "price": "500",
+        "max_order_size": "1",
+        "max_position_size": "1",
+        "max_daily_loss": "1000",
+        "allowed_instruments": ("au2608",),
+    }
+    values.update(overrides)
+    return ConsoleDryRunConfig(**values)
 
 
 def _paper_job_factory(*_args: object, **_kwargs: object) -> object:

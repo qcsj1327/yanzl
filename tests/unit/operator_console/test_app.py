@@ -5,6 +5,7 @@ from dataclasses import dataclass, field, replace
 from futures_mvp.modules.operator_console import app, labels
 from futures_mvp.modules.operator_console.actions import DryRunActionResult
 from futures_mvp.modules.operator_console.app import render_console
+from futures_mvp.modules.operator_console.config_assembly import ConsoleDryRunConfig
 from futures_mvp.modules.operator_console.view_models import (
     OperatorPage,
     ResultHistoryViewModel,
@@ -24,6 +25,8 @@ class FakeUI:
     dividers: int = 0
     selected_label: str | None = None
     clicked_labels: set[str] = field(default_factory=set)
+    input_values: dict[str, str] = field(default_factory=dict)
+    session_state: dict[str, object] = field(default_factory=dict)
 
     def title(self, body: str) -> None:
         self.titles.append(body)
@@ -39,6 +42,22 @@ class FakeUI:
 
     def write(self, body: object) -> None:
         self.writes.append(body)
+
+    def text_input(self, label: str, *, value: str = "", key: str | None = None) -> str:
+        return self._input_value(label, value, key)
+
+    def number_input(self, label: str, *, value: str = "", key: str | None = None) -> str:
+        return self._input_value(label, value, key)
+
+    def text_area(self, label: str, *, value: str = "", key: str | None = None) -> str:
+        return self._input_value(label, value, key)
+
+    def _input_value(self, label: str, value: str, key: str | None) -> str:
+        lookup = key or label
+        result = self.input_values.get(lookup, value)
+        if key is not None:
+            self.session_state[key] = result
+        return result
 
     def button(self, label: str, *, disabled: bool = False, key: str | None = None) -> bool:
         self.buttons.append((label, disabled, key))
@@ -63,6 +82,12 @@ class FakeUI:
 
     def divider(self) -> None:
         self.dividers += 1
+
+    def session_value(self, key: str, default: object | None = None) -> object | None:
+        return self.session_state.get(key, default)
+
+    def set_session_value(self, key: str, value: object) -> None:
+        self.session_state[key] = value
 
 
 def test_render_console_renders_all_page_titles_from_labels() -> None:
@@ -100,13 +125,16 @@ def test_main_lazy_import_renders_streamlit_adapter(monkeypatch) -> None:
             key: str | None = None,
         ) -> str:
             self._owner.selectboxes.append((label, options, index, key))
-            return options[index]
+            return self._owner.selected_label or options[index]
 
     class FakeStreamlit:
         def __init__(self) -> None:
             self.ui = FakeUI()
             self.sidebar = FakeSidebar(self)
             self.selectboxes: list[tuple[str, tuple[str, ...], int, str | None]] = []
+            self.session_state: dict[str, object] = {}
+            self.selected_label: str | None = None
+            self.clicked_labels: set[str] = set()
 
         def title(self, body: str) -> None:
             self.ui.title(body)
@@ -123,9 +151,21 @@ def test_main_lazy_import_renders_streamlit_adapter(monkeypatch) -> None:
         def write(self, body: object) -> None:
             self.ui.write(body)
 
+        def text_input(self, label: str, *, value: str = "", key: str | None = None) -> str:
+            if key is not None:
+                self.session_state.setdefault(key, value)
+                return str(self.session_state[key])
+            return value
+
+        def text_area(self, label: str, *, value: str = "", key: str | None = None) -> str:
+            if key is not None:
+                self.session_state.setdefault(key, value)
+                return str(self.session_state[key])
+            return value
+
         def button(self, label: str, *, disabled: bool = False, key: str | None = None) -> bool:
             self.ui.button(label, disabled=disabled, key=key)
-            return False
+            return (not disabled) and label in self.clicked_labels
 
         def columns(self, count: int):
             return tuple(self for _ in range(count))
@@ -145,6 +185,92 @@ def test_main_lazy_import_renders_streamlit_adapter(monkeypatch) -> None:
     assert fake_streamlit.ui.headers == ["总览"]
     assert fake_streamlit.selectboxes[0][0] == "页面"
     assert "✅ 运行正常" in "\n".join(str(item) for item in fake_streamlit.ui.markdowns)
+
+
+def test_main_default_entry_uses_session_state_config_provider(monkeypatch) -> None:
+    class FakeSidebar:
+        def __init__(self, owner) -> None:
+            self._owner = owner
+
+        def selectbox(
+            self,
+            label: str,
+            options: tuple[str, ...],
+            *,
+            index: int = 0,
+            key: str | None = None,
+        ) -> str:
+            self._owner.selectboxes.append((label, options, index, key))
+            return self._owner.selected_label or options[index]
+
+    class FakeStreamlit:
+        def __init__(self) -> None:
+            self.ui = FakeUI()
+            self.sidebar = FakeSidebar(self)
+            self.selectboxes: list[tuple[str, tuple[str, ...], int, str | None]] = []
+            self.session_state: dict[str, object] = {
+                "operator_console_dry_run_config": _valid_config()
+            }
+            self.selected_label = labels.page_title(OperatorPage.PAPER_SESSION.value)
+            self.clicked_labels = {"运行 Paper 预演"}
+
+        def title(self, body: str) -> None:
+            self.ui.title(body)
+
+        def header(self, body: str) -> None:
+            self.ui.header(body)
+
+        def subheader(self, body: str) -> None:
+            self.ui.subheader(body)
+
+        def markdown(self, body: str) -> None:
+            self.ui.markdown(body)
+
+        def write(self, body: object) -> None:
+            self.ui.write(body)
+
+        def text_input(self, label: str, *, value: str = "", key: str | None = None) -> str:
+            if key is not None:
+                self.session_state.setdefault(key, value)
+                return str(self.session_state[key])
+            return value
+
+        def text_area(self, label: str, *, value: str = "", key: str | None = None) -> str:
+            if key is not None:
+                self.session_state.setdefault(key, value)
+                return str(self.session_state[key])
+            return value
+
+        def button(self, label: str, *, disabled: bool = False, key: str | None = None) -> bool:
+            self.ui.button(label, disabled=disabled, key=key)
+            return (not disabled) and label in self.clicked_labels
+
+        def columns(self, count: int):
+            return tuple(self for _ in range(count))
+
+        def container(self):
+            return self
+
+        def divider(self) -> None:
+            self.ui.divider()
+
+    fake_streamlit = FakeStreamlit()
+    monkeypatch.setattr(app, "import_module", lambda name: fake_streamlit)
+
+    app.main()
+
+    rendered = "\n".join(
+        str(item)
+        for item in [
+            *fake_streamlit.ui.markdowns,
+            *fake_streamlit.ui.subheaders,
+        ]
+    )
+    assert "⚠️ 本次预演未执行" in rendered
+    assert "当前缺少完整的 Paper 预演配置，因此没有执行" in rendered
+    history = fake_streamlit.session_state["operator_console_result_history"]
+    assert isinstance(history, tuple)
+    assert history[0].mode == "PAPER"
 
 
 def test_render_console_uses_chinese_field_and_diagnostic_labels() -> None:
@@ -292,8 +418,41 @@ def test_configuration_page_renders_dry_run_required_config() -> None:
     assert "最大委托数量: 未配置" in rendered
     assert "最大持仓数量: 未配置" in rendered
     assert "最大日亏损: 未配置" in rendered
-    assert "命令来源 / typed command provider: 未配置" in rendered
+    assert "命令来源 / typed command provider: 由 typed UI config 生成 preview command" in rendered
     assert "job_factory: 未配置" in rendered
+
+
+def test_configuration_page_renders_typed_command_preview_from_filled_form() -> None:
+    ui = FakeUI(
+        selected_label=labels.page_title(OperatorPage.CONFIGURATION.value),
+        input_values=_valid_config_inputs(),
+    )
+
+    render_console(ui, default_console_view_model())
+
+    rendered = "\n".join(str(item) for item in [*ui.writes, *ui.markdowns, *ui.subheaders])
+    assert "typed 命令预览" in rendered
+    assert "账户 ID: account-1" in rendered
+    assert "交易日: 2026-06-12" in rendered
+    assert "行情合约: au2608" in rendered
+    assert "交易合约: au2608" in rendered
+    assert "方向/开平: BUY / OPEN" in rendered
+    assert "数量: 1" in rendered
+    assert "价格: 500" in rendered
+    assert "目标类型: 仅本地模拟，不连接真实交易所" in rendered
+    assert "dry-run: 是" in rendered
+    assert "写库: 否" in rendered
+
+
+def test_configuration_page_renders_missing_fields_list() -> None:
+    ui = FakeUI(selected_label=labels.page_title(OperatorPage.CONFIGURATION.value))
+
+    render_console(ui, default_console_view_model())
+
+    rendered = "\n".join(str(item) for item in [*ui.markdowns, *ui.subheaders])
+    assert "当前配置还不能生成 typed dry-run command preview。" in rendered
+    assert "原因: 当前缺少必填配置，因此没有执行" in rendered
+    assert "缺少字段: 账户 ID, 交易日, 行情合约, 交易合约" in rendered
 
 
 def test_live_locked_page_renders_strong_warning() -> None:
@@ -448,6 +607,51 @@ def test_apply_click_does_not_call_dry_run_provider() -> None:
     assert calls == 0
 
 
+def test_dry_run_uses_session_state_config_provider_and_blocks_without_job_factory() -> None:
+    ui = FakeUI(
+        selected_label=labels.page_title(OperatorPage.PAPER_SESSION.value),
+        clicked_labels={"运行 Paper 预演"},
+        session_state={"operator_console_dry_run_config": _valid_config()},
+    )
+
+    render_console(ui, default_console_view_model())
+
+    rendered = "\n".join(str(item) for item in [*ui.markdowns, *ui.subheaders])
+    assert "⚠️ 本次预演未执行" in rendered
+    assert "当前缺少完整的 Paper 预演配置，因此没有执行" in rendered
+    history = ui.session_state["operator_console_result_history"]
+    assert isinstance(history, tuple)
+    assert len(history) == 1
+    assert history[0].mode == "PAPER"
+
+
+def test_results_page_reads_in_memory_history_only() -> None:
+    history_ui = FakeUI(
+        selected_label=labels.page_title(OperatorPage.RESULTS_HISTORY.value),
+        session_state={
+            "operator_console_result_history": (
+                app.append_history(
+                    (),
+                    mode="PAPER",
+                    result=DryRunActionResult(
+                        "BLOCKED",
+                        "BLOCKED",
+                        "BLOCKED",
+                        reason="缺少必填配置",
+                    ),
+                )[0],
+            )
+        },
+    )
+
+    render_console(history_ui, default_console_view_model())
+
+    rendered = "\n".join(str(item) for item in [*history_ui.markdowns, *history_ui.subheaders])
+    assert "最近预演历史" in rendered
+    assert "PAPER - 会话状态: 已阻断" in rendered
+    assert "当前缺少必填配置，因此没有执行" in rendered
+
+
 def test_dry_run_unsafe_result_renders_blocked_reason() -> None:
     def provider() -> DryRunActionResult:
         return DryRunActionResult(
@@ -506,3 +710,37 @@ def test_forbidden_actions_are_text_only_without_enable_buttons() -> None:
 
     assert forbidden_labels.issubset(set(ui.markdowns))
     assert forbidden_labels.isdisjoint(rendered_buttons)
+
+
+def _valid_config_inputs() -> dict[str, str]:
+    return {
+        "operator_console_config_account_id": "account-1",
+        "operator_console_config_trading_day": "2026-06-12",
+        "operator_console_config_instrument_id": "au2608",
+        "operator_console_config_trade_instrument_id": "au2608",
+        "operator_console_config_symbol": "au",
+        "operator_console_config_exchange": "SHFE",
+        "operator_console_config_quantity": "1",
+        "operator_console_config_price": "500",
+        "operator_console_config_max_order_size": "1",
+        "operator_console_config_max_position_size": "1",
+        "operator_console_config_max_daily_loss": "1000",
+        "operator_console_config_allowed_instruments": "au2608",
+    }
+
+
+def _valid_config() -> ConsoleDryRunConfig:
+    return ConsoleDryRunConfig(
+        account_id="account-1",
+        trading_day="2026-06-12",
+        instrument_id="au2608",
+        trade_instrument_id="au2608",
+        symbol="au",
+        exchange="SHFE",
+        quantity="1",
+        price="500",
+        max_order_size="1",
+        max_position_size="1",
+        max_daily_loss="1000",
+        allowed_instruments=("au2608",),
+    )

@@ -102,6 +102,10 @@ RESULT_LABELS: dict[str, str] = {
     "target type": "目标类型",
 }
 
+CONFIG_LABELS: dict[str, str] = {
+    "missing_fields": "缺少字段",
+}
+
 FORBIDDEN_ACTION_LABELS: dict[str, str] = {
     "LIVE Enable": "LIVE 启用：禁止",
     "Broker Enable": "Broker 启用：禁止",
@@ -133,6 +137,8 @@ SECTION_LABELS: dict[str, str] = {
     "advanced_config": "高级配置",
     "diagnostic_items": "诊断项目",
     "dry_run_required_config": "预演所需配置",
+    "typed_command_preview": "typed 命令预览",
+    "result_history": "最近预演历史",
     "blocked_dry_run_title": "⚠️ 本次预演未执行",
     "blocked_next_steps": "下一步：",
     "blocked_safe_result": "安全结果：",
@@ -160,6 +166,16 @@ FIELD_LABELS: dict[str, str] = {
     "Replay Pause": "回放暂停",
     "account_id": "账户 ID",
     "trading_day": "交易日",
+    "instrument_id": "行情合约",
+    "trade_instrument_id": "交易合约",
+    "symbol": "品种",
+    "exchange": "交易所",
+    "quantity": "数量",
+    "price": "价格",
+    "allowed instruments": "允许合约",
+    "direction_offset": "方向/开平",
+    "dry_run": "dry-run",
+    "db_write": "写库",
     "instrument whitelist": "合约白名单",
     "max order size": "最大委托数量",
     "max position size": "最大持仓数量",
@@ -259,6 +275,13 @@ REASON_LABELS: dict[str, str] = {
         "当前缺少完整的 SIM 预演配置，因此没有执行"
     ),
     "dry-run provider is not configured": "当前没有可用的预演执行器",
+    "缺少必填配置": "当前缺少必填配置，因此没有执行",
+    "配置中心不允许请求 apply": "配置中心不允许请求 apply，已阻断",
+    "配置中心只允许 MOCK 目标": "配置中心只允许 MOCK 目标，已阻断",
+    "数量必须大于 0": "数量必须大于 0，已阻断",
+    "价格必须大于 0": "价格必须大于 0，已阻断",
+    "交易日格式必须是 YYYY-MM-DD": "交易日格式必须是 YYYY-MM-DD，已阻断",
+    "合约不在允许列表中": "合约不在允许列表中，已阻断",
     "missing provider": "当前没有可用的预演执行器",
     "dry-run returned non-MOCK target": "当前目标不是 MOCK，已阻止执行",
     "paper console dry-run supports MOCK target only": "当前目标不是 MOCK，已阻止执行",
@@ -266,6 +289,10 @@ REASON_LABELS: dict[str, str] = {
     "non-MOCK target": "当前目标不是 MOCK，已阻止执行",
     "dry-run returned non-zero DB delta": "预演出现数据库写入变化，已阻止标记为成功",
     "db_delta nonzero": "预演出现数据库写入变化，已阻止标记为成功",
+}
+
+CONFIG_TEXT: dict[str, str] = {
+    "preview_blocked": "当前配置还不能生成 typed dry-run command preview。",
 }
 
 BLOCKED_RESULT_TEXT: dict[str, str] = {
@@ -312,6 +339,10 @@ def result_label(key: str) -> str:
     return RESULT_LABELS.get(key, key)
 
 
+def config_label(key: str) -> str:
+    return CONFIG_LABELS.get(key, key)
+
+
 def forbidden_action_label(key: str) -> str:
     return FORBIDDEN_ACTION_LABELS.get(key, f"{key}：禁止")
 
@@ -350,6 +381,10 @@ def safety_explanation(key: str) -> str:
 
 def result_status_text(key: str) -> str:
     return RESULT_STATUS_TEXT.get(key, key)
+
+
+def config_text(key: str) -> str:
+    return CONFIG_TEXT.get(key, key)
 
 
 def reason_label(reason: str | None) -> str:

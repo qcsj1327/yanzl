@@ -688,3 +688,99 @@ Stage T.1 validation：
 ```bash
 git diff --check
 ```
+
+## Stage T.2 Console Dry-run Config Assembly Implementation Facts
+
+Baseline：`stage-t1-console-workflow-hardening-freeze / 88c937c`。
+
+Stage T.2 implements local Operator Console dry-run configuration assembly for
+Paper/SIM dry-run preview and provider construction.
+
+Implemented files：
+
+- `src/futures_mvp/modules/operator_console/config_assembly.py`。
+- `src/futures_mvp/modules/operator_console/view_models.py`。
+- `src/futures_mvp/modules/operator_console/app.py`。
+- `src/futures_mvp/modules/operator_console/dry_run_wiring.py`。
+- `src/futures_mvp/modules/operator_console/labels.py`。
+- `tests/unit/operator_console/*`。
+
+Stage T.2 UI config fields：
+
+- `account_id`。
+- `trading_day`。
+- `instrument_id`。
+- `trade_instrument_id`。
+- `symbol`。
+- `exchange`。
+- `quantity`。
+- `price`。
+- `max_order_size`。
+- `max_position_size`。
+- `max_daily_loss`。
+- allowed instruments。
+
+Stage T.2 validation：
+
+- missing `account_id` blocks。
+- missing `trading_day` blocks。
+- missing `instrument_id` / `trade_instrument_id` blocks。
+- `quantity <= 0` blocks。
+- `price <= 0` blocks。
+- allowed instruments mismatch blocks。
+- target remains `MOCK only`。
+- `apply_requested` remains false。
+
+Stage T.2 typed command preview displays：
+
+- account。
+- trading day。
+- instrument identity。
+- `BUY / OPEN` as read-only direction / offset。
+- quantity。
+- price。
+- target：仅本地模拟，不连接真实交易所。
+- dry-run：是。
+- 写库：否。
+
+Stage T.2 provider assembly：
+
+- UI config is assembled into a typed preview `ExecutionCommand` with
+  `ExecutionTarget.MOCK` only。
+- Paper/SIM config provider constructors use typed UI config and keep
+  `dry_run=True`, `apply_confirmed=False`, `apply_requested=False`。
+- If `job_factory` or other accepted LocalSession dependencies are missing, the
+  provider returns `BLOCKED` instead of fail-open。
+- Invalid config returns `BLOCKED` with Chinese operator-facing reason and
+  missing-field detail。
+- non-`MOCK` target cannot be generated from UI config。
+
+Stage T.2 result history：
+
+- dry-run action results are appended to in-memory / Streamlit session-state
+  history only。
+- history keeps only the recent entries for display。
+- history is observability only and not source-of-truth。
+- no DB, repository, ledger or durable table is used。
+
+Stage T.2 preserves these boundaries：
+
+- no Paper/SIM apply execution。
+- apply buttons remain disabled。
+- no DB or ledger writes。
+- no repository mutation。
+- no broker / CTP / SimNow / LIVE / network integration。
+- no FastAPI control plane。
+- no `ExecutionTarget.PAPER` / `SIM` / `LIVE` enablement。
+- no schema or Alembic migration。
+- no new dependency。
+
+Stage T.2 validation：
+
+```bash
+uv run pytest tests/unit/operator_console
+uv run pytest
+uv run ruff check .
+uv run mypy src
+git diff --check
+```
