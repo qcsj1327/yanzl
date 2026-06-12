@@ -6598,6 +6598,108 @@ Stage R.1 validation：
 
 - `git diff --check`。
 
+## Stage T.1 Local Operator Workflow Hardening Contract Freeze
+
+Stage T.1 freezes the next local Operator Console workflow hardening contract on
+baseline `stage-r51-console-blocked-result-ux / b7c6035`。
+
+Stage T.1 is documentation-only：
+
+- no Domain model。
+- no enum。
+- no interface change。
+- no schema or Alembic migration。
+- no `src` / tests。
+- no DB, ledger or repository write path。
+- no broker, CTP, SimNow, LIVE or network integration。
+- no `ExecutionTarget.PAPER` / `ExecutionTarget.SIM` /
+  `ExecutionTarget.LIVE` enablement。
+
+### Stage T.1 purpose
+
+The Stage T.1 purpose is to let non-code / non-CLI operators use the local
+Console to assemble Paper/SIM dry-run configuration, preview typed dry-run
+commands/config, inspect in-memory result history, view known soak evidence and
+read diagnostics without adding business facts or durable state.
+
+### Stage T.1 configuration fields
+
+The Console may collect these fields for typed dry-run command/config preview：
+
+- `account_id`。
+- `trading_day`。
+- `instrument_id`。
+- `trade_instrument_id`。
+- `symbol`。
+- `exchange`。
+- `quantity`。
+- `price`。
+- `max_order_size`。
+- `max_position_size`。
+- `max_daily_loss`。
+- allowed instruments。
+
+These fields do not become new Domain fields in Stage T.1. They may only be
+assembled into typed UI dry-run config/command preview objects in a future
+implementation. Missing identity must not be hidden in `raw_payload`,
+`metadata`, free-form JSON or display-only text.
+
+### Stage T.1 dry-run provider contract
+
+Future dry-run providers may be assembled only from typed UI config：
+
+- `dry_run=True`。
+- `apply_confirmed=False`。
+- `apply_requested=False`。
+- target is `MOCK` only。
+- missing or invalid config returns `BLOCKED` with Chinese guidance。
+- nonzero DB delta returns `BLOCKED`。
+
+Provider assembly is UI workflow behavior only. It does not change OMS,
+Execution, Trade, Position, Margin, PnL, Settlement or repository source-of-truth
+rules.
+
+### Stage T.1 history, evidence and diagnostics contract
+
+Result history is limited to in-memory / UI session-state history. It is
+observability only and cannot be a source-of-truth, replay input, ledger, durable
+table or business fact.
+
+Soak evidence display is read-only display of known Paper/SIM baseline evidence.
+It must not execute commands, mutate DB state, write schema, create facts or
+infer fresh acceptance from stale evidence.
+
+Diagnostics remain read-only. Running shell commands from the UI requires a
+separate contract freeze and acceptance review.
+
+### Stage T.1 forbidden actions
+
+Stage T.1 forbids：
+
+- Paper/SIM apply from this workflow。
+- DB writes。
+- ledger writes。
+- repository mutation。
+- schema changes。
+- durable result/history/config tables。
+- `ExecutionTarget.PAPER` / `ExecutionTarget.SIM` / `ExecutionTarget.LIVE`
+  enablement。
+- SimNow / CTP / broker / live / network integration。
+- Live/Broker/CTP/SimNow enable buttons。
+- Force Order / Trade / Position / Accounting buttons。
+
+Every dry-run result must display whether DB was written, target, reason and
+next step.
+
+Stage T.1 future tests should cover valid config -> `MOCK` dry-run provider,
+invalid config -> blocked, non-`MOCK` impossible, dry-run writes no DB, apply
+disabled, history in-memory only, forbidden buttons absent, no forbidden imports
+outside accepted dry-run wiring and no schema changes.
+
+Stage T.1 validation：
+
+- `git diff --check`。
+
 ### feature_snapshots
 
 Stage H 已新增 `feature_snapshots` 表作为 FeatureSnapshot derived facts ledger。

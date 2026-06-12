@@ -2220,6 +2220,71 @@ Stage R.1 validation：
 
 - `git diff --check`。
 
+### Stage T.1: Local Operator Workflow Hardening Contract Freeze
+
+- Goal：freeze the next local Operator Console workflow hardening scope so
+  non-code / non-CLI operators can assemble Paper/SIM dry-run config, preview
+  typed commands/config, inspect in-memory result history, view known soak
+  evidence and read diagnostics from the UI。
+- Baseline：`stage-r51-console-blocked-result-ux / b7c6035`。
+- Scope：documentation-only；no code, no schema, no `src` / tests, no commit,
+  no tag。
+- Future implementation may add Console dry-run config assembly, typed command
+  fixture preview, account/trading-day/instrument-whitelist/capital-controls UI,
+  Paper/SIM dry-run provider construction from typed UI config, in-memory result
+  history, read-only soak evidence display and read-only diagnostics。
+- Future implementation must not add Paper/SIM apply, DB/ledger/repository
+  writes, durable result/history tables, broker / CTP / SimNow / LIVE / network
+  integration, schema changes or `ExecutionTarget.PAPER` / `SIM` / `LIVE`
+  enablement。
+
+Stage T.1 configuration workflow：
+
+- UI fields：`account_id`, `trading_day`, `instrument_id`,
+  `trade_instrument_id`, `symbol`, `exchange`, `quantity`, `price`,
+  `max_order_size`, `max_position_size`, `max_daily_loss` and allowed
+  instruments。
+- UI may generate typed dry-run command/config previews only。
+- UI must not write DB rows, ledgers, repositories, durable config, approvals or
+  audit/session tables。
+- Missing or invalid config must produce `BLOCKED` with Chinese guidance。
+
+Stage T.1 dry-run provider assembly：
+
+- Providers may be constructed only from typed UI config。
+- `dry_run=True`, `apply_confirmed=False`, `apply_requested=False` and target
+  is `MOCK` only。
+- non-`MOCK` target is impossible；if observed, result is `BLOCKED`。
+- nonzero DB delta is `BLOCKED`。
+- Every dry-run result must display 是否写库, target, reason and next step。
+
+Stage T.1 result history, evidence and diagnostics：
+
+- Result history is in-memory / session-state only and observability only；it is
+  not a source-of-truth and does not add schema。
+- Soak evidence display is read-only known baseline evidence display only；it
+  must not execute commands or mutate DB。
+- Diagnostics remain read-only；running shell commands from the UI requires a
+  separate acceptance。
+
+Stage T.1 forbidden actions：
+
+- Paper/SIM apply from this workflow。
+- Live Enable, Broker Enable, CTP Enable, SimNow Enable。
+- Manual DB edit。
+- Force Order, Force Trade, Force Position, Force Accounting。
+- Broker/live/CTP/SimNow/network imports or execution paths outside accepted
+  dry-run wiring。
+
+Stage T.1 future tests should assert valid config builds a `MOCK` dry-run
+provider, invalid config blocks, non-`MOCK` is impossible, dry-run writes no DB
+rows, apply remains disabled, history stays in memory, forbidden buttons do not
+exist, no forbidden imports are introduced and no schema changes exist。
+
+Stage T.1 validation：
+
+- `git diff --check`。
+
 ## 7. Stage Dependency Graph
 
 核心执行与会计链：

@@ -6,7 +6,7 @@
 
 不得提前新增 live、production、remote、kms、cloud 或真实交易运行流程。
 
-Stage M Runtime / Infrastructure contract freeze、Stage O Operations / Safety / Production Readiness contract freeze、Stage P Paper / Sim / Live Rollout Contract Freeze 和 Stage R.1 Operator Console Contract Freeze 当前记录在：
+Stage M Runtime / Infrastructure contract freeze、Stage O Operations / Safety / Production Readiness contract freeze、Stage P Paper / Sim / Live Rollout Contract Freeze、Stage R.1 Operator Console Contract Freeze 和 Stage T.1 Local Operator Workflow Hardening Contract Freeze 当前记录在：
 
 - `docs/architecture/SYSTEM_MASTER_PLAN.md`
 - `docs/domain/DOMAIN_FREEZE.md`
@@ -24,6 +24,15 @@ Stage R.1 Operator Console 是本地 Streamlit-first 操作台契约冻结：
 - Console 禁止直接写 OMS / Trade / Position / Accounting repositories，禁止绕过 RuntimeJob / LocalSession，禁止直接写 ledger，禁止 schema mutation。
 - 永远不得出现 Live Enable、Broker Enable、CTP Enable、SimNow Enable、Manual DB edit、Force Order、Force Trade、Force Position 或 `ExecutionTarget.PAPER` / `SIM` / `LIVE` 选择/启用按钮。
 - 初期配置只允许 typed config object、本地 TOML/YAML、environment variables 或 UI session state；持久化配置另开 contract。
+
+Stage T.1 Local Operator Workflow Hardening 只冻结后续 UI workflow 强化范围：
+
+- 允许未来通过 UI 装配 Paper/SIM dry-run 所需 typed config，字段包括 `account_id`、`trading_day`、`instrument_id`、`trade_instrument_id`、`symbol`、`exchange`、`quantity`、`price`、`max_order_size`、`max_position_size`、`max_daily_loss` 和 allowed instruments。
+- UI 只生成 typed dry-run command/config preview；缺失或非法配置必须 `BLOCKED` 并显示中文指导。
+- dry-run provider 只能由 typed UI config 构造，且必须是 `dry_run=True`、`apply_confirmed=False`、`apply_requested=False`、target `MOCK` only；nonzero DB delta 必须 `BLOCKED`。
+- result history 初期只允许 in-memory / session-state，属于 observability only，不能成为业务事实或 source-of-truth。
+- soak evidence display 和 diagnostics 只读；从 UI 执行 shell command 需要单独 acceptance。
+- apply 保持 disabled；禁止 Paper/SIM apply、DB/ledger/repository 写入、schema 变更、Live/Broker/CTP/SimNow enable、Force Order/Trade/Position/Accounting，以及 `ExecutionTarget.PAPER` / `SIM` / `LIVE` 启用。
 
 Stage M implementation 当前新增 `src/futures_mvp/modules/runtime`：
 

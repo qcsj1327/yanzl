@@ -502,3 +502,189 @@ Stage R.5.1 preserves these boundaries：
 - no `ExecutionTarget.PAPER` / `SIM` / `LIVE` enablement。
 - no schema or Alembic migration。
 - no new dependency。
+
+## Stage T.1 Local Operator Workflow Hardening Contract Freeze
+
+Baseline：`stage-r51-console-blocked-result-ux / b7c6035`。
+
+Stage T.1 is documentation-only. It freezes the next local Operator Console
+hardening scope for non-code / non-CLI operators. The goal is to let operators
+assemble the configuration needed for Paper/SIM dry-run, preview typed dry-run
+commands/config, inspect in-session result history, view known soak evidence and
+read read-only diagnostics from the UI.
+
+Stage T.1 does not add code, schema, Alembic migration, `src` changes, tests,
+commit or tag.
+
+### Stage T.1 allowed future implementation
+
+Future implementation may add：
+
+- Console dry-run configuration assembly。
+- typed command fixture preview。
+- account, trading day, instrument whitelist and capital controls UI。
+- Paper/SIM dry-run providers constructed from typed UI configuration。
+- Results history kept in memory / session state only。
+- read-only soak evidence display for known Paper/SIM baselines。
+- read-only diagnostics。
+
+Future implementation must not add：
+
+- Paper/SIM apply from this workflow。
+- DB writes, ledger writes or repository mutation。
+- durable result/history/config tables。
+- `ExecutionTarget.PAPER`, `ExecutionTarget.SIM` or `ExecutionTarget.LIVE`
+  enablement。
+- SimNow, CTP, broker, live account or network integration。
+- schema or Alembic migration。
+- Console result/history source-of-truth semantics。
+- Live/Broker/CTP/SimNow enable buttons。
+- Force Order, Force Trade, Force Position or Force Accounting buttons。
+
+### Console Config Workflow
+
+The Configuration page may collect these operator-facing fields：
+
+- `account_id`。
+- `trading_day`。
+- `instrument_id`。
+- `trade_instrument_id`。
+- `symbol`。
+- `exchange`。
+- `quantity`。
+- `price`。
+- `max_order_size`。
+- `max_position_size`。
+- `max_daily_loss`。
+- allowed instruments。
+
+The UI may use these fields only to build typed dry-run command/config previews.
+It must not write DB rows, ledgers, repositories, durable config, approvals or
+audit/session tables.
+
+Configuration preview must keep `instrument_id`, `trade_instrument_id`,
+`symbol` and `exchange` explicit. It must not hide missing trading identity in
+`raw_payload`, `metadata`, free-form JSON or display-only text.
+
+Missing or invalid configuration must produce a `BLOCKED` dry-run result with
+Chinese guidance that explains why it is blocked, whether it is safe and what
+the operator should do next.
+
+### Dry-run Provider Assembly
+
+Paper/SIM dry-run providers may be constructed only from typed UI config. The
+assembly contract is：
+
+- `dry_run=True`。
+- `apply_confirmed=False`。
+- `apply_requested=False`。
+- target is `MOCK` only。
+- provider input comes from typed UI config, not raw payload strings。
+- missing config blocks before session execution。
+- invalid config blocks before session execution。
+- non-`MOCK` target is impossible; if observed, result is `BLOCKED`。
+- nonzero DB delta is `BLOCKED`。
+
+The Console may continue to keep `dry_run_wiring.py` as the only module that
+imports `PaperLocalSession` and `SimLocalSession`. UI pages, labels, view models
+and result history must not import LocalSession internals directly.
+
+Every dry-run result must display：
+
+- 是否写库。
+- target。
+- reason。
+- next step。
+
+### Result History
+
+Initial result history is limited to in-memory / UI session-state history.
+
+Result history is observability only：
+
+- no schema。
+- no durable table。
+- no repository。
+- no ledger。
+- no source-of-truth status。
+- no business fact reconstruction from history。
+
+History may show dry-run status, DB delta, target, reason, next step, duplicate
+or conflict flags and timestamps for operator readability. It must not provide
+edit, repair, retry-as-new-order, force, replay-apply or manual ledger mutation
+controls.
+
+### Soak Evidence Display
+
+Soak evidence display may show known accepted Paper/SIM baseline evidence as
+read-only UI content.
+
+It must not：
+
+- execute commands from the UI。
+- run pytest, ruff, mypy, Alembic, shell scripts or local session commands。
+- mutate DB, ledgers, repositories or schema。
+- promote evidence into business facts。
+- infer new acceptance from stale evidence。
+
+Displayed evidence must be labeled as evidence display only. Current acceptance
+for a later stage still requires a separate validation run and acceptance review.
+
+### Diagnostics
+
+Diagnostics remain read-only. Stage T.1 may keep the current placeholder
+diagnostics or add a safe injected diagnostics provider that only reads supplied
+status values.
+
+Running shell commands from the UI requires a separate contract freeze and
+acceptance review. Stage T.1 does not approve command execution from the
+Console.
+
+Diagnostics must not run migrations, repair ledgers, write DB rows, enable live
+targets, start network services or inspect broker/CTP/SimNow sessions.
+
+### Safety UX
+
+Apply remains disabled for this workflow.
+
+The Live Locked Page remains visible and locked. It must not provide enable
+buttons, unlock buttons, credential inputs, broker target selectors, CTP
+selectors, SimNow selectors or live mode selectors.
+
+Forbidden actions must remain impossible：
+
+- Paper apply。
+- SIM apply。
+- Live Enable。
+- Broker Enable。
+- CTP Enable。
+- SimNow Enable。
+- Manual DB edit。
+- Force Order。
+- Force Trade。
+- Force Position。
+- Force Accounting。
+- `ExecutionTarget.PAPER` enablement。
+- `ExecutionTarget.SIM` enablement。
+- `ExecutionTarget.LIVE` enablement。
+
+### Stage T.1 future test matrix
+
+Future implementation tests should cover：
+
+- valid config builds a `MOCK` dry-run provider。
+- invalid config is blocked。
+- non-`MOCK` target is impossible。
+- dry-run does not write DB。
+- apply remains disabled。
+- result history is in-memory / session-state only。
+- forbidden buttons do not exist。
+- no DB, repository, broker, live, CTP, SimNow or network imports outside
+  accepted dry-run wiring。
+- no schema changes。
+
+Stage T.1 validation：
+
+```bash
+git diff --check
+```
