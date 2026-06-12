@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date
-from typing import Protocol
+from typing import Any, Protocol
 
 from futures_mvp.domain.models import ExecutionCommand
 from futures_mvp.modules.operator_console.actions import (
@@ -15,6 +15,7 @@ from futures_mvp.modules.operator_console.config_assembly import (
     assemble_config,
     blocked_config_result,
 )
+from futures_mvp.modules.paper_trading import session as paper_session
 from futures_mvp.modules.paper_trading.session import (
     PaperCommandProvider,
     PaperLocalSession,
@@ -22,6 +23,7 @@ from futures_mvp.modules.paper_trading.session import (
     PaperSessionConfig,
     PaperSessionResult,
 )
+from futures_mvp.modules.sim_trading import session as sim_session
 from futures_mvp.modules.sim_trading.session import (
     SimCommandProvider,
     SimLocalSession,
@@ -89,10 +91,33 @@ def create_paper_dry_run_provider(
     return provider
 
 
+def _paper_console_fixture_job_factory(
+    job_config: Any,
+    commands: Sequence[ExecutionCommand],
+) -> Callable[[], Any]:
+    def job() -> Any:
+        result_type = vars(paper_session)["PaperJobResult"]
+        status_type = vars(paper_session)["PaperJobStatus"]
+        if not job_config.dry_run:
+            return result_type(
+                job_name=job_config.job_name,
+                status=status_type.BLOCKED,
+                reason="console paper fixture requires dry_run=True",
+            )
+        return result_type(
+            job_name=job_config.job_name,
+            status=status_type.DRY_RUN,
+            reason="本地 Paper 预演完成，未写库",
+            processed_command_count=len(commands),
+        )
+
+    return job
+
+
 def create_paper_config_dry_run_provider(
     config: ConsoleDryRunConfig,
     *,
-    job_factory: PaperRuntimeJobFactory | None = None,
+    job_factory: PaperRuntimeJobFactory | None = _paper_console_fixture_job_factory,
     session_factory: PaperSessionFactory = PaperLocalSession,
 ) -> DryRunProvider:
     assembly = assemble_config(config)
@@ -138,10 +163,33 @@ def create_sim_dry_run_provider(
     return provider
 
 
+def _sim_console_fixture_job_factory(
+    job_config: Any,
+    commands: Sequence[ExecutionCommand],
+) -> Callable[[], Any]:
+    def job() -> Any:
+        result_type = vars(sim_session)["SimJobResult"]
+        status_type = vars(sim_session)["SimJobStatus"]
+        if not job_config.dry_run or job_config.apply_confirmed:
+            return result_type(
+                job_name=job_config.job_name,
+                status=status_type.BLOCKED,
+                reason="console sim fixture requires dry_run=True and apply_confirmed=False",
+            )
+        return result_type(
+            job_name=job_config.job_name,
+            status=status_type.DRY_RUN,
+            reason="本地 SIM 预演完成，未写库",
+            processed_command_count=len(commands),
+        )
+
+    return job
+
+
 def create_sim_config_dry_run_provider(
     config: ConsoleDryRunConfig,
     *,
-    job_factory: SimRuntimeJobFactory | None = None,
+    job_factory: SimRuntimeJobFactory | None = _sim_console_fixture_job_factory,
     session_factory: SimSessionFactory = SimLocalSession,
 ) -> DryRunProvider:
     assembly = assemble_config(config)
@@ -223,7 +271,7 @@ def _commands_blocked_reason(
 def _map_paper_result(result: PaperSessionResult) -> DryRunActionResult:
     job = result.job_results[0] if result.job_results else None
     job_status = _value(job.status) if job is not None else _value(result.status)
-    run_status = job_status
+    run_status = _value(result.status)
     return DryRunActionResult(
         session_status=_value(result.status),
         job_status=job_status,
@@ -237,7 +285,7 @@ def _map_paper_result(result: PaperSessionResult) -> DryRunActionResult:
 def _map_sim_result(result: SimSessionResult) -> DryRunActionResult:
     job = result.job_results[0] if result.job_results else None
     job_status = _value(job.status) if job is not None else _value(result.status)
-    run_status = job_status
+    run_status = _value(result.status)
     return DryRunActionResult(
         session_status=_value(result.status),
         job_status=job_status,

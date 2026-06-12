@@ -784,3 +784,70 @@ uv run ruff check .
 uv run mypy src
 git diff --check
 ```
+
+## Stage T.3 Console Local Dry-run Fixture Wiring Facts
+
+Baseline：`stage-t2-console-dry-run-config-assembly-layout-fix / 45e470d`。
+
+Stage T.3 wires valid UI configuration to local Paper/SIM dry-run fixture
+execution. It keeps the accepted LocalSession boundary and still does not
+enable apply, DB writes, broker/live/network targets or durable history.
+
+Implemented behavior：
+
+- Configuration page still builds a typed `ExecutionCommand` from UI fields。
+- The command always uses `ExecutionTarget.MOCK` and is displayed as
+  `MOCK only` / `仅本地模拟，不连接真实交易所`。
+- `create_paper_config_dry_run_provider(...)` now supplies a console-local
+  dry-run fixture job factory by default when config is valid。
+- `create_sim_config_dry_run_provider(...)` now supplies a console-local dry-run
+  fixture job factory by default when config is valid。
+- The fixture factories return local `DRY_RUN` job results with processed
+  command count and no coordinator/repository execution。
+- `PaperLocalSession.run()` and `SimLocalSession.run()` map those fixture jobs to
+  `DRY_RUN_COMPLETED` session results。
+- Console results keep `DB delta = 0` and target `MOCK only`。
+- Results history remains in-memory / Streamlit session-state only。
+
+Paper dry-run result fields：
+
+- session status：`DRY_RUN_COMPLETED`。
+- job status：`DRY_RUN`。
+- run status：`DRY_RUN_COMPLETED`。
+- database write delta：`0`。
+- target：`MOCK only`。
+
+SIM dry-run result fields：
+
+- session status：`DRY_RUN_COMPLETED`。
+- job status：`DRY_RUN`。
+- run status：`DRY_RUN_COMPLETED`。
+- database write delta：`0`。
+- target：`MOCK only`。
+
+Stage T.3 safety boundaries：
+
+- invalid UI config still returns `BLOCKED` before session execution。
+- lower-level wiring without a job factory still returns `BLOCKED`。
+- non-`MOCK` command targets remain impossible from UI config and are blocked if
+  injected in tests。
+- action handling converts any nonzero DB delta into `BLOCKED`。
+- apply buttons remain disabled。
+- no Paper/SIM apply path is wired。
+- no DB, ledger, repository, coordinator or harness call is made from the
+  Console。
+- no broker, CTP, SimNow, LIVE or network integration is added。
+- no `ExecutionTarget.PAPER`, `ExecutionTarget.SIM` or `ExecutionTarget.LIVE`
+  enablement is added。
+- no schema or Alembic migration is added。
+- no dependency is added。
+
+Stage T.3 validation：
+
+```bash
+uv run pytest tests/unit/operator_console
+uv run pytest
+uv run ruff check .
+uv run mypy src
+git diff --check
+```

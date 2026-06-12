@@ -94,12 +94,15 @@ def test_required_safety_action_risk_and_result_labels_exist() -> None:
         assert value in labels.RESULT_LABELS.values()
 
     assert labels.config_label("missing_fields") == "缺少字段"
+    assert labels.config_label("ready_for_dry_run") == "配置可用于预演"
     assert labels.section_label("typed_command_preview") == "typed 命令预览"
+    assert labels.section_label("command_sources") == "命令来源"
     assert labels.section_label("result_history") == "最近预演历史"
     assert (
         labels.config_text("preview_blocked")
         == "当前配置还不能生成 typed dry-run command preview。"
     )
+    assert labels.config_text("preview_ready") == "配置可用于预演。"
 
 
 def test_blocked_reason_labels_are_user_facing_chinese() -> None:

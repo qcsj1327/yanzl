@@ -266,8 +266,11 @@ def test_main_default_entry_uses_session_state_config_provider(monkeypatch) -> N
             *fake_streamlit.ui.subheaders,
         ]
     )
-    assert "⚠️ 本次预演未执行" in rendered
-    assert "当前缺少完整的 Paper 预演配置，因此没有执行" in rendered
+    assert "会话状态: 预演完成" in rendered
+    assert "任务状态: 预演" in rendered
+    assert "运行状态: 预演完成" in rendered
+    assert "数据库写入变化: 0" in rendered
+    assert "目标类型: 仅本地模拟，不连接真实交易所" in rendered
     history = fake_streamlit.session_state["operator_console_result_history"]
     assert isinstance(history, tuple)
     assert history[0].mode == "PAPER"
@@ -435,6 +438,7 @@ def test_configuration_page_renders_typed_command_preview_from_filled_form() -> 
 
     rendered = "\n".join(str(item) for item in [*ui.writes, *ui.markdowns, *ui.subheaders])
     assert "typed 命令预览" in rendered
+    assert "配置可用于预演。" in rendered
     assert "**账户 ID:** account-1" in rendered
     assert "**交易日:** 2026-06-12" in rendered
     assert "**行情合约:** au2608" in rendered
@@ -610,7 +614,7 @@ def test_apply_click_does_not_call_dry_run_provider() -> None:
     assert calls == 0
 
 
-def test_dry_run_uses_session_state_config_provider_and_blocks_without_job_factory() -> None:
+def test_paper_dry_run_uses_session_state_config_provider_and_completes() -> None:
     ui = FakeUI(
         selected_label=labels.page_title(OperatorPage.PAPER_SESSION.value),
         clicked_labels={"运行 Paper 预演"},
@@ -620,12 +624,38 @@ def test_dry_run_uses_session_state_config_provider_and_blocks_without_job_facto
     render_console(ui, default_console_view_model())
 
     rendered = "\n".join(str(item) for item in [*ui.markdowns, *ui.subheaders])
-    assert "⚠️ 本次预演未执行" in rendered
-    assert "当前缺少完整的 Paper 预演配置，因此没有执行" in rendered
+    assert "会话状态: 预演完成" in rendered
+    assert "任务状态: 预演" in rendered
+    assert "运行状态: 预演完成" in rendered
+    assert "数据库写入变化: 0" in rendered
+    assert "目标类型: 仅本地模拟，不连接真实交易所" in rendered
     history = ui.session_state["operator_console_result_history"]
     assert isinstance(history, tuple)
     assert len(history) == 1
     assert history[0].mode == "PAPER"
+    assert history[0].session_status == "DRY_RUN_COMPLETED"
+
+
+def test_sim_dry_run_uses_session_state_config_provider_and_completes() -> None:
+    ui = FakeUI(
+        selected_label=labels.page_title(OperatorPage.SIM_SESSION.value),
+        clicked_labels={"运行 SIM 预演"},
+        session_state={"operator_console_dry_run_config": _valid_config()},
+    )
+
+    render_console(ui, default_console_view_model())
+
+    rendered = "\n".join(str(item) for item in [*ui.markdowns, *ui.subheaders])
+    assert "会话状态: 预演完成" in rendered
+    assert "任务状态: 预演" in rendered
+    assert "运行状态: 预演完成" in rendered
+    assert "数据库写入变化: 0" in rendered
+    assert "目标类型: 仅本地模拟，不连接真实交易所" in rendered
+    history = ui.session_state["operator_console_result_history"]
+    assert isinstance(history, tuple)
+    assert len(history) == 1
+    assert history[0].mode == "SIM"
+    assert history[0].session_status == "DRY_RUN_COMPLETED"
 
 
 def test_results_page_reads_in_memory_history_only() -> None:

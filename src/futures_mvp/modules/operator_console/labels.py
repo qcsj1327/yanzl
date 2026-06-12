@@ -104,6 +104,7 @@ RESULT_LABELS: dict[str, str] = {
 
 CONFIG_LABELS: dict[str, str] = {
     "missing_fields": "缺少字段",
+    "ready_for_dry_run": "配置可用于预演",
 }
 
 FORBIDDEN_ACTION_LABELS: dict[str, str] = {
@@ -297,6 +298,7 @@ REASON_LABELS: dict[str, str] = {
 
 CONFIG_TEXT: dict[str, str] = {
     "preview_blocked": "当前配置还不能生成 typed dry-run command preview。",
+    "preview_ready": "配置可用于预演。",
 }
 
 BLOCKED_RESULT_TEXT: dict[str, str] = {

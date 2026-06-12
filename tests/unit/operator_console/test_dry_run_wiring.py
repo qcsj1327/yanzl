@@ -101,7 +101,7 @@ def test_paper_dry_run_provider_uses_local_session_path_with_safe_config() -> No
     assert FakePaperSession.configs[0].apply_confirmed is False
     assert result.session_status == "DRY_RUN_COMPLETED"
     assert result.job_status == "DRY_RUN"
-    assert result.run_status == "DRY_RUN"
+    assert result.run_status == "DRY_RUN_COMPLETED"
     assert result.db_delta == 0
     assert result.target == "MOCK only"
 
@@ -124,7 +124,7 @@ def test_sim_dry_run_provider_uses_local_session_path_with_safe_config() -> None
     assert FakeSimSession.configs[0].apply_confirmed is False
     assert result.session_status == "DRY_RUN_COMPLETED"
     assert result.job_status == "DRY_RUN"
-    assert result.run_status == "DRY_RUN"
+    assert result.run_status == "DRY_RUN_COMPLETED"
     assert result.db_delta == 0
     assert result.target == "MOCK only"
 
@@ -178,18 +178,24 @@ def test_apply_requested_and_non_mock_target_are_blocked() -> None:
     assert FakeSimSession.calls == 0
 
 
-def test_config_provider_blocks_when_runtime_dependencies_are_missing() -> None:
-    FakePaperSession.calls = 0
+def test_paper_config_provider_runs_console_local_fixture_by_default() -> None:
+    result = create_paper_config_dry_run_provider(_console_config())()
 
-    result = create_paper_config_dry_run_provider(
-        _console_config(),
-        session_factory=FakePaperSession,
-    )()
-
-    assert result.session_status == "BLOCKED"
+    assert result.session_status == "DRY_RUN_COMPLETED"
+    assert result.job_status == "DRY_RUN"
+    assert result.run_status == "DRY_RUN_COMPLETED"
+    assert result.db_delta == 0
     assert result.target == "MOCK only"
-    assert result.reason == "paper dry-run requires a session job factory"
-    assert FakePaperSession.calls == 0
+
+
+def test_sim_config_provider_runs_console_local_fixture_by_default() -> None:
+    result = create_sim_config_dry_run_provider(_console_config())()
+
+    assert result.session_status == "DRY_RUN_COMPLETED"
+    assert result.job_status == "DRY_RUN"
+    assert result.run_status == "DRY_RUN_COMPLETED"
+    assert result.db_delta == 0
+    assert result.target == "MOCK only"
 
 
 def test_config_provider_uses_typed_ui_config_when_dependencies_are_injected() -> None:

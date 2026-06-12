@@ -437,6 +437,7 @@ def _render_configuration(
                 f"{missing_fields}"
             )
     else:
+        preview_col.markdown(labels.config_text("preview_ready"))
         _render_command_preview(preview_col, assembly.preview)
     source_col.subheader(labels.section_label("advanced_config"))
     _render_key_values(source_col, model.configuration.advanced)
