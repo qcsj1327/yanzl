@@ -11,6 +11,7 @@
 - `oms/OMS_TEST_MATRIX.md`：OMS 测试矩阵。
 - `risk/README.md`：风控模块文档入口。
 - `execution/README.md`：执行与 Mock Exchange 模块文档入口。
+- `market_data/INSTRUMENT_RESOLVER_CONTRACT.md`：Instrument Resolver / Market Data Source 合同冻结。
 - `position/README.md`：持仓模块文档入口。
 - `settlement/README.md`：结算模块文档入口。
 - `operations/README.md`：本地开发与运维类文档入口。

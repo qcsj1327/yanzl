@@ -28,6 +28,7 @@ Stage R.1 Operator Console 是本地 Streamlit-first 操作台契约冻结：
 Stage T.1 Local Operator Workflow Hardening 只冻结后续 UI workflow 强化范围：
 
 - 允许未来通过 UI 装配 Paper/SIM dry-run 所需 typed config，字段包括 `account_id`、`trading_day`、`instrument_id`、`trade_instrument_id`、`symbol`、`exchange`、`quantity`、`price`、`max_order_size`、`max_position_size`、`max_daily_loss` 和 allowed instruments。
+- Stage U.1 冻结后，`instrument_id` / `trade_instrument_id` 手填仅是 temporary local fixture；未来普通 Console 用户应选择 `symbol + trading_day + mode` 并查看 Instrument Resolver preview。
 - UI 只生成 typed dry-run command/config preview；缺失或非法配置必须 `BLOCKED` 并显示中文指导。
 - dry-run provider 只能由 typed UI config 构造，且必须是 `dry_run=True`、`apply_confirmed=False`、`apply_requested=False`、target `MOCK` only；nonzero DB delta 必须 `BLOCKED`。
 - result history 初期只允许 in-memory / session-state，属于 observability only，不能成为业务事实或 source-of-truth。

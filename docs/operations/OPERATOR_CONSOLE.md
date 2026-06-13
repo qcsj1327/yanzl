@@ -851,3 +851,46 @@ uv run ruff check .
 uv run mypy src
 git diff --check
 ```
+
+## Stage U.1 Instrument Resolver / Market Data Contract Freeze Impact
+
+Baseline：`stage-t4-console-preview-stable / fa234eb`。
+
+Stage U.1 is documentation-only for Operator Console. Current Console config
+fields `symbol`、`instrument_id` and `trade_instrument_id` remain temporary local
+dry-run fixture inputs. They are not sufficient for domestic futures backtest,
+Paper, SIM or future Live workflows.
+
+Future Console workflow should not ask ordinary users to guess
+`instrument_id` or `trade_instrument_id`. The UI should ask for：
+
+- `symbol`。
+- `trading_day`。
+- mode：Paper / SIM。
+
+Then it should show an Instrument Resolver preview：
+
+- `symbol`。
+- `instrument_id`。
+- `trade_instrument_id`。
+- `exchange`。
+- `contract_role`。
+- `source`。
+- `confidence`。
+- `effective_from / effective_to`。
+- diagnostics。
+
+Console impact boundary：
+
+- main / continuous contract is for market data, backtest and strategy
+  observation only。
+- main / continuous contract must not be used directly for orders。
+- `trade_instrument_id` must be traceable to resolver output。
+- same `symbol + trading_day` must resolve consistently for backtest, Paper,
+  SIM and future Live。
+- Console resolver preview is observability / configuration preview only and
+  must not become a business fact source-of-truth。
+
+Stage U.1 does not implement resolver preview. It does not add code, schema,
+tests, CTP, SimNow, broker, live feed, network calls or non-`MOCK` execution
+targets.

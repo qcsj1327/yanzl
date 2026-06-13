@@ -50,6 +50,7 @@
 - `instrument_id` 是当前已经冻结的期货合约字段。
 - Stage G 已在 Market Data domain/schema 中实现 `symbol` 和 `trade_instrument_id`。
 - Market Data identity 当前包括：`symbol` 是基础品种，例如 `au`；`instrument_id` 是行情合约 identity；`trade_instrument_id` 是交易合约 identity；`exchange` 是交易所；`trading_day` 是 calendar/session rule 给出的交易日。
+- Stage U.1 冻结 future Instrument Resolver 合同：`symbol` 是品种，`instrument_id` 是行情/主连合约，`trade_instrument_id` 是实际交易合约；`contract_role` 可为 `BASE_SYMBOL`、`CONTINUOUS_MAIN`、`TRADE_CONTRACT` 或 `EXPIRED_CONTRACT`。Resolver 只解析身份，不产生交易信号，不决定方向，不写账本。详见 `docs/market_data/INSTRUMENT_RESOLVER_CONTRACT.md`。
 - 非 Market Data 事实如果后续要分离 `symbol`、`instrument_id`、`trade_instrument_id`，必须通过 domain migration；不得通过 `raw_payload` 或 JSON 字段偷带缺失的身份字段。
 
 价格：
