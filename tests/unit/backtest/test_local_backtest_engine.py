@@ -2,14 +2,19 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
+from typing import cast
 
 from futures_mvp.modules.backtest import (
     BacktestRequest,
     BacktestStatus,
     DecisionTranslationResult,
     DecisionTranslationStatus,
+    FillModelResult,
+    FillModelStatus,
     LocalBacktestEngine,
+    SimulatedOrder,
     SimulatedOrderStatus,
+    SimulatedTrade,
 )
 from futures_mvp.modules.market_data.contracts import HistoricalBarsResult, HistoricalDataStatus
 from futures_mvp.modules.market_data.fixtures import StaticHistoricalDataFixtureProvider
@@ -74,6 +79,7 @@ def test_valid_request_returns_completed_with_flat_noop_outputs() -> None:
         translation.status is DecisionTranslationStatus.SKIPPED
         for translation in result.decision_translation_results
     )
+    assert result.fill_model_results == ()
     assert result.gap_report == ()
     assert result.simulated_orders == ()
     assert result.simulated_trades == ()
@@ -170,6 +176,11 @@ def test_buy_and_hold_backtest_records_buy_then_hold_with_one_created_order() ->
     assert order.resolver_source == "static_fixture"
     assert order.resolver_confidence == "static_fixture"
     assert order.order_type == "MARKET"
+    assert len(result.fill_model_results) == 1
+    fill_result = result.fill_model_results[0]
+    assert fill_result.status is FillModelStatus.NO_FILL
+    assert fill_result.simulated_trade is None
+    assert fill_result.diagnostics[0] == "no fill model selected"
     assert result.simulated_trades == ()
     assert tuple(point.equity for point in result.equity_curve) == (
         Decimal("100000"),
@@ -193,7 +204,10 @@ def test_buy_and_hold_order_id_is_deterministic() -> None:
     assert second.status is BacktestStatus.COMPLETED
     assert len(first.simulated_orders) == 1
     assert len(second.simulated_orders) == 1
+    assert len(first.fill_model_results) == 1
+    assert len(second.fill_model_results) == 1
     assert first.simulated_orders[0].order_id == second.simulated_orders[0].order_id
+    assert first.fill_model_results == second.fill_model_results
     assert first.simulated_trades == second.simulated_trades == ()
     assert first.equity_curve == second.equity_curve
 
@@ -260,6 +274,91 @@ def test_decision_translator_error_returns_backtest_error() -> None:
     assert len(result.strategy_decisions) == 1
     assert len(result.decision_translation_results) == 1
     assert result.simulated_orders == ()
+    assert result.simulated_trades == ()
+    assert result.equity_curve == ()
+
+
+def test_fill_model_blocked_returns_backtest_blocked() -> None:
+    class BlockingFillModel:
+        def fill(self, order: object) -> FillModelResult:
+            return FillModelResult(
+                status=FillModelStatus.BLOCKED,
+                diagnostics=("fill blocked for test",),
+            )
+
+    result = LocalBacktestEngine(
+        strategy=BuyAndHoldStrategy(),
+        fill_model=BlockingFillModel(),
+    ).run(_request())
+
+    assert result.status is BacktestStatus.BLOCKED
+    assert result.diagnostics.messages == (
+        "fill model blocked",
+        "fill blocked for test",
+    )
+    assert len(result.simulated_orders) == 1
+    assert len(result.fill_model_results) == 1
+    assert result.fill_model_results[0].status is FillModelStatus.BLOCKED
+    assert result.simulated_trades == ()
+    assert result.equity_curve == ()
+
+
+def test_fill_model_error_returns_backtest_error() -> None:
+    class ErrorFillModel:
+        def fill(self, order: object) -> FillModelResult:
+            return FillModelResult(
+                status=FillModelStatus.ERROR,
+                diagnostics=("fill error for test",),
+            )
+
+    result = LocalBacktestEngine(
+        strategy=BuyAndHoldStrategy(),
+        fill_model=ErrorFillModel(),
+    ).run(_request())
+
+    assert result.status is BacktestStatus.ERROR
+    assert result.diagnostics.messages == (
+        "fill model failed",
+        "fill error for test",
+    )
+    assert len(result.simulated_orders) == 1
+    assert len(result.fill_model_results) == 1
+    assert result.fill_model_results[0].status is FillModelStatus.ERROR
+    assert result.simulated_trades == ()
+    assert result.equity_curve == ()
+
+
+def test_fill_model_generated_trade_returns_backtest_error() -> None:
+    class TradingFillModel:
+        def fill(self, order: object) -> FillModelResult:
+            simulated_order = cast(SimulatedOrder, order)
+            trade = SimulatedTrade(
+                trade_id="unexpected-trade",
+                order_id=simulated_order.order_id,
+                fill_price=Decimal("101"),
+                fill_qty=Decimal("1"),
+                fill_bar_ts=simulated_order.created_bar_ts,
+                resolver_source=simulated_order.resolver_source,
+                resolver_confidence=simulated_order.resolver_confidence,
+                resolver_lineage=simulated_order.resolver_lineage,
+            )
+            return FillModelResult(
+                status=FillModelStatus.FILLED,
+                simulated_trade=trade,
+                diagnostics=("unexpected trade for test",),
+            )
+
+    result = LocalBacktestEngine(
+        strategy=BuyAndHoldStrategy(),
+        fill_model=TradingFillModel(),
+    ).run(_request())
+
+    assert result.status is BacktestStatus.ERROR
+    assert result.diagnostics.messages == (
+        "fill model generated simulated trade before trade generation stage",
+    )
+    assert len(result.simulated_orders) == 1
+    assert len(result.fill_model_results) == 1
     assert result.simulated_trades == ()
     assert result.equity_curve == ()
 

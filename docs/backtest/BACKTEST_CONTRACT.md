@@ -784,3 +784,45 @@ state.
 `SimulatedOrder` and `FillModelResult` remain Backtest research /
 observability-only objects and must not be treated as OMS, broker, exchange,
 Trade ledger or Accounting truth.
+
+## Stage V.14 Backtest NoFillModel Integration Status
+
+Baseline：`stage-v13-no-fill-model-skeleton / a7e96db`。
+
+Stage V.14 wires Tier 0 `NoFillModel` into `LocalBacktestEngine` after each
+created simulated order：
+
+```text
+StrategyDecision
+-> DecisionTranslator
+-> SimulatedOrder(CREATED)
+-> NoFillModel.fill(order)
+-> FillModelResult(NO_FILL)
+```
+
+Backtest records `fill_model_results` in `BacktestResult`.
+
+Integrated behavior：
+
+- `NoOpStrategy` produces zero simulated orders, zero fill model results and
+  zero simulated trades。
+- `BuyAndHoldStrategy` produces one `CREATED` simulated order and one
+  `FillModelResult(status=NO_FILL)`。
+- `NoFillModel` never produces `SimulatedTrade`。
+- `simulated_trades` remains empty in successful V.14 paths。
+- equity and cash curves remain flat because there is still no fill / PnL
+  model。
+
+Failure behavior：
+
+- `FillModelStatus.BLOCKED` returns `BacktestStatus.BLOCKED`。
+- `FillModelStatus.ERROR` returns `BacktestStatus.ERROR`。
+- any fill model result that contains a `SimulatedTrade` fails closed as
+  `BacktestStatus.ERROR` until a separate trade generation stage exists。
+- any enabled fill-like status other than `NO_FILL` fails closed before trade
+  generation。
+
+Stage V.14 does not implement next-bar-open fill, next-bar-close fill, midpoint
+fill, advanced fill, `SimulatedTrade` generation, equity / cash / PnL updates,
+DB writes, OMS / Trade / Position / Accounting mutation, broker / live /
+network integration or execution target enablement.

@@ -34,6 +34,7 @@ class BacktestRequest:
     strategy_runtime: Any | None = None
     strategy: Any | None = None
     decision_translator: Any | None = None
+    fill_model: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -156,6 +157,7 @@ class BacktestResult:
     strategy_runtime_results: tuple[StrategyRuntimeResult, ...] = ()
     strategy_decisions: tuple[StrategyDecision, ...] = ()
     decision_translation_results: tuple[DecisionTranslationResult, ...] = ()
+    fill_model_results: tuple[FillModelResult, ...] = ()
     simulated_orders: tuple[SimulatedOrder, ...] = ()
     simulated_trades: tuple[SimulatedTrade, ...] = ()
     gap_report: tuple[str, ...] = ()
