@@ -7738,3 +7738,43 @@ API / CTP / SimNow / broker / network, or enable `ExecutionTarget.PAPER`,
 Default schema decision remains NO schema. Durable historical market-data
 storage requires a separate future contract freeze. The next allowed
 implementation stage is `U.6 Static Historical Data Fixture`.
+
+## Stage V.1 Backtest Contract Freeze
+
+Baseline：`stage-u6-static-historical-data-fixture / 95508e0`。
+
+Stage V.1 is documentation-only. The detailed contract is
+`docs/backtest/BACKTEST_CONTRACT.md`.
+
+Backtest is local, deterministic and research / observability only. Future
+Backtest implementation must consume resolver-derived identity through
+`InstrumentResolver` / `ResolverConsumerContext` and standardized historical
+market data through `HistoricalBar`, `HistoricalTick` and `HistoricalQuote`.
+
+Future Backtest request identity starts from `strategy_name`, `symbol`,
+trading-day range, `timeframe`, `initial_cash`, commission model placeholder,
+slippage model placeholder, resolver config and data source selection. It must
+not accept manual `instrument_id`, `trade_instrument_id` or `exchange` as
+source-of-truth fields.
+
+Market data rules remain no-lookahead, immutable, session-aware and
+`trading_day`-bound. Continuous/main contract is used for market observation;
+trade contract is used for simulated execution identity. Missing bars fail
+closed unless a separate accepted gap policy defines another deterministic
+behavior.
+
+Backtest output may include status, metrics summary placeholder, simulated
+orders / events / trades view, equity curve, diagnostics, resolver lineage,
+data source summary and gap report. Those outputs are research artifacts only
+and are not OMS truth, Trade ledger truth, Position truth, Accounting truth,
+live execution truth or broker report truth.
+
+Backtest must not write production ledger, OMS, Trade, Position or Accounting;
+must not use raw CSV / vendor / broker payloads or `raw_payload` as facts or
+identity; must not connect live feed / quote API / CTP / SimNow / broker /
+network; and must not enable `ExecutionTarget.PAPER`, `ExecutionTarget.SIM` or
+`ExecutionTarget.LIVE`.
+
+Default schema decision remains NO schema. Durable Backtest run/result storage
+requires a separate future contract freeze. The next allowed implementation
+stage is `V.2 Local Backtest Engine Skeleton`.

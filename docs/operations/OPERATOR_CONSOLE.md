@@ -1087,3 +1087,32 @@ Safety boundary remains unchanged：
   `ExecutionTarget.LIVE` enablement。
 - historical market data does not write OMS, Trade, Position or Accounting。
 - historical market data does not decide signal, direction, price or quantity。
+
+## Stage V.1 Backtest Contract Impact
+
+Baseline：`stage-u6-static-historical-data-fixture / 95508e0`。
+
+Stage V.1 is documentation-only. The detailed contract is
+`docs/backtest/BACKTEST_CONTRACT.md`.
+
+Backtest remains local, deterministic and research / observability only. Any
+future Console Backtest surface must use `symbol`, trading-day range and
+timeframe as ordinary inputs, then consume resolver-derived identity and
+standardized historical bars, ticks or quotes. Console must not let operators
+manually override `instrument_id`, `trade_instrument_id` or `exchange` to bypass
+resolver identity.
+
+Backtest result display, if added in a future stage, must clearly label orders,
+events, trades, equity curve and metrics as simulated research output. It must
+not present Backtest output as OMS, Trade, Position, Accounting, broker, live
+execution or real account truth.
+
+Safety boundary remains unchanged：
+
+- no schema or Alembic migration。
+- no DB or production ledger write。
+- no live feed, quote API, CTP, SimNow, broker or network integration。
+- no `ExecutionTarget.PAPER`, `ExecutionTarget.SIM` or
+  `ExecutionTarget.LIVE` enablement。
+- no raw CSV / vendor / broker payload or `raw_payload` as facts。
+- Backtest does not write OMS, Trade, Position or Accounting。

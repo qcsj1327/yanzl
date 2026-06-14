@@ -2577,3 +2577,27 @@ deterministic.
 Historical market data sources do not write OMS, Trade, Position, Accounting or
 ledger facts. Default schema decision remains NO schema. The next allowed
 implementation stage is `U.6 Static Historical Data Fixture`.
+
+## 15. Stage V.1 Backtest Contract Freeze
+
+Baseline：`stage-u6-static-historical-data-fixture / 95508e0`。
+
+Stage V.1 freezes the local Backtest contract in
+`docs/backtest/BACKTEST_CONTRACT.md`. It is documentation-only and does not add
+schema, code, tests, DB writes, live feed, quote API, CTP, SimNow, broker,
+network integration or execution target enablement.
+
+Backtest is local, deterministic and research / observability only. It must
+consume resolver-derived identity through `InstrumentResolver` /
+`ResolverConsumerContext` and standardized historical market data through
+`HistoricalBar`, `HistoricalTick` and `HistoricalQuote`.
+
+Backtest must not consume raw CSV rows, raw vendor payloads, raw broker
+payloads or `raw_payload` as facts. Market data consumption is no-lookahead,
+immutable, session-aware and `trading_day`-bound. Continuous/main contracts are
+for observation; trade contracts are for simulated execution identity.
+
+Backtest outputs are simulated result views only and are not OMS, Trade,
+Position, Accounting, live execution, broker report or real account truth. The
+next allowed implementation stage is `V.2 Local Backtest Engine Skeleton`, with
+default schema decision NO schema.
