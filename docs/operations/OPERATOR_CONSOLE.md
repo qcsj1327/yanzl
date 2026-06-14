@@ -1060,3 +1060,30 @@ Safety boundary remains unchanged：
 - no `ExecutionTarget.PAPER`, `ExecutionTarget.SIM` or
   `ExecutionTarget.LIVE` enablement。
 - resolver context does not decide direction, price, quantity or signal。
+
+## Stage U.5 Historical Market Data Contract Impact
+
+Baseline：`stage-u43-resolver-consumer-context-local-wiring / 0ad8c5e`。
+
+Stage U.5 is documentation-only. The detailed contract is
+`docs/market_data/HISTORICAL_MARKET_DATA_CONTRACT.md`.
+
+Historical market data for Backtest, Paper and SIM must be standardized before
+consumption. Accepted local consumers may use only standardized bars, ticks and
+quotes that carry resolver-derived identity. Raw CSV rows, raw vendor payloads,
+raw broker payloads, filenames, UI labels, free-form metadata and `raw_payload`
+must not be treated as market-data facts.
+
+The Operator Console does not become a live feed or quote API surface in U.5.
+It must not display raw payloads as authoritative market data and must not allow
+historical market data source selection to bypass resolver-derived identity.
+
+Safety boundary remains unchanged：
+
+- no schema or Alembic migration。
+- no DB or ledger write。
+- no live feed, quote API, CTP, SimNow, broker or network integration。
+- no `ExecutionTarget.PAPER`, `ExecutionTarget.SIM` or
+  `ExecutionTarget.LIVE` enablement。
+- historical market data does not write OMS, Trade, Position or Accounting。
+- historical market data does not decide signal, direction, price or quantity。

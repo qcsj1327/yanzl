@@ -7697,3 +7697,44 @@ market-data raw strings and manual IDs are forbidden identity fallbacks.
 
 Default schema decision remains NO schema. Durable resolver snapshot storage
 requires a separate `Resolver Snapshot Persistence Contract Freeze`.
+
+## Stage U.5 Historical Market Data Contract Freeze
+
+Baseline：`stage-u43-resolver-consumer-context-local-wiring / 0ad8c5e`。
+
+Stage U.5 is documentation-only. The detailed contract is
+`docs/market_data/HISTORICAL_MARKET_DATA_CONTRACT.md`.
+
+Backtest, Paper and SIM may consume only standardized historical market data：
+
+- standardized bar。
+- standardized tick。
+- standardized quote。
+
+Standardized bars must carry `symbol`, `instrument_id`,
+`trade_instrument_id`, `exchange`, `trading_day`, `session_id`, `timeframe`,
+`bar_ts`, OHLC, `volume`, `turnover` and `open_interest`. Standardized ticks
+must carry timestamp, `last_price`, `volume`, `turnover`, `open_interest` and a
+typed bid/ask ladder. Quote means the latest standardized market snapshot
+available without lookahead.
+
+Bar, tick and quote consumers must not consume raw CSV rows, raw vendor
+payloads, raw broker payloads, filenames, UI labels, free-form metadata or
+`raw_payload` as market-data facts. Market-data identity must remain
+resolver-derived.
+
+Historical observations are immutable and must not be silently rewritten.
+Consumers must not look ahead to future bars, future ticks, future quote
+snapshots or future roll decisions. Day and night sessions are deterministic
+session buckets, and session boundary rules must be explicit. Continuous/main
+contract roll rules must be `trading_day`-bound and deterministic.
+
+Historical market data sources must not write OMS, Trade, Position, Accounting,
+ledger facts, schema or Alembic migrations. They must not generate signals,
+decide direction, price or quantity, submit orders, connect live feed / quote
+API / CTP / SimNow / broker / network, or enable `ExecutionTarget.PAPER`,
+`ExecutionTarget.SIM` or `ExecutionTarget.LIVE`.
+
+Default schema decision remains NO schema. Durable historical market-data
+storage requires a separate future contract freeze. The next allowed
+implementation stage is `U.6 Static Historical Data Fixture`.

@@ -2553,3 +2553,27 @@ Future implementation stages should route identity through a shared resolver
 consumer boundary and preserve resolver lineage on downstream objects. Durable
 resolver snapshots remain a separate future schema decision and require a
 `Resolver Snapshot Persistence Contract Freeze`.
+
+## 14. Stage U.5 Historical Market Data Contract Freeze
+
+Baseline：`stage-u43-resolver-consumer-context-local-wiring / 0ad8c5e`。
+
+Stage U.5 freezes the local historical market data contract in
+`docs/market_data/HISTORICAL_MARKET_DATA_CONTRACT.md`. It is documentation-only
+and does not add schema, code, tests, DB writes, live feed, quote API, CTP,
+SimNow, broker, network integration or non-`MOCK` targets.
+
+Backtest, Paper and SIM may consume only standardized bar, tick and quote
+objects that carry resolver-derived identity. They must not consume raw CSV
+rows, raw vendor payloads, raw broker payloads, filenames, UI labels or
+`raw_payload` as market-data facts.
+
+Historical bars are immutable, must not be rewritten, and must be consumed
+without lookahead. Ticks and quotes follow the same no-lookahead rule. Trading
+sessions are deterministic day/night buckets with explicit session boundary
+semantics, and continuous/main contract roll rules are `trading_day`-bound and
+deterministic.
+
+Historical market data sources do not write OMS, Trade, Position, Accounting or
+ledger facts. Default schema decision remains NO schema. The next allowed
+implementation stage is `U.6 Static Historical Data Fixture`.
