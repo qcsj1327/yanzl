@@ -672,14 +672,30 @@ def _render_resolver_preview(ui: OperatorConsoleUI, resolution: object) -> None:
     _render_key_values(
         ui,
         (
+            ("resolver_notice", "当前为本地静态合约映射，不是真实行情源，不会连接交易所"),
             ("resolver_status", str(getattr(resolution, "status", ""))),
-            ("instrument_id", str(getattr(resolution, "instrument_id", "") or "未解析")),
+            (
+                "instrument_id",
+                _resolver_generated_value(
+                    str(getattr(resolution, "instrument_id", "") or "未解析")
+                ),
+            ),
             (
                 "trade_instrument_id",
-                str(getattr(resolution, "trade_instrument_id", "") or "未解析"),
+                _resolver_generated_value(
+                    str(getattr(resolution, "trade_instrument_id", "") or "未解析")
+                ),
             ),
-            ("exchange", str(getattr(resolution, "exchange", "") or "未解析")),
-            ("resolver_source", str(getattr(resolution, "source", "") or "static fixture only")),
+            (
+                "exchange",
+                _resolver_generated_value(
+                    str(getattr(resolution, "exchange", "") or "未解析")
+                ),
+            ),
+            (
+                "resolver_source",
+                _resolver_source_label(str(getattr(resolution, "source", "") or "")),
+            ),
             ("resolver_confidence", str(getattr(resolution, "confidence", "") or "none")),
             (
                 "effective_window",
@@ -770,16 +786,6 @@ def _read_config_form(
         value=current.price,
         key="operator_console_config_price",
     )
-    instrument_id = second_row[2].text_input(
-        labels.field_label("instrument_id"),
-        value=current.instrument_id,
-        key="operator_console_config_instrument_id",
-    )
-    trade_instrument_id = second_row[3].text_input(
-        labels.field_label("trade_instrument_id"),
-        value=current.trade_instrument_id,
-        key="operator_console_config_trade_instrument_id",
-    )
     max_order_size = third_row[0].number_input(
         labels.field_label("max_order_size"),
         value=current.max_order_size,
@@ -795,18 +801,13 @@ def _read_config_form(
         value=current.max_daily_loss,
         key="operator_console_config_max_daily_loss",
     )
-    exchange = third_row[3].text_input(
-        labels.field_label("exchange"),
-        value=current.exchange,
-        key="operator_console_config_exchange",
-    )
     config = ConsoleDryRunConfig(
         account_id=account_id,
         trading_day=trading_day,
-        instrument_id=instrument_id,
-        trade_instrument_id=trade_instrument_id,
+        instrument_id=current.instrument_id,
+        trade_instrument_id=current.trade_instrument_id,
         symbol=symbol,
-        exchange=exchange,
+        exchange=current.exchange,
         quantity=quantity,
         price=price,
         max_order_size=max_order_size,
@@ -838,21 +839,9 @@ def _normal_config_items(config: ConsoleDryRunConfig) -> tuple[tuple[str, str], 
         ("max order size", _display_config_value(config.max_order_size, config.is_example)),
         ("max position size", _display_config_value(config.max_position_size, config.is_example)),
         ("max daily loss", _display_config_value(config.max_daily_loss, config.is_example)),
-        (
-            "resolver_status",
-            "已解析"
-            if config.resolver_resolution is not None and config.instrument_id.strip()
-            else "未解析",
-        ),
-        ("resolver_note", "由 resolver 生成，不建议手填"),
-        ("instrument_id", _display_config_value(config.instrument_id, config.is_example)),
-        (
-            "trade_instrument_id",
-            _display_config_value(config.trade_instrument_id, config.is_example),
-        ),
-        ("exchange", _display_config_value(config.exchange, config.is_example)),
         ("Paper/SIM mode", "PAPER / SIM"),
         ("dry-run/apply", "dry-run only"),
+        ("resolver_notice", "当前为本地静态合约映射，不是真实行情源，不会连接交易所"),
     )
 
 
@@ -873,12 +862,6 @@ def _dry_run_required_items(
         ("trading_day", _required_display(config.trading_day, "trading_day", missing)),
         ("symbol", _required_display(config.symbol, "symbol", missing)),
         ("resolver_status", "已解析" if resolver_ready else "未解析"),
-        ("instrument_id", _display_config_value(config.instrument_id, config.is_example)),
-        (
-            "trade_instrument_id",
-            _display_config_value(config.trade_instrument_id, config.is_example),
-        ),
-        ("exchange", _display_config_value(config.exchange, config.is_example)),
         ("quantity", _required_display(config.quantity, "quantity", missing)),
         ("price", _required_display(config.price, "price", missing)),
         (
@@ -916,6 +899,20 @@ def _effective_window(effective_from: object, effective_to: object) -> str:
     if effective_from is None or effective_to is None:
         return "未解析"
     return f"{effective_from} / {effective_to}"
+
+
+def _resolver_generated_value(value: str) -> str:
+    if value == "未解析":
+        return value
+    return f"{value}（由 resolver 生成）"
+
+
+def _resolver_source_label(source: str) -> str:
+    if source == "static_fixture":
+        return "static fixture only, not live market source"
+    if not source:
+        return "static fixture only, not live market source"
+    return source
 
 
 def _model_with_session_state(

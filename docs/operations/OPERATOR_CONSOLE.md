@@ -935,3 +935,43 @@ Safety boundary：
 - Console target remains `MOCK only`。
 - no CTP, SimNow, broker, live feed, network call, schema change or Alembic
   migration is added。
+
+## Stage U.2.1 Console Resolver UI Polish
+
+Baseline：`stage-u2-static-instrument-registry-resolver / 9996a7d`。
+
+Stage U.2.1 changes Console UI copy and layout only. It does not change
+resolver safety semantics.
+
+Configuration normal path now keeps editable inputs limited to：
+
+- `symbol`。
+- `trading_day`。
+- quantity / price。
+- max order size / max position size / max daily loss。
+- resolver recommended allowed instruments。
+
+`instrument_id`, `trade_instrument_id` and `exchange` are no longer editable
+normal-form fields. They are shown as resolver-generated, read-only preview
+values：
+
+- 行情合约：由 resolver 生成。
+- 交易合约：由 resolver 生成。
+- 交易所：由 resolver 生成。
+- 来源：`static fixture only, not live market source`。
+- 生效区间。
+- 置信度。
+
+The UI states that the mapping is local static contract mapping only, is not a
+real market data source, and does not connect to an exchange. Unresolved
+resolver status still blocks dry-run. Manual instrument fields cannot bypass
+resolver output in the normal path.
+
+Safety boundary remains unchanged：
+
+- no resolver safety semantic change。
+- no DB write。
+- no schema or Alembic migration。
+- no CTP, SimNow, broker, live feed or network integration。
+- no `ExecutionTarget.PAPER`, `ExecutionTarget.SIM` or
+  `ExecutionTarget.LIVE` enablement。

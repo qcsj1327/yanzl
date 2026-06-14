@@ -22,6 +22,8 @@ class FakeUI:
     writes: list[object] = field(default_factory=list)
     buttons: list[tuple[str, bool, str | None]] = field(default_factory=list)
     selectboxes: list[tuple[str, tuple[str, ...], int, str | None]] = field(default_factory=list)
+    text_inputs: list[tuple[str, str | None]] = field(default_factory=list)
+    number_inputs: list[tuple[str, str | None]] = field(default_factory=list)
     dividers: int = 0
     selected_label: str | None = None
     clicked_labels: set[str] = field(default_factory=set)
@@ -44,9 +46,11 @@ class FakeUI:
         self.writes.append(body)
 
     def text_input(self, label: str, *, value: str = "", key: str | None = None) -> str:
+        self.text_inputs.append((label, key))
         return self._input_value(label, value, key)
 
     def number_input(self, label: str, *, value: str = "", key: str | None = None) -> str:
+        self.number_inputs.append((label, key))
         return self._input_value(label, value, key)
 
     def text_area(self, label: str, *, value: str = "", key: str | None = None) -> str:
@@ -419,7 +423,8 @@ def test_configuration_page_renders_dry_run_required_config() -> None:
     assert "**交易日:** 未配置" in rendered
     assert "**品种:** 未配置" in rendered
     assert "**resolver 状态:** 未解析" in rendered
-    assert "**合约白名单:** 未配置" in rendered
+    assert "**合约白名单:** 未配置" not in rendered
+    assert "**resolver 推荐允许合约:** 未配置" in rendered
     assert "**最大委托数量:** 未配置" in rendered
     assert "**最大持仓数量:** 未配置" in rendered
     assert "**最大日亏损:** 未配置" in rendered
@@ -445,12 +450,13 @@ def test_configuration_page_renders_typed_command_preview_from_filled_form() -> 
     assert "**账户 ID:** account-1" in rendered
     assert "**交易日:** 2026-06-12" in rendered
     assert "**品种:** ao" in rendered
-    assert "**行情合约:** ao9999" in rendered
-    assert "**交易合约:** ao2609" in rendered
-    assert "**交易所:** SHFE" in rendered
-    assert "**来源:** static_fixture" in rendered
+    assert "**行情合约:** ao9999（由 resolver 生成）" in rendered
+    assert "**交易合约:** ao2609（由 resolver 生成）" in rendered
+    assert "**交易所:** SHFE（由 resolver 生成）" in rendered
+    assert "**来源:** static fixture only, not live market source" in rendered
     assert "**置信度:** static_fixture" in rendered
     assert "**生效区间:** 2026-01-01 / 2026-12-31" in rendered
+    assert "当前为本地静态合约映射，不是真实行情源，不会连接交易所" in rendered
     assert "**方向/开平:** BUY / OPEN" in rendered
     assert "**数量:** 1" in rendered
     assert "**价格:** 500" in rendered
@@ -468,6 +474,22 @@ def test_configuration_page_renders_missing_fields_list() -> None:
     assert "当前配置还不能生成 typed dry-run command preview。" in rendered
     assert "原因: 当前缺少必填配置，因此没有执行" in rendered
     assert "缺少字段: 账户 ID, 交易日, 品种" in rendered
+
+
+def test_configuration_normal_form_does_not_render_editable_instrument_inputs() -> None:
+    ui = FakeUI(
+        selected_label=labels.page_title(OperatorPage.CONFIGURATION.value),
+        input_values=_valid_config_inputs(),
+    )
+
+    render_console(ui, default_console_view_model())
+
+    input_keys = {key for _label, key in [*ui.text_inputs, *ui.number_inputs]}
+    assert "operator_console_config_symbol" in input_keys
+    assert "operator_console_config_trading_day" in input_keys
+    assert "operator_console_config_instrument_id" not in input_keys
+    assert "operator_console_config_trade_instrument_id" not in input_keys
+    assert "operator_console_config_exchange" not in input_keys
 
 
 def test_live_locked_page_renders_strong_warning() -> None:
@@ -601,7 +623,10 @@ def test_sim_blocked_dry_run_renders_user_guidance() -> None:
     rendered = "\n".join(str(item) for item in [*ui.markdowns, *ui.subheaders])
     assert "⚠️ 本次预演未执行" in rendered
     assert "当前缺少完整的 SIM 预演配置，因此没有执行" in rendered
-    assert "2. 检查账户 ID、交易日、合约白名单、最大单笔数量、最大持仓数量、最大日亏损" in rendered
+    assert (
+        "2. 检查账户 ID、交易日、resolver 推荐允许合约、最大单笔数量、最大持仓数量、最大日亏损"
+        in rendered
+    )
 
 
 def test_apply_click_does_not_call_dry_run_provider() -> None:

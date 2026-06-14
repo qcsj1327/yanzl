@@ -59,6 +59,7 @@ def test_default_config_view_model_is_unconfigured_and_mock_only() -> None:
     assert model.configuration.dry_run_config.target == "MOCK only"
     assert model.configuration.dry_run_config.apply_requested is False
     assert model.configuration.validation.blocked is True
-    assert "instrument_id" in dict(model.configuration.dry_run_required)
-    assert "trade_instrument_id" in dict(model.configuration.dry_run_required)
+    assert "instrument_id" not in dict(model.configuration.dry_run_required)
+    assert "trade_instrument_id" not in dict(model.configuration.dry_run_required)
+    assert "resolver_status" in dict(model.configuration.dry_run_required)
     assert model.results.history == ()

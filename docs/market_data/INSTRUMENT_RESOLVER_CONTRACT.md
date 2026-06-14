@@ -251,3 +251,19 @@ from the resolver result. Manual contract fields remain visible only as
 advanced review fields labeled as resolver-generated and not recommended for
 manual entry. Unresolved resolver status blocks dry-run config assembly and
 does not fail open.
+
+## Stage U.2.1 Console Resolver UI Polish
+
+Baseline：`stage-u2-static-instrument-registry-resolver / 9996a7d`。
+
+Stage U.2.1 is UI/docs/tests polish only. The resolver contract and safety
+semantics are unchanged.
+
+Operator Console normal configuration no longer exposes editable
+`instrument_id`, `trade_instrument_id` or `exchange` fields. Operators provide
+`symbol + trading_day`; resolver-generated identities are displayed read-only
+in the resolver preview.
+
+The resolver preview must continue to state that this is local static fixture
+mapping only, not a live market source, and that no exchange connection is
+made.

@@ -178,13 +178,14 @@ FIELD_LABELS: dict[str, str] = {
     "resolver_confidence": "置信度",
     "effective_window": "生效区间",
     "resolver_note": "合约来源",
+    "resolver_notice": "resolver 说明",
     "quantity": "数量",
     "price": "价格",
-    "allowed instruments": "允许合约",
+    "allowed instruments": "resolver 推荐允许合约",
     "direction_offset": "方向/开平",
     "dry_run": "dry-run",
     "db_write": "写库",
-    "instrument whitelist": "合约白名单",
+    "instrument whitelist": "resolver 推荐允许合约",
     "max_order_size": "最大委托数量",
     "max_position_size": "最大持仓数量",
     "max_daily_loss": "最大日亏损",
@@ -315,7 +316,9 @@ CONFIG_TEXT: dict[str, str] = {
 BLOCKED_RESULT_TEXT: dict[str, str] = {
     "description": "系统已安全阻断本次操作，没有写入数据库，也没有连接真实交易所。",
     "next_step_config": "1. 打开配置中心",
-    "next_step_check": "2. 检查账户 ID、交易日、合约白名单、最大单笔数量、最大持仓数量、最大日亏损",
+    "next_step_check": (
+        "2. 检查账户 ID、交易日、resolver 推荐允许合约、最大单笔数量、最大持仓数量、最大日亏损"
+    ),
     "next_step_retry": "3. 回到 Paper/SIM 页面重新运行预演",
     "safe_db_delta_zero": "✅ 数据库写入变化：0",
     "safe_target_mock": "✅ 目标类型：仅本地模拟，不连接真实交易所",
