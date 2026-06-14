@@ -480,3 +480,58 @@ V.10 DecisionTranslator Skeleton
 V.11 Simulated Fill Model Skeleton
 V.12 Backtest Equity / PnL Contract
 ```
+
+## Stage V.10 DecisionTranslator Skeleton Status
+
+Baseline：`stage-v9-simulated-order-model-contract-freeze / 8529f9b`。
+
+Stage V.10 implements the research-only `DecisionTranslator` skeleton. It is a
+standalone Backtest simulation component and does not change
+`LocalBacktestEngine` equity, fill or persistence behavior.
+
+Translation rules：
+
+- `BUY` => `SimulatedOrder(status=CREATED)`。
+- `HOLD` => `DecisionTranslationStatus.SKIPPED` and no order。
+- `SELL` => `DecisionTranslationStatus.REJECTED` until a fill and position
+  model exists。
+- `CLOSE` => `DecisionTranslationStatus.REJECTED` until a fill and position
+  model exists。
+- missing resolver lineage => `DecisionTranslationStatus.BLOCKED`。
+- missing current bar => `DecisionTranslationStatus.BLOCKED`。
+- missing `BUY.expected_price` uses `current_bar.close` deterministically。
+- quantity is the fixed research placeholder `1` unless a later accepted stage
+  defines strategy sizing。
+- order type is the fixed research placeholder `MARKET` unless a later accepted
+  stage defines order-type modeling。
+
+The generated `order_id` is deterministic from：
+
+- `strategy_name`。
+- current bar timestamp。
+- decision type。
+- `symbol`。
+- `instrument_id`。
+- `trade_instrument_id`。
+- `exchange`。
+- `trading_day`。
+
+`DecisionTranslator` carries resolver lineage into `SimulatedOrder`：
+
+- `symbol`。
+- `instrument_id`。
+- `trade_instrument_id`。
+- `exchange`。
+- `trading_day`。
+- `resolver_source`。
+- `resolver_confidence`。
+
+Stage V.10 does not generate `SimulatedTrade`, does not implement a fill model,
+does not update equity / PnL, does not write DB, does not write OMS / Trade /
+Position / Accounting, does not connect broker / CTP / SimNow / live feed /
+network and does not enable `ExecutionTarget.PAPER`, `ExecutionTarget.SIM` or
+`ExecutionTarget.LIVE`.
+
+`SimulatedOrder` remains a Backtest research / observability object only. It is
+not an OMS order, broker order, exchange order, ledger fact or production
+source-of-truth.

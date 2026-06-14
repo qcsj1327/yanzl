@@ -8,7 +8,13 @@ from futures_mvp.modules.backtest.models import (
     BacktestSimulatedOrder,
     BacktestSimulatedTrade,
     BacktestStatus,
+    DecisionTranslationResult,
+    DecisionTranslationStatus,
+    SimulatedOrder,
+    SimulatedOrderStatus,
+    SimulatedTrade,
 )
+from futures_mvp.modules.backtest.translator import DecisionTranslator
 
 __all__ = [
     "BacktestDataSummary",
@@ -19,6 +25,12 @@ __all__ = [
     "BacktestSimulatedOrder",
     "BacktestSimulatedTrade",
     "BacktestStatus",
+    "DecisionTranslationResult",
+    "DecisionTranslationStatus",
+    "DecisionTranslator",
     "LocalBacktestEngine",
+    "SimulatedOrder",
+    "SimulatedOrderStatus",
+    "SimulatedTrade",
     "run_backtest",
 ]

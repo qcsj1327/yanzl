@@ -65,9 +65,25 @@ class BacktestEquityPoint:
     cash: Decimal
 
 
+class SimulatedOrderStatus(StrEnum):
+    CREATED = "CREATED"
+    REJECTED = "REJECTED"
+    FILLED = "FILLED"
+    CANCELLED = "CANCELLED"
+
+
+class DecisionTranslationStatus(StrEnum):
+    CREATED = "CREATED"
+    SKIPPED = "SKIPPED"
+    REJECTED = "REJECTED"
+    BLOCKED = "BLOCKED"
+    ERROR = "ERROR"
+
+
 @dataclass(frozen=True)
-class BacktestSimulatedOrder:
-    simulated_order_id: str
+class SimulatedOrder:
+    order_id: str
+    strategy_name: str
     symbol: str
     instrument_id: str
     trade_instrument_id: str
@@ -75,21 +91,41 @@ class BacktestSimulatedOrder:
     trading_day: date
     side: str
     quantity: Decimal
-    source: str = "backtest_simulated_research_only"
+    expected_price: Decimal
+    order_type: str
+    created_bar_ts: datetime
+    resolver_source: str
+    resolver_confidence: str
+    resolver_lineage: ResolverConsumerContext
+    diagnostics: tuple[str, ...] = ()
+    status: SimulatedOrderStatus = SimulatedOrderStatus.CREATED
+    source: str = "backtest_research_only_simulated_order"
 
 
 @dataclass(frozen=True)
-class BacktestSimulatedTrade:
-    simulated_trade_id: str
-    simulated_order_id: str
-    symbol: str
-    instrument_id: str
-    trade_instrument_id: str
-    exchange: str
-    trading_day: date
-    price: Decimal
-    quantity: Decimal
-    source: str = "backtest_simulated_research_only"
+class SimulatedTrade:
+    trade_id: str
+    order_id: str
+    fill_price: Decimal
+    fill_qty: Decimal
+    fill_bar_ts: datetime
+    resolver_source: str
+    resolver_confidence: str
+    resolver_lineage: ResolverConsumerContext
+    diagnostics: tuple[str, ...] = ()
+    source: str = "backtest_research_only_simulated_trade"
+
+
+@dataclass(frozen=True)
+class DecisionTranslationResult:
+    status: DecisionTranslationStatus
+    simulated_order: SimulatedOrder | None = None
+    simulated_trades: tuple[SimulatedTrade, ...] = ()
+    diagnostics: tuple[str, ...] = ()
+
+
+BacktestSimulatedOrder = SimulatedOrder
+BacktestSimulatedTrade = SimulatedTrade
 
 
 @dataclass(frozen=True)
@@ -102,6 +138,6 @@ class BacktestResult:
     equity_curve: tuple[BacktestEquityPoint, ...] = ()
     strategy_runtime_results: tuple[StrategyRuntimeResult, ...] = ()
     strategy_decisions: tuple[StrategyDecision, ...] = ()
-    simulated_orders: tuple[BacktestSimulatedOrder, ...] = ()
-    simulated_trades: tuple[BacktestSimulatedTrade, ...] = ()
+    simulated_orders: tuple[SimulatedOrder, ...] = ()
+    simulated_trades: tuple[SimulatedTrade, ...] = ()
     gap_report: tuple[str, ...] = ()
