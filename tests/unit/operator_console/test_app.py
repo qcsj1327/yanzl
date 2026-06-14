@@ -417,6 +417,8 @@ def test_configuration_page_renders_dry_run_required_config() -> None:
     assert "预演所需配置" in rendered
     assert "**账户 ID:** 未配置" in rendered
     assert "**交易日:** 未配置" in rendered
+    assert "**品种:** 未配置" in rendered
+    assert "**resolver 状态:** 未解析" in rendered
     assert "**合约白名单:** 未配置" in rendered
     assert "**最大委托数量:** 未配置" in rendered
     assert "**最大持仓数量:** 未配置" in rendered
@@ -438,11 +440,17 @@ def test_configuration_page_renders_typed_command_preview_from_filled_form() -> 
 
     rendered = "\n".join(str(item) for item in [*ui.writes, *ui.markdowns, *ui.subheaders])
     assert "typed 命令预览" in rendered
+    assert "resolver 预览" in rendered
     assert "配置可用于预演。" in rendered
     assert "**账户 ID:** account-1" in rendered
     assert "**交易日:** 2026-06-12" in rendered
-    assert "**行情合约:** au2608" in rendered
-    assert "**交易合约:** au2608" in rendered
+    assert "**品种:** ao" in rendered
+    assert "**行情合约:** ao9999" in rendered
+    assert "**交易合约:** ao2609" in rendered
+    assert "**交易所:** SHFE" in rendered
+    assert "**来源:** static_fixture" in rendered
+    assert "**置信度:** static_fixture" in rendered
+    assert "**生效区间:** 2026-01-01 / 2026-12-31" in rendered
     assert "**方向/开平:** BUY / OPEN" in rendered
     assert "**数量:** 1" in rendered
     assert "**价格:** 500" in rendered
@@ -458,8 +466,8 @@ def test_configuration_page_renders_missing_fields_list() -> None:
 
     rendered = "\n".join(str(item) for item in [*ui.markdowns, *ui.subheaders])
     assert "当前配置还不能生成 typed dry-run command preview。" in rendered
-    assert "原因: 缺少必填配置" in rendered
-    assert "缺少字段: 账户 ID, 交易日, 行情合约, 交易合约" in rendered
+    assert "原因: 当前缺少必填配置，因此没有执行" in rendered
+    assert "缺少字段: 账户 ID, 交易日, 品种" in rendered
 
 
 def test_live_locked_page_renders_strong_warning() -> None:
@@ -749,16 +757,16 @@ def _valid_config_inputs() -> dict[str, str]:
     return {
         "operator_console_config_account_id": "account-1",
         "operator_console_config_trading_day": "2026-06-12",
-        "operator_console_config_instrument_id": "au2608",
-        "operator_console_config_trade_instrument_id": "au2608",
-        "operator_console_config_symbol": "au",
-        "operator_console_config_exchange": "SHFE",
+        "operator_console_config_instrument_id": "manual9999",
+        "operator_console_config_trade_instrument_id": "manual2609",
+        "operator_console_config_symbol": "ao",
+        "operator_console_config_exchange": "MANUAL",
         "operator_console_config_quantity": "1",
         "operator_console_config_price": "500",
         "operator_console_config_max_order_size": "1",
         "operator_console_config_max_position_size": "1",
         "operator_console_config_max_daily_loss": "1000",
-        "operator_console_config_allowed_instruments": "au2608",
+        "operator_console_config_allowed_instruments": "ao2609",
     }
 
 
@@ -766,14 +774,14 @@ def _valid_config() -> ConsoleDryRunConfig:
     return ConsoleDryRunConfig(
         account_id="account-1",
         trading_day="2026-06-12",
-        instrument_id="au2608",
-        trade_instrument_id="au2608",
-        symbol="au",
-        exchange="SHFE",
+        instrument_id="",
+        trade_instrument_id="",
+        symbol="ao",
+        exchange="",
         quantity="1",
         price="500",
         max_order_size="1",
         max_position_size="1",
         max_daily_loss="1000",
-        allowed_instruments=("au2608",),
+        allowed_instruments=("ao2609",),
     )

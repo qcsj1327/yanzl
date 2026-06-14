@@ -19,8 +19,8 @@ def test_valid_config_creates_typed_command_preview() -> None:
     assert assembly.preview is not None
     assert assembly.preview.account_id == "account-1"
     assert assembly.preview.trading_day == "2026-06-12"
-    assert assembly.preview.instrument_id == "au2608"
-    assert assembly.preview.trade_instrument_id == "au2608"
+    assert assembly.preview.instrument_id == "ao9999"
+    assert assembly.preview.trade_instrument_id == "ao2609"
     assert assembly.preview.direction == "BUY"
     assert assembly.preview.offset == "OPEN"
     assert assembly.preview.quantity == "1"
@@ -30,6 +30,8 @@ def test_valid_config_creates_typed_command_preview() -> None:
     assert assembly.preview.db_write == "否"
     assert assembly.command is not None
     assert assembly.command.execution_target is ExecutionTarget.MOCK
+    assert assembly.command.instrument_id == "ao9999"
+    assert assembly.command.trade_instrument_id == "ao2609"
     assert assembly.command.quantity == Decimal("1")
     assert assembly.command.price == Decimal("500")
 
@@ -42,8 +44,7 @@ def test_missing_fields_are_blocked_with_chinese_reason_and_list() -> None:
     assert validation.missing_fields == (
         "account_id",
         "trading_day",
-        "instrument_id",
-        "trade_instrument_id",
+        "symbol",
     )
 
     result = blocked_config_result(validation.reason, validation.missing_fields)
@@ -81,12 +82,42 @@ def test_quantity_and_price_must_be_positive() -> None:
 
 def test_allowed_instruments_mismatch_is_blocked() -> None:
     validation = validate_config(
-        _valid_config(instrument_id="rb2601", allowed_instruments=("au2608",))
+        _valid_config(allowed_instruments=("rb2601",))
     )
 
     assert validation.blocked is True
     assert validation.reason == "合约不在允许列表中"
     assert validation.missing_fields == ("allowed instruments",)
+
+
+def test_config_uses_resolver_result_over_manual_instrument_fields() -> None:
+    assembly = assemble_config(
+        _valid_config(
+            instrument_id="manual9999",
+            trade_instrument_id="manual2609",
+            exchange="MANUAL",
+        )
+    )
+
+    assert assembly.validation.blocked is False
+    assert assembly.preview is not None
+    assert assembly.preview.instrument_id == "ao9999"
+    assert assembly.preview.trade_instrument_id == "ao2609"
+    assert assembly.preview.exchange == "SHFE"
+
+
+def test_unresolved_resolver_blocks_dry_run_even_with_manual_instruments() -> None:
+    validation = validate_config(
+        _valid_config(
+            symbol="unknown",
+            instrument_id="ao9999",
+            trade_instrument_id="ao2609",
+        )
+    )
+
+    assert validation.blocked is True
+    assert validation.reason == "resolver 未找到合约"
+    assert validation.missing_fields == ("resolver",)
 
 
 def test_history_append_is_in_memory_and_limited() -> None:
@@ -108,16 +139,16 @@ def _valid_config(**overrides: object) -> ConsoleDryRunConfig:
     values: dict[str, object] = {
         "account_id": "account-1",
         "trading_day": "2026-06-12",
-        "instrument_id": "au2608",
-        "trade_instrument_id": "au2608",
-        "symbol": "au",
-        "exchange": "SHFE",
+        "instrument_id": "",
+        "trade_instrument_id": "",
+        "symbol": "ao",
+        "exchange": "",
         "quantity": "1",
         "price": "500",
         "max_order_size": "1",
         "max_position_size": "1",
         "max_daily_loss": "1000",
-        "allowed_instruments": ("au2608",),
+        "allowed_instruments": ("ao2609",),
     }
     values.update(overrides)
     return ConsoleDryRunConfig(**values)

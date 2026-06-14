@@ -13,6 +13,11 @@ from futures_mvp.domain.enums import (
     OrderType,
 )
 from futures_mvp.domain.models import ExecutionCommand
+from futures_mvp.modules.market_data.models import (
+    InstrumentResolution,
+    InstrumentResolveStatus,
+)
+from futures_mvp.modules.market_data.resolver import InstrumentResolver
 from futures_mvp.modules.operator_console.actions import DryRunActionResult
 
 MOCK_TARGET = "MOCK only"
@@ -29,6 +34,7 @@ class ConsoleDryRunConfig:
     trade_instrument_id: str = ""
     symbol: str = ""
     exchange: str = ""
+    resolver_resolution: InstrumentResolution | None = None
     quantity: str = ""
     price: str = ""
     max_order_size: str = ""
@@ -70,6 +76,7 @@ class ConfigAssemblyResult:
     validation: ConfigValidationResult
     preview: CommandPreview | None = None
     command: ExecutionCommand | None = None
+    resolver_resolution: InstrumentResolution | None = None
 
 
 @dataclass(frozen=True)
@@ -84,33 +91,42 @@ class DryRunHistoryEntry:
 
 
 def example_dry_run_config() -> ConsoleDryRunConfig:
+    resolution = InstrumentResolver().resolve("ao", "2026-06-12")
     return ConsoleDryRunConfig(
         account_id="示例-account",
         trading_day="2026-06-12",
-        instrument_id="示例-au2608",
-        trade_instrument_id="示例-au2608",
-        symbol="示例-au",
-        exchange="示例-SHFE",
+        instrument_id=resolution.instrument_id or "",
+        trade_instrument_id=resolution.trade_instrument_id or "",
+        symbol=resolution.symbol,
+        exchange=resolution.exchange or "",
+        resolver_resolution=resolution,
         quantity="1",
         price="500",
         max_order_size="1",
         max_position_size="1",
         max_daily_loss="1000",
-        allowed_instruments=("示例-au2608",),
+        allowed_instruments=(resolution.trade_instrument_id or "",),
         is_example=True,
     )
 
 
 def assemble_config(config: ConsoleDryRunConfig) -> ConfigAssemblyResult:
-    validation = validate_config(config)
+    resolution = _resolve_config(config)
+    resolved_config = _config_with_resolution(config, resolution)
+    validation = validate_config(resolved_config)
     if validation.blocked:
-        return ConfigAssemblyResult(config=config, validation=validation)
-    command = build_preview_command(config)
+        return ConfigAssemblyResult(
+            config=resolved_config,
+            validation=validation,
+            resolver_resolution=resolution,
+        )
+    command = build_preview_command(resolved_config)
     return ConfigAssemblyResult(
-        config=config,
+        config=resolved_config,
         validation=validation,
-        preview=build_command_preview(config),
+        preview=build_command_preview(resolved_config),
         command=command,
+        resolver_resolution=resolution,
     )
 
 
@@ -156,8 +172,16 @@ def validate_config(config: ConsoleDryRunConfig) -> ConfigValidationResult:
             reason="交易日格式必须是 YYYY-MM-DD",
             missing_fields=("trading_day",),
         )
+    resolution = _resolve_config(config)
+    if resolution.status is not InstrumentResolveStatus.RESOLVED:
+        return ConfigValidationResult(
+            blocked=True,
+            reason=_resolver_blocked_reason(resolution),
+            missing_fields=("resolver",),
+        )
     allowed = tuple(item.strip() for item in config.allowed_instruments if item.strip())
-    if config.instrument_id.strip() not in allowed:
+    trade_instrument_id = resolution.trade_instrument_id or ""
+    if trade_instrument_id not in allowed:
         return ConfigValidationResult(
             blocked=True,
             reason="合约不在允许列表中",
@@ -273,8 +297,7 @@ def _missing_fields(config: ConsoleDryRunConfig) -> tuple[str, ...]:
     for field_name in (
         "account_id",
         "trading_day",
-        "instrument_id",
-        "trade_instrument_id",
+        "symbol",
     ):
         if not getattr(config, field_name).strip():
             missing.append(field_name)
@@ -297,3 +320,62 @@ def _required_decimal(value: str) -> Decimal:
     if result is None:
         raise ValueError("invalid decimal")
     return result
+
+
+def _resolve_config(config: ConsoleDryRunConfig) -> InstrumentResolution:
+    if config.resolver_resolution is not None:
+        return config.resolver_resolution
+    return InstrumentResolver().resolve(config.symbol, config.trading_day)
+
+
+def _config_with_resolution(
+    config: ConsoleDryRunConfig,
+    resolution: InstrumentResolution,
+) -> ConsoleDryRunConfig:
+    if resolution.status is not InstrumentResolveStatus.RESOLVED:
+        return ConsoleDryRunConfig(
+            account_id=config.account_id,
+            trading_day=config.trading_day,
+            instrument_id=config.instrument_id,
+            trade_instrument_id=config.trade_instrument_id,
+            symbol=config.symbol,
+            exchange=config.exchange,
+            resolver_resolution=resolution,
+            quantity=config.quantity,
+            price=config.price,
+            max_order_size=config.max_order_size,
+            max_position_size=config.max_position_size,
+            max_daily_loss=config.max_daily_loss,
+            allowed_instruments=config.allowed_instruments,
+            is_example=config.is_example,
+            target=config.target,
+            apply_requested=config.apply_requested,
+        )
+    return ConsoleDryRunConfig(
+        account_id=config.account_id,
+        trading_day=config.trading_day,
+        instrument_id=resolution.instrument_id or "",
+        trade_instrument_id=resolution.trade_instrument_id or "",
+        symbol=resolution.symbol,
+        exchange=resolution.exchange or "",
+        resolver_resolution=resolution,
+        quantity=config.quantity,
+        price=config.price,
+        max_order_size=config.max_order_size,
+        max_position_size=config.max_position_size,
+        max_daily_loss=config.max_daily_loss,
+        allowed_instruments=config.allowed_instruments,
+        is_example=config.is_example,
+        target=config.target,
+        apply_requested=config.apply_requested,
+    )
+
+
+def _resolver_blocked_reason(resolution: InstrumentResolution) -> str:
+    reason_by_status = {
+        InstrumentResolveStatus.NOT_FOUND: "resolver 未找到合约",
+        InstrumentResolveStatus.AMBIGUOUS: "resolver 结果不唯一",
+        InstrumentResolveStatus.EXPIRED: "resolver 合约已过期",
+        InstrumentResolveStatus.INVALID_INPUT: "resolver 输入无效",
+    }
+    return reason_by_status.get(resolution.status, "resolver 未解析合约")

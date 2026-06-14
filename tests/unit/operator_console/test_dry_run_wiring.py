@@ -256,16 +256,16 @@ def _console_config(**overrides: object) -> ConsoleDryRunConfig:
     values: dict[str, object] = {
         "account_id": "account-1",
         "trading_day": "2026-06-12",
-        "instrument_id": "au2608",
-        "trade_instrument_id": "au2608",
-        "symbol": "au",
-        "exchange": "SHFE",
+        "instrument_id": "",
+        "trade_instrument_id": "",
+        "symbol": "ao",
+        "exchange": "",
         "quantity": "1",
         "price": "500",
         "max_order_size": "1",
         "max_position_size": "1",
         "max_daily_loss": "1000",
-        "allowed_instruments": ("au2608",),
+        "allowed_instruments": ("ao2609",),
     }
     values.update(overrides)
     return ConsoleDryRunConfig(**values)

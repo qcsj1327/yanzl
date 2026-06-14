@@ -127,17 +127,17 @@ class ConfigurationViewModel:
             missing_fields=(
                 "account_id",
                 "trading_day",
-                "instrument_id",
-                "trade_instrument_id",
+                "symbol",
             ),
         )
     )
     dry_run_required: tuple[tuple[str, str], ...] = (
         ("account_id", "未配置"),
         ("trading_day", "未配置"),
-        ("instrument_id", "未配置"),
-        ("trade_instrument_id", "未配置"),
         ("symbol", "未配置"),
+        ("resolver_status", "未解析"),
+        ("instrument_id", "未解析"),
+        ("trade_instrument_id", "未解析"),
         ("exchange", "未配置"),
         ("quantity", "未配置"),
         ("price", "未配置"),

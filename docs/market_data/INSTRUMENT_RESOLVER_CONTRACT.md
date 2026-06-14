@@ -195,3 +195,59 @@ Stage U.1 validation：
 ```bash
 git diff --check
 ```
+
+## Stage U.2 Static Instrument Registry + Resolver Implementation
+
+Baseline：`stage-u1-instrument-resolver-contract-freeze / 81bcaf1`。
+
+Stage U.2 implements the first local deterministic resolver. It is intentionally
+small and local-only：
+
+- `src/futures_mvp/modules/market_data/models.py` defines
+  `ContractRole`, `InstrumentContract`, `InstrumentResolution` and
+  `InstrumentResolveStatus`。
+- `src/futures_mvp/modules/market_data/registry.py` defines a static fixture
+  `InstrumentRegistry`。
+- `src/futures_mvp/modules/market_data/resolver.py` defines
+  `InstrumentResolver.resolve(symbol, trading_day)`。
+
+The registry is static fixture only, not a live market source. It currently
+contains minimal local fixture coverage for：
+
+- `ao`：base `ao`, main `ao9999`, trade `ao2609`, exchange `SHFE`。
+- `rb`：base `rb`, main `rb9999`, trade `rb2610`, exchange `SHFE`。
+- optional fixtures：`ag` / `cu`。
+
+All implemented fixtures use `source=static_fixture` and explicit
+`effective_from / effective_to` windows. They must not be treated as a complete
+real market instrument table.
+
+Implemented resolver behavior：
+
+- normalizes `symbol` to deterministic lowercase。
+- requires `trading_day` as ISO `YYYY-MM-DD` or `date` input。
+- selects only contracts whose effective window covers `trading_day`。
+- requires exactly one `CONTINUOUS_MAIN` and one `TRADE_CONTRACT`。
+- returns `RESOLVED`, `NOT_FOUND`, `AMBIGUOUS`, `EXPIRED` or `INVALID_INPUT`。
+- returns diagnostics that state `static fixture only, not live market source`。
+
+Safety boundary remains unchanged：
+
+- no live feed。
+- no CTP。
+- no SimNow。
+- no broker or network calls。
+- no schema or Alembic migration。
+- no DB writes。
+- no `ExecutionTarget.PAPER`, `ExecutionTarget.SIM` or
+  `ExecutionTarget.LIVE` enablement。
+- resolver output is not a strategy signal and does not decide direction,
+  offset, price, quantity or order type。
+- `raw_payload` remains forbidden as an identity source-of-truth。
+
+Console integration in Stage U.2 uses `symbol + trading_day` for normal
+configuration and fills `instrument_id`, `trade_instrument_id` and `exchange`
+from the resolver result. Manual contract fields remain visible only as
+advanced review fields labeled as resolver-generated and not recommended for
+manual entry. Unresolved resolver status blocks dry-run config assembly and
+does not fail open.

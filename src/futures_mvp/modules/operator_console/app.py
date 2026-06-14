@@ -411,6 +411,7 @@ def _render_configuration(
 ) -> ConfigurationViewModel:
     config = _read_config_form(ui, model.configuration.dry_run_config)
     assembly = assemble_config(config)
+    ui.set_session_value("operator_console_dry_run_config", assembly.config)
     summary_col, required_col, preview_col, source_col = ui.columns(4)
     summary_col.subheader(labels.section_label("normal_config"))
     _render_key_values(summary_col, _normal_config_items(config))
@@ -420,12 +421,15 @@ def _render_configuration(
         _dry_run_required_items(config, assembly.validation.missing_fields),
     )
     preview_col.subheader(labels.section_label("typed_command_preview"))
+    preview_col.markdown(labels.section_label("resolver_preview"))
+    if assembly.resolver_resolution is not None:
+        _render_resolver_preview(preview_col, assembly.resolver_resolution)
     if assembly.preview is None:
         preview_col.markdown(labels.config_text("preview_blocked"))
         if assembly.validation.reason:
             preview_col.markdown(
                 f"{labels.result_label('reason')}: "
-                f"{assembly.validation.reason}"
+                f"{labels.reason_label(assembly.validation.reason)}"
             )
         if assembly.validation.missing_fields:
             missing_fields = ", ".join(
@@ -448,10 +452,13 @@ def _render_configuration(
         normal=_normal_config_items(config),
         advanced=model.configuration.advanced,
         sources=model.configuration.sources,
-        dry_run_config=config,
+        dry_run_config=assembly.config,
         preview=assembly.preview,
         validation=assembly.validation,
-        dry_run_required=_dry_run_required_items(config, assembly.validation.missing_fields),
+        dry_run_required=_dry_run_required_items(
+            assembly.config,
+            assembly.validation.missing_fields,
+        ),
     )
 
 
@@ -661,6 +668,30 @@ def _render_command_preview(ui: OperatorConsoleUI, preview: CommandPreview) -> N
     )
 
 
+def _render_resolver_preview(ui: OperatorConsoleUI, resolution: object) -> None:
+    _render_key_values(
+        ui,
+        (
+            ("resolver_status", str(getattr(resolution, "status", ""))),
+            ("instrument_id", str(getattr(resolution, "instrument_id", "") or "未解析")),
+            (
+                "trade_instrument_id",
+                str(getattr(resolution, "trade_instrument_id", "") or "未解析"),
+            ),
+            ("exchange", str(getattr(resolution, "exchange", "") or "未解析")),
+            ("resolver_source", str(getattr(resolution, "source", "") or "static fixture only")),
+            ("resolver_confidence", str(getattr(resolution, "confidence", "") or "none")),
+            (
+                "effective_window",
+                _effective_window(
+                    getattr(resolution, "effective_from", None),
+                    getattr(resolution, "effective_to", None),
+                ),
+            ),
+        ),
+    )
+
+
 def _render_blocked_dry_run_result(
     ui: OperatorConsoleUI,
     result: ResultHistoryViewModel,
@@ -714,40 +745,40 @@ def _read_config_form(
         value=current.account_id,
         key="operator_console_config_account_id",
     )
-    trading_day = first_row[1].text_input(
-        labels.field_label("trading_day"),
-        value=current.trading_day,
-        key="operator_console_config_trading_day",
-    )
-    instrument_id = first_row[2].text_input(
-        labels.field_label("instrument_id"),
-        value=current.instrument_id,
-        key="operator_console_config_instrument_id",
-    )
-    trade_instrument_id = first_row[3].text_input(
-        labels.field_label("trade_instrument_id"),
-        value=current.trade_instrument_id,
-        key="operator_console_config_trade_instrument_id",
-    )
-    symbol = second_row[0].text_input(
+    symbol = first_row[1].text_input(
         labels.field_label("symbol"),
         value=current.symbol,
         key="operator_console_config_symbol",
     )
-    exchange = second_row[1].text_input(
-        labels.field_label("exchange"),
-        value=current.exchange,
-        key="operator_console_config_exchange",
+    trading_day = first_row[2].text_input(
+        labels.field_label("trading_day"),
+        value=current.trading_day,
+        key="operator_console_config_trading_day",
     )
-    quantity = second_row[2].number_input(
+    allowed_instruments = first_row[3].text_input(
+        labels.field_label("allowed instruments"),
+        value=format_allowed_instruments(current.allowed_instruments),
+        key="operator_console_config_allowed_instruments",
+    )
+    quantity = second_row[0].number_input(
         labels.field_label("quantity"),
         value=current.quantity,
         key="operator_console_config_quantity",
     )
-    price = second_row[3].number_input(
+    price = second_row[1].number_input(
         labels.field_label("price"),
         value=current.price,
         key="operator_console_config_price",
+    )
+    instrument_id = second_row[2].text_input(
+        labels.field_label("instrument_id"),
+        value=current.instrument_id,
+        key="operator_console_config_instrument_id",
+    )
+    trade_instrument_id = second_row[3].text_input(
+        labels.field_label("trade_instrument_id"),
+        value=current.trade_instrument_id,
+        key="operator_console_config_trade_instrument_id",
     )
     max_order_size = third_row[0].number_input(
         labels.field_label("max_order_size"),
@@ -764,10 +795,10 @@ def _read_config_form(
         value=current.max_daily_loss,
         key="operator_console_config_max_daily_loss",
     )
-    allowed_instruments = third_row[3].text_input(
-        labels.field_label("allowed instruments"),
-        value=format_allowed_instruments(current.allowed_instruments),
-        key="operator_console_config_allowed_instruments",
+    exchange = third_row[3].text_input(
+        labels.field_label("exchange"),
+        value=current.exchange,
+        key="operator_console_config_exchange",
     )
     config = ConsoleDryRunConfig(
         account_id=account_id,
@@ -793,14 +824,8 @@ def _read_config_form(
 def _normal_config_items(config: ConsoleDryRunConfig) -> tuple[tuple[str, str], ...]:
     return (
         ("account_id", _display_config_value(config.account_id, config.is_example)),
-        ("trading_day", _display_config_value(config.trading_day, config.is_example)),
-        ("instrument_id", _display_config_value(config.instrument_id, config.is_example)),
-        (
-            "trade_instrument_id",
-            _display_config_value(config.trade_instrument_id, config.is_example),
-        ),
         ("symbol", _display_config_value(config.symbol, config.is_example)),
-        ("exchange", _display_config_value(config.exchange, config.is_example)),
+        ("trading_day", _display_config_value(config.trading_day, config.is_example)),
         ("quantity", _display_config_value(config.quantity, config.is_example)),
         ("price", _display_config_value(config.price, config.is_example)),
         (
@@ -813,6 +838,19 @@ def _normal_config_items(config: ConsoleDryRunConfig) -> tuple[tuple[str, str], 
         ("max order size", _display_config_value(config.max_order_size, config.is_example)),
         ("max position size", _display_config_value(config.max_position_size, config.is_example)),
         ("max daily loss", _display_config_value(config.max_daily_loss, config.is_example)),
+        (
+            "resolver_status",
+            "已解析"
+            if config.resolver_resolution is not None and config.instrument_id.strip()
+            else "未解析",
+        ),
+        ("resolver_note", "由 resolver 生成，不建议手填"),
+        ("instrument_id", _display_config_value(config.instrument_id, config.is_example)),
+        (
+            "trade_instrument_id",
+            _display_config_value(config.trade_instrument_id, config.is_example),
+        ),
+        ("exchange", _display_config_value(config.exchange, config.is_example)),
         ("Paper/SIM mode", "PAPER / SIM"),
         ("dry-run/apply", "dry-run only"),
     )
@@ -823,15 +861,23 @@ def _dry_run_required_items(
     missing_fields: tuple[str, ...],
 ) -> tuple[tuple[str, str], ...]:
     missing = set(missing_fields)
+    resolver_ready = (
+        "resolver" not in missing
+        and bool(config.symbol.strip())
+        and bool(config.trading_day.strip())
+        and bool(config.instrument_id.strip())
+        and bool(config.trade_instrument_id.strip())
+    )
     return (
         ("account_id", _required_display(config.account_id, "account_id", missing)),
         ("trading_day", _required_display(config.trading_day, "trading_day", missing)),
-        ("instrument_id", _required_display(config.instrument_id, "instrument_id", missing)),
+        ("symbol", _required_display(config.symbol, "symbol", missing)),
+        ("resolver_status", "已解析" if resolver_ready else "未解析"),
+        ("instrument_id", _display_config_value(config.instrument_id, config.is_example)),
         (
             "trade_instrument_id",
-            _required_display(config.trade_instrument_id, "trade_instrument_id", missing),
+            _display_config_value(config.trade_instrument_id, config.is_example),
         ),
-        ("symbol", _display_config_value(config.symbol, config.is_example)),
         ("exchange", _display_config_value(config.exchange, config.is_example)),
         ("quantity", _required_display(config.quantity, "quantity", missing)),
         ("price", _required_display(config.price, "price", missing)),
@@ -864,6 +910,12 @@ def _required_display(value: str, field_name: str, missing_fields: set[str]) -> 
     if field_name in missing_fields or not value.strip():
         return "未配置"
     return value.strip()
+
+
+def _effective_window(effective_from: object, effective_to: object) -> str:
+    if effective_from is None or effective_to is None:
+        return "未解析"
+    return f"{effective_from} / {effective_to}"
 
 
 def _model_with_session_state(

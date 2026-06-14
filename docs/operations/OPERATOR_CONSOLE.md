@@ -894,3 +894,44 @@ Console impact boundary：
 Stage U.1 does not implement resolver preview. It does not add code, schema,
 tests, CTP, SimNow, broker, live feed, network calls or non-`MOCK` execution
 targets.
+
+## Stage U.2 Static Instrument Resolver Console Integration
+
+Baseline：`stage-u1-instrument-resolver-contract-freeze / 81bcaf1`。
+
+Stage U.2 adds local static resolver integration to the Operator Console.
+Normal configuration now asks for：
+
+- `symbol`。
+- `trading_day`。
+- account / quantity / price / local safety limits。
+
+The Console displays resolver preview values：
+
+- 行情合约 `instrument_id`。
+- 交易合约 `trade_instrument_id`。
+- 交易所 `exchange`。
+- 来源 `source`。
+- 置信度 `confidence`。
+- 生效区间 `effective_from / effective_to`。
+
+Dry-run config assembly fills `instrument_id`, `trade_instrument_id` and
+`exchange` from resolver output. Advanced fields still show those values for
+review, but are labeled `由 resolver 生成，不建议手填`。In the normal path, manual
+`instrument_id` / `trade_instrument_id` cannot bypass an unresolved resolver.
+
+Blocked resolver states remain fail-closed：
+
+- unknown symbol blocks as `resolver 未找到匹配合约，已阻断`。
+- ambiguous fixture blocks as `resolver 结果不唯一，已阻断`。
+- expired window blocks as `resolver 合约不覆盖当前交易日，已阻断`。
+- invalid input blocks as `resolver 输入无效，已阻断`。
+
+Safety boundary：
+
+- resolver preview writes no DB rows。
+- resolver result is not a trading signal。
+- resolver does not decide quantity, price, direction or offset。
+- Console target remains `MOCK only`。
+- no CTP, SimNow, broker, live feed, network call, schema change or Alembic
+  migration is added。
