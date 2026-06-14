@@ -279,3 +279,27 @@ fill conversion, metrics, optimization, persistence, schema or execution target
 enablement. The next recommended implementation stages are `V.4 Strategy
 Runtime Skeleton`, `V.5 Reference No-op Strategy via strategy interface` and
 `V.6 Buy-and-hold or MA Crossover reference strategy`.
+
+## Stage V.5 Backtest Strategy Runtime Integration
+
+Baseline：`stage-v4-strategy-runtime-skeleton / f23b5fb`。
+
+Stage V.5 wires `LocalBacktestEngine` to the local Strategy Runtime skeleton.
+For each consumed standardized bar, Backtest builds a `StrategyContext` with the
+current bar, historical bars up to the current bar only, resolver lineage, data
+source summary, read-only portfolio snapshot placeholder and strategy config
+placeholder. It then calls `StrategyRuntime` and records the runtime result and
+decision in `BacktestResult`.
+
+Current V.5 strategy behavior remains no-op only. `NoOpStrategy` returns
+`HOLD`; Backtest still produces zero simulated orders, zero simulated trades and
+a flat equity curve equal to initial cash.
+
+If strategy runtime returns `BLOCKED`, Backtest fails closed as blocked. If
+strategy runtime returns `ERROR` or any non-completed status, Backtest returns
+`ERROR` and does not continue as completed.
+
+Stage V.5 does not implement real trading strategy logic, simulated order
+conversion, fill model, metrics, optimization, persistence, schema, Alembic
+migration, DB writes, OMS / Trade / Position / Accounting mutation, broker,
+CTP, SimNow, live feed, network integration or execution target enablement.

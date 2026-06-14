@@ -374,3 +374,20 @@ Stage V.4 does not implement real trading strategy logic, strategy persistence,
 BacktestEngine integration, simulated order conversion, fill model, metrics,
 optimization, schema, Alembic migration, DB writes, broker, CTP, SimNow, live
 feed, network integration or execution target enablement.
+
+## Stage V.5 Backtest Integration Status
+
+Stage V.5 integrates the Strategy Runtime skeleton into `LocalBacktestEngine`
+only. Backtest constructs one immutable `StrategyContext` per consumed bar and
+passes it to `StrategyRuntime`.
+
+No-lookahead remains mandatory：the context for bar `N` contains only bars
+`0..N`, with `current_bar` equal to the last bar in that slice. Future bars are
+not passed to strategy evaluation.
+
+V.5 records strategy runtime results and decisions as Backtest research output.
+Those decisions remain signals / decisions only. They are not orders, trades,
+positions, accounting facts, broker state or live execution truth.
+
+V.5 default behavior remains `NoOpStrategy` / `HOLD`; it creates no simulated
+orders or trades and does not change the flat equity behavior.

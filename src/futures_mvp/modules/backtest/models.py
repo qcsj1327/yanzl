@@ -7,6 +7,10 @@ from enum import StrEnum
 from typing import Any
 
 from futures_mvp.modules.market_data.consumer import ResolverConsumerContext
+from futures_mvp.modules.strategy_runtime.models import (
+    StrategyDecision,
+    StrategyRuntimeResult,
+)
 
 
 class BacktestStatus(StrEnum):
@@ -27,6 +31,8 @@ class BacktestRequest:
     initial_cash: Decimal
     resolver: Any | None
     data_provider: Any | None
+    strategy_runtime: Any | None = None
+    strategy: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -94,6 +100,8 @@ class BacktestResult:
     data_source_summary: BacktestDataSummary | None = None
     bars_consumed_count: int = 0
     equity_curve: tuple[BacktestEquityPoint, ...] = ()
+    strategy_runtime_results: tuple[StrategyRuntimeResult, ...] = ()
+    strategy_decisions: tuple[StrategyDecision, ...] = ()
     simulated_orders: tuple[BacktestSimulatedOrder, ...] = ()
     simulated_trades: tuple[BacktestSimulatedTrade, ...] = ()
     gap_report: tuple[str, ...] = ()

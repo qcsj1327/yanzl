@@ -17,6 +17,13 @@ from futures_mvp.modules.market_data.models import (
 )
 from futures_mvp.modules.market_data.registry import InstrumentRegistry
 from futures_mvp.modules.market_data.resolver import InstrumentResolver
+from futures_mvp.modules.strategy_runtime import (
+    StrategyContext,
+    StrategyDecision,
+    StrategyDecisionType,
+    StrategyRuntimeResult,
+    StrategyRuntimeStatus,
+)
 
 
 def _request(
@@ -49,6 +56,12 @@ def test_valid_request_returns_completed_with_flat_noop_outputs() -> None:
 
     assert result.status is BacktestStatus.COMPLETED
     assert result.bars_consumed_count == 3
+    assert len(result.strategy_runtime_results) == 3
+    assert len(result.strategy_decisions) == 3
+    assert all(
+        decision.decision is StrategyDecisionType.HOLD
+        for decision in result.strategy_decisions
+    )
     assert result.data_source_summary is not None
     assert result.data_source_summary.source == "static_historical_fixture"
     assert result.data_source_summary.bars_consumed_count == 3
@@ -77,6 +90,76 @@ def test_equity_curve_is_deterministic() -> None:
     assert first.bars_consumed_count == second.bars_consumed_count
     assert first.simulated_orders == second.simulated_orders == ()
     assert first.simulated_trades == second.simulated_trades == ()
+    assert first.strategy_decisions == second.strategy_decisions
+
+
+def test_valid_backtest_calls_strategy_once_per_bar_without_lookahead() -> None:
+    class RecordingStrategy:
+        def __init__(self) -> None:
+            self.contexts: list[StrategyContext] = []
+
+        def evaluate(self, context: StrategyContext) -> StrategyDecision:
+            self.contexts.append(context)
+            return StrategyDecision(
+                decision=StrategyDecisionType.HOLD,
+                side="NONE",
+                confidence=Decimal("1"),
+                reason="recorded",
+            )
+
+    strategy = RecordingStrategy()
+    result = LocalBacktestEngine(strategy=strategy).run(_request())
+
+    assert result.status is BacktestStatus.COMPLETED
+    assert len(strategy.contexts) == 3
+    assert len(result.strategy_runtime_results) == 3
+    assert len(result.strategy_decisions) == 3
+    for index, context in enumerate(strategy.contexts):
+        assert context.current_bar is not None
+        assert len(context.historical_bars) == index + 1
+        assert context.historical_bars[-1] == context.current_bar
+        assert all(bar.bar_ts <= context.current_bar.bar_ts for bar in context.historical_bars)
+        assert context.resolver_lineage is not None
+        assert context.data_source_summary["source"] == "static_historical_fixture"
+        assert context.portfolio_snapshot is not None
+        assert context.config["strategy"] == "noop"
+
+
+def test_strategy_exception_returns_backtest_error() -> None:
+    class FailingStrategy:
+        def evaluate(self, context: StrategyContext) -> StrategyDecision:
+            raise RuntimeError("boom")
+
+    result = LocalBacktestEngine(strategy=FailingStrategy()).run(_request())
+
+    assert result.status is BacktestStatus.ERROR
+    assert result.diagnostics.messages[0] == "strategy runtime failed"
+    assert result.diagnostics.messages[1] == "strategy exception: RuntimeError: boom"
+    assert result.strategy_decisions == ()
+    assert len(result.strategy_runtime_results) == 1
+    assert result.simulated_orders == ()
+    assert result.simulated_trades == ()
+
+
+def test_strategy_runtime_blocked_returns_backtest_blocked() -> None:
+    class BlockingRuntime:
+        def run(self, context: StrategyContext) -> StrategyRuntimeResult:
+            return StrategyRuntimeResult(
+                status=StrategyRuntimeStatus.BLOCKED,
+                diagnostics=("blocked for test",),
+            )
+
+    result = LocalBacktestEngine(strategy_runtime=BlockingRuntime()).run(_request())
+
+    assert result.status is BacktestStatus.BLOCKED
+    assert result.diagnostics.messages == (
+        "strategy runtime blocked",
+        "blocked for test",
+    )
+    assert len(result.strategy_runtime_results) == 1
+    assert result.strategy_decisions == ()
+    assert result.simulated_orders == ()
+    assert result.simulated_trades == ()
 
 
 def test_unknown_symbol_blocks_before_market_data_consumption() -> None:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 
 from futures_mvp.modules.backtest.models import (
     BacktestDataSummary,
@@ -22,12 +22,35 @@ from futures_mvp.modules.market_data.contracts import (
     HistoricalDataStatus,
 )
 from futures_mvp.modules.market_data.models import InstrumentResolveStatus
+from futures_mvp.modules.strategy_runtime import (
+    NoOpStrategy,
+    StrategyContext,
+    StrategyDecision,
+    StrategyRuntime,
+    StrategyRuntimeResult,
+    StrategyRuntimeStatus,
+)
+from futures_mvp.modules.strategy_runtime.strategies import StrategyEvaluator
 
 _STATIC_FIXTURE_SOURCE = "static_historical_fixture"
 _NOOP_STRATEGY_NAME = "noop"
+_STRATEGY_CONFIG_PLACEHOLDER = {"strategy_runtime_stage": "V.5", "strategy": "noop"}
+_PORTFOLIO_SNAPSHOT_PLACEHOLDER = {
+    "source": "backtest_research_placeholder",
+    "positions": (),
+    "cash_mode": "flat_initial_cash",
+}
 
 
 class LocalBacktestEngine:
+    def __init__(
+        self,
+        strategy_runtime: Any | None = None,
+        strategy: StrategyEvaluator | None = None,
+    ) -> None:
+        self._strategy = strategy or NoOpStrategy()
+        self._strategy_runtime = strategy_runtime or StrategyRuntime(self._strategy)
+
     def run(self, request: BacktestRequest) -> BacktestResult:
         validation_error = _validate_request(request)
         if validation_error is not None:
@@ -47,6 +70,8 @@ class LocalBacktestEngine:
             timeframe = BarTimeframe(request.timeframe.strip().lower())
             contexts: list[ResolverConsumerContext] = []
             bars_by_day: list[tuple[date, tuple[HistoricalBar, ...]]] = []
+            strategy_runtime_results: list[StrategyRuntimeResult] = []
+            strategy_decisions: list[StrategyDecision] = []
             resolver_statuses: list[str] = []
             data_statuses: list[str] = []
             gap_report: list[str] = []
@@ -126,6 +151,77 @@ class LocalBacktestEngine:
                 bars_by_day.append((trading_day, bars_result.bars))
 
             all_bars = tuple(bar for _, bars in bars_by_day for bar in bars)
+            data_summary = _data_summary(
+                request,
+                bars_consumed_count=len(all_bars),
+                trading_days_consumed=tuple(day for day, _ in bars_by_day),
+                diagnostics=tuple(data_diagnostics),
+            )
+            for context, (_, bars) in zip(contexts, bars_by_day, strict=True):
+                for index, bar in enumerate(bars):
+                    runtime_result = self._run_strategy(
+                        request=request,
+                        resolver_context=context,
+                        data_summary=data_summary,
+                        current_bar=bar,
+                        historical_bars=bars[: index + 1],
+                    )
+                    strategy_runtime_results.append(runtime_result)
+                    if runtime_result.status is StrategyRuntimeStatus.BLOCKED:
+                        return BacktestResult(
+                            status=BacktestStatus.BLOCKED,
+                            diagnostics=BacktestDiagnostics(
+                                messages=(
+                                    "strategy runtime blocked",
+                                    *runtime_result.diagnostics,
+                                ),
+                                resolver_statuses=tuple(resolver_statuses),
+                                data_statuses=tuple(data_statuses),
+                            ),
+                            resolver_lineage=tuple(contexts),
+                            data_source_summary=data_summary,
+                            bars_consumed_count=len(all_bars),
+                            strategy_runtime_results=tuple(strategy_runtime_results),
+                            strategy_decisions=tuple(strategy_decisions),
+                            simulated_orders=(),
+                            simulated_trades=(),
+                        )
+                    if runtime_result.status is not StrategyRuntimeStatus.COMPLETED:
+                        return BacktestResult(
+                            status=BacktestStatus.ERROR,
+                            diagnostics=BacktestDiagnostics(
+                                messages=(
+                                    "strategy runtime failed",
+                                    *runtime_result.diagnostics,
+                                ),
+                                resolver_statuses=tuple(resolver_statuses),
+                                data_statuses=tuple(data_statuses),
+                            ),
+                            resolver_lineage=tuple(contexts),
+                            data_source_summary=data_summary,
+                            bars_consumed_count=len(all_bars),
+                            strategy_runtime_results=tuple(strategy_runtime_results),
+                            strategy_decisions=tuple(strategy_decisions),
+                            simulated_orders=(),
+                            simulated_trades=(),
+                        )
+                    if runtime_result.decision is None:
+                        return BacktestResult(
+                            status=BacktestStatus.ERROR,
+                            diagnostics=BacktestDiagnostics(
+                                messages=("strategy runtime completed without decision",),
+                                resolver_statuses=tuple(resolver_statuses),
+                                data_statuses=tuple(data_statuses),
+                            ),
+                            resolver_lineage=tuple(contexts),
+                            data_source_summary=data_summary,
+                            bars_consumed_count=len(all_bars),
+                            strategy_runtime_results=tuple(strategy_runtime_results),
+                            strategy_decisions=tuple(strategy_decisions),
+                            simulated_orders=(),
+                            simulated_trades=(),
+                        )
+                    strategy_decisions.append(runtime_result.decision)
             return BacktestResult(
                 status=BacktestStatus.COMPLETED,
                 diagnostics=BacktestDiagnostics(
@@ -138,14 +234,11 @@ class LocalBacktestEngine:
                     data_statuses=tuple(data_statuses),
                 ),
                 resolver_lineage=tuple(contexts),
-                data_source_summary=_data_summary(
-                    request,
-                    bars_consumed_count=len(all_bars),
-                    trading_days_consumed=tuple(day for day, _ in bars_by_day),
-                    diagnostics=tuple(data_diagnostics),
-                ),
+                data_source_summary=data_summary,
                 bars_consumed_count=len(all_bars),
                 equity_curve=_flat_equity_curve(all_bars, request.initial_cash),
+                strategy_runtime_results=tuple(strategy_runtime_results),
+                strategy_decisions=tuple(strategy_decisions),
                 simulated_orders=(),
                 simulated_trades=(),
                 gap_report=(),
@@ -155,6 +248,43 @@ class LocalBacktestEngine:
                 BacktestStatus.ERROR,
                 messages=(f"unexpected backtest error: {type(exc).__name__}: {exc}",),
             )
+
+    def _run_strategy(
+        self,
+        *,
+        request: BacktestRequest,
+        resolver_context: ResolverConsumerContext,
+        data_summary: BacktestDataSummary,
+        current_bar: HistoricalBar,
+        historical_bars: tuple[HistoricalBar, ...],
+    ) -> StrategyRuntimeResult:
+        runtime = request.strategy_runtime or self._strategy_runtime
+        strategy = request.strategy or self._strategy
+        context = StrategyContext(
+            strategy_name=request.strategy_name,
+            symbol=resolver_context.identity.symbol,
+            instrument_id=resolver_context.identity.instrument_id,
+            trade_instrument_id=resolver_context.identity.trade_instrument_id,
+            exchange=resolver_context.identity.exchange,
+            trading_day=current_bar.trading_day,
+            timeframe=current_bar.timeframe,
+            current_bar=current_bar,
+            historical_bars=historical_bars,
+            resolver_lineage=resolver_context,
+            data_source_summary={
+                "source": data_summary.source,
+                "timeframe": data_summary.timeframe,
+                "bars_consumed_count": data_summary.bars_consumed_count,
+                "diagnostics_summary": data_summary.diagnostics_summary,
+            },
+            portfolio_snapshot=_PORTFOLIO_SNAPSHOT_PLACEHOLDER,
+            config=_STRATEGY_CONFIG_PLACEHOLDER,
+        )
+        if hasattr(runtime, "run_with_strategy"):
+            return cast(StrategyRuntimeResult, runtime.run_with_strategy(strategy, context))
+        if request.strategy is not None and request.strategy_runtime is None:
+            return StrategyRuntime(strategy).run(context)
+        return cast(StrategyRuntimeResult, runtime.run(context))
 
 
 def run_backtest(request: BacktestRequest) -> BacktestResult:
@@ -242,6 +372,8 @@ def _data_gap_result(
         ),
         bars_consumed_count=0,
         equity_curve=(),
+        strategy_runtime_results=(),
+        strategy_decisions=(),
         simulated_orders=(),
         simulated_trades=(),
         gap_report=gap_report,
@@ -282,6 +414,8 @@ def _result(
             data_statuses=data_statuses,
         ),
         resolver_lineage=resolver_lineage,
+        strategy_runtime_results=(),
+        strategy_decisions=(),
         simulated_orders=(),
         simulated_trades=(),
     )
