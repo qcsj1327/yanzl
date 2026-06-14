@@ -326,3 +326,17 @@ All Backtest strategy integration must preserve resolver-derived identity,
 no-lookahead bar slicing, deterministic replay, no side effects and
 research-only result semantics. Simulated order conversion remains a future
 separate boundary.
+
+## Stage V.8 Backtest BuyAndHold Decision Integration
+
+Baseline：`stage-v7-buy-and-hold-reference-strategy / a7c842e`。
+
+Stage V.8 verifies `LocalBacktestEngine` can run with injected
+`BuyAndHoldStrategy`. The first consumed bar records a `BUY` strategy decision;
+later consumed bars record `HOLD` decisions.
+
+This stage remains decision-only. Backtest records `StrategyDecision` values as
+research output and does not convert them into simulated orders, simulated
+trades, positions, accounting facts, broker commands or source-of-truth records.
+The equity curve remains flat until a separate simulated order / fill model is
+accepted.

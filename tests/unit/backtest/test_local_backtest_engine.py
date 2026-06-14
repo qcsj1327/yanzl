@@ -18,6 +18,7 @@ from futures_mvp.modules.market_data.models import (
 from futures_mvp.modules.market_data.registry import InstrumentRegistry
 from futures_mvp.modules.market_data.resolver import InstrumentResolver
 from futures_mvp.modules.strategy_runtime import (
+    BuyAndHoldStrategy,
     StrategyContext,
     StrategyDecision,
     StrategyDecisionType,
@@ -123,6 +124,37 @@ def test_valid_backtest_calls_strategy_once_per_bar_without_lookahead() -> None:
         assert context.data_source_summary["source"] == "static_historical_fixture"
         assert context.portfolio_snapshot is not None
         assert context.config["strategy"] == "noop"
+
+
+def test_buy_and_hold_backtest_records_buy_then_hold_without_orders_or_trades() -> None:
+    result = LocalBacktestEngine(strategy=BuyAndHoldStrategy()).run(_request())
+
+    assert result.status is BacktestStatus.COMPLETED
+    assert tuple(decision.decision for decision in result.strategy_decisions) == (
+        StrategyDecisionType.BUY,
+        StrategyDecisionType.HOLD,
+        StrategyDecisionType.HOLD,
+    )
+    assert tuple(decision.side for decision in result.strategy_decisions) == (
+        "BUY",
+        "NONE",
+        "NONE",
+    )
+    assert result.strategy_decisions[0].reason == "first eligible bar buy"
+    assert result.strategy_decisions[1].reason == "already entered hold"
+    assert result.strategy_decisions[2].reason == "already entered hold"
+    assert result.simulated_orders == ()
+    assert result.simulated_trades == ()
+    assert tuple(point.equity for point in result.equity_curve) == (
+        Decimal("100000"),
+        Decimal("100000"),
+        Decimal("100000"),
+    )
+    assert tuple(point.cash for point in result.equity_curve) == (
+        Decimal("100000"),
+        Decimal("100000"),
+        Decimal("100000"),
+    )
 
 
 def test_strategy_exception_returns_backtest_error() -> None:

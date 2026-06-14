@@ -583,3 +583,16 @@ uses only `context.current_bar` and `context.historical_bars`; it does not read
 future bars, mutate `StrategyContext`, create orders, create trades, create
 positions, write accounting facts, write DB, call broker / CTP / SimNow / live
 feed / network, or enable execution targets.
+
+## Stage V.8 Backtest BuyAndHold Decision Integration Status
+
+Baseline：`stage-v7-buy-and-hold-reference-strategy / a7c842e`。
+
+Stage V.8 verifies Backtest integration for injected `BuyAndHoldStrategy`.
+Backtest records the decision sequence `BUY, HOLD, HOLD...` over consumed bars
+while preserving no-lookahead context slicing.
+
+`BUY` remains a `StrategyDecision` only. It is not an order, not a trade, not a
+position and not an accounting fact. V.8 does not implement simulated orders,
+simulated trades, fill model, MA strategy, DB writes, broker integration,
+network integration or execution target enablement.
