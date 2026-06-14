@@ -2601,3 +2601,36 @@ Backtest outputs are simulated result views only and are not OMS, Trade,
 Position, Accounting, live execution, broker report or real account truth. The
 next allowed implementation stage is `V.2 Local Backtest Engine Skeleton`, with
 default schema decision NO schema.
+
+## 16. Stage V.3 Strategy Interface Contract Freeze
+
+Baseline：`stage-v2-local-backtest-engine-skeleton / cfe55be`。
+
+Stage V.3 freezes the strategy interface contract in
+`docs/strategy/STRATEGY_INTERFACE_CONTRACT.md`. It is documentation-only and
+does not add schema, code, tests, DB writes, live feed, quote API, CTP, SimNow,
+broker, network integration or execution target enablement.
+
+Strategy is allowed for Backtest, future Paper and future SIM only. It is not
+allowed for LIVE, broker execution, CTP, SimNow or real capital without a
+separate accepted contract.
+
+Future `StrategyContext` must be resolver-derived and no-lookahead：it carries
+strategy name, symbol, `instrument_id`, `trade_instrument_id`, exchange,
+trading day, timeframe, current bar, historical bars up to the current bar,
+resolver lineage, data source summary, portfolio snapshot placeholder and
+config. It must not carry future market data, raw CSV / vendor / broker
+payloads, `raw_payload` identity, DB sessions, repositories, UnitOfWork or
+mutable OMS / Trade / Position / Accounting services.
+
+Future `StrategyDecision` / `StrategySignal` is a decision only. It is not an
+order, execution command, fill, trade, position, accounting fact or broker
+state. Strategy must not write DB or ledgers, call broker / CTP / SimNow /
+network, mutate market data or resolver context, or enable
+`ExecutionTarget.PAPER`, `ExecutionTarget.SIM` or `ExecutionTarget.LIVE`.
+
+Future Backtest integration should call strategy once per bar, pass only the
+current and previous bars, receive a deterministic decision and defer simulated
+order / fill conversion to a later accepted stage. Recommended next stages are
+`V.4 Strategy Runtime Skeleton`, `V.5 Reference No-op Strategy via strategy
+interface` and `V.6 Buy-and-hold or MA Crossover reference strategy`.

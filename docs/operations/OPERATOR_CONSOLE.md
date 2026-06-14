@@ -1116,3 +1116,32 @@ Safety boundary remains unchanged：
   `ExecutionTarget.LIVE` enablement。
 - no raw CSV / vendor / broker payload or `raw_payload` as facts。
 - Backtest does not write OMS, Trade, Position or Accounting。
+
+## Stage V.3 Strategy Interface Contract Impact
+
+Baseline：`stage-v2-local-backtest-engine-skeleton / cfe55be`。
+
+Stage V.3 is documentation-only. The detailed contract is
+`docs/strategy/STRATEGY_INTERFACE_CONTRACT.md`.
+
+The Operator Console remains a local operator surface, not a strategy
+development environment. Any future Console Backtest, Paper or SIM strategy
+selection must choose only accepted strategy config and display strategy
+decisions as research / workflow input. It must not let operators edit code,
+inject raw payloads, bypass resolver identity or convert strategy output
+directly into broker execution.
+
+If strategy decision display is added in a future stage, Console must label the
+decision as not an order, not a trade, not a position and not an accounting fact.
+It must preserve resolver lineage, data source summary and no-lookahead
+diagnostics when showing why a decision was produced.
+
+Safety boundary remains unchanged：
+
+- no schema or Alembic migration。
+- no DB or production ledger write from strategy code。
+- no live feed, quote API, CTP, SimNow, broker or network integration。
+- no `ExecutionTarget.PAPER`, `ExecutionTarget.SIM` or
+  `ExecutionTarget.LIVE` enablement。
+- no raw CSV / vendor / broker payload or `raw_payload` as facts。
+- Strategy does not write OMS, Trade, Position or Accounting。

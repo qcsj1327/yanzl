@@ -7778,3 +7778,44 @@ network; and must not enable `ExecutionTarget.PAPER`, `ExecutionTarget.SIM` or
 Default schema decision remains NO schema. Durable Backtest run/result storage
 requires a separate future contract freeze. The next allowed implementation
 stage is `V.2 Local Backtest Engine Skeleton`.
+
+## Stage V.3 Strategy Interface Contract Freeze
+
+Baseline：`stage-v2-local-backtest-engine-skeleton / cfe55be`。
+
+Stage V.3 is documentation-only. The detailed contract is
+`docs/strategy/STRATEGY_INTERFACE_CONTRACT.md`.
+
+Future Strategy interface work is allowed for Backtest, future Paper and future
+SIM. It is not allowed for LIVE, broker, CTP, SimNow or real capital without a
+separate accepted contract.
+
+Future `StrategyContext` must contain only typed, deterministic inputs：
+`strategy_name`, resolver-derived `symbol`, `instrument_id`,
+`trade_instrument_id`, `exchange`, `trading_day`, `timeframe`, `current_bar`,
+historical bars up to the current bar only, resolver lineage, data source
+summary, portfolio snapshot placeholder and config.
+
+`StrategyContext` must not contain future bars, future ticks, future quotes,
+future session or trading-day data, raw CSV rows, raw vendor payloads, raw
+broker payloads, `raw_payload` identity, DB session, repository, UnitOfWork or
+mutable OMS / Trade / Position / Accounting services.
+
+Future `StrategyDecision` / `StrategySignal` may express `BUY`, `SELL`,
+`CLOSE` or `HOLD`, side, confidence, reason, expected price, optional stop loss,
+optional take profit, tags and diagnostics. It is not an order, trade, position,
+accounting ledger fact, broker state or source-of-truth.
+
+Strategy must be deterministic for the same config, resolver context,
+historical bars and trading day. It must not use wall-clock `now`, unseeded
+randomness, network calls, file-system side effects, DB access, broker queries
+or mutable global state that changes equivalent-input decisions.
+
+Strategy must not write DB, OMS, Trade ledger, Position, Accounting or
+production ledgers; must not call broker / CTP / SimNow / live feed / quote API
+/ network; must not mutate market data or resolver context; and must not enable
+`ExecutionTarget.PAPER`, `ExecutionTarget.SIM` or `ExecutionTarget.LIVE`.
+
+This stage adds no current Domain fields and no schema. Any future persistence
+of strategy decisions, metrics, lifecycle events or backtest strategy results
+requires a separate accepted contract.

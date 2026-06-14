@@ -249,3 +249,33 @@ Implemented boundary：
 Stage V.2 result objects remain research / observability only. They do not
 write DB, schema, Alembic, OMS, Trade, Position, Accounting or broker state and
 must not be promoted to production truth without a separate accepted contract.
+
+## Stage V.3 Strategy Interface Contract Freeze
+
+Baseline：`stage-v2-local-backtest-engine-skeleton / cfe55be`。
+
+Stage V.3 is documentation-only. The detailed contract is
+`docs/strategy/STRATEGY_INTERFACE_CONTRACT.md`.
+
+The Backtest engine must remain a coordinator, not a place where strategy logic
+grows directly. Future Backtest strategy integration must call a typed strategy
+interface for each bar：
+
+1. resolve `symbol + trading_day`。
+2. build `ResolverConsumerContext`。
+3. consume standardized bars without lookahead。
+4. build `StrategyContext` with `current_bar` and historical bars up to the
+   current bar only。
+5. receive a `StrategyDecision` / `StrategySignal`。
+6. later, in a separate accepted stage, convert that decision into simulated
+   order / fill output。
+
+Strategy output is not an order, trade, position or ledger fact. Backtest
+results remain research / observability only and must not become OMS, Trade,
+Position, Accounting, broker, live execution or real account truth.
+
+Stage V.3 does not implement strategy runtime, reference strategies, simulated
+fill conversion, metrics, optimization, persistence, schema or execution target
+enablement. The next recommended implementation stages are `V.4 Strategy
+Runtime Skeleton`, `V.5 Reference No-op Strategy via strategy interface` and
+`V.6 Buy-and-hold or MA Crossover reference strategy`.

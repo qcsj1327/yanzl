@@ -1,0 +1,343 @@
+# Stage V.3 Strategy Interface Contract Freeze
+
+Baseline：`stage-v2-local-backtest-engine-skeleton / cfe55be`。
+
+Stage V.3 is documentation-only. It freezes the local strategy interface
+contract before strategy runtime implementation. It does not add code, tests,
+schema, Alembic migration, DB writes, live feed, quote API, CTP, SimNow,
+broker, network integration or execution target enablement.
+
+The purpose of this stage is to keep strategy logic out of `BacktestEngine`.
+Backtest, future Paper and future SIM may call strategy through a typed
+interface. Strategy may produce decisions only. Strategy must not execute
+trades, write ledgers, bypass resolver identity or look ahead.
+
+## Strategy Scope
+
+Strategy interface is allowed for：
+
+- Backtest。
+- future Paper。
+- future SIM。
+
+Strategy interface is not allowed for：
+
+- LIVE。
+- broker execution。
+- CTP integration。
+- SimNow integration。
+- real capital execution。
+
+Any future LIVE, broker, CTP, SimNow or real capital strategy enablement
+requires a separate contract freeze, implementation stage and acceptance
+review.
+
+## Strategy Input Contract
+
+A future `StrategyContext` must be typed and deterministic.
+
+Required fields：
+
+- `strategy_name`。
+- `symbol`。
+- `instrument_id`。
+- `trade_instrument_id`。
+- `exchange`。
+- `trading_day`。
+- `timeframe`。
+- `current_bar`。
+- `historical_bars` up to and including `current_bar` only。
+- resolver lineage。
+- data source summary。
+- portfolio snapshot placeholder。
+- `config`。
+
+Input identity rules：
+
+- `symbol`, `instrument_id`, `trade_instrument_id`, `exchange` and
+  `trading_day` must come from resolver-derived identity。
+- Strategy must not infer, guess or override `instrument_id`,
+  `trade_instrument_id` or `exchange`。
+- unresolved, ambiguous, expired, invalid input or `METADATA_INVALID` resolver
+  result means Strategy is not called。
+- resolver lineage must be present in the context so downstream research output
+  can explain which identity snapshot was used。
+
+Forbidden inputs：
+
+- future bars。
+- future ticks。
+- future quotes。
+- future session data。
+- future trading-day data。
+- raw CSV rows。
+- raw vendor payload。
+- raw broker payload。
+- `raw_payload` identity。
+- direct DB session。
+- repository。
+- UnitOfWork。
+- OMS mutable service。
+- Trade ledger mutable service。
+- Position mutable service。
+- Accounting mutable service。
+- broker adapter or broker query result。
+- network client。
+
+`portfolio snapshot placeholder` is read-only simulation context. It is not a
+live account, broker account, Trade ledger, Position source-of-truth or
+Accounting source-of-truth.
+
+## Strategy Output Contract
+
+A future `StrategyDecision` / `StrategySignal` must be typed and deterministic.
+
+Required fields：
+
+- `decision`：`BUY` / `SELL` / `CLOSE` / `HOLD`, or an explicitly accepted
+  mapping to existing domain strategy decision types。
+- `side`。
+- `confidence`。
+- `reason`。
+- `expected_price`。
+- `stop_loss` optional。
+- `take_profit` optional。
+- `tags`。
+- `diagnostics`。
+
+Output rules：
+
+- Strategy output is a decision or signal only。
+- Strategy output is not an order。
+- Strategy output is not an execution command。
+- Strategy output is not a fill。
+- Strategy output is not a trade。
+- Strategy output is not a position。
+- Strategy output is not an accounting ledger fact。
+- Strategy output is not broker state。
+- Strategy output is not source-of-truth for OMS, Trade, Position,
+  Accounting, broker, live execution or real account state。
+
+Future conversion from `StrategyDecision` to simulated order / fill belongs to
+a later Backtest implementation stage. Future conversion from strategy decision
+to Paper / SIM workflow must go through accepted application-layer gates and
+must not bypass Risk, OMS, Execution Gateway, report normalization, Trade,
+Position or Accounting contracts.
+
+## No-Lookahead Rule
+
+Strategy may see only：
+
+- `current_bar`。
+- previous bars in the same context。
+- current `as_of` quote if explicitly provided by a future accepted contract。
+- current `as_of` tick if explicitly provided by a future accepted contract。
+- read-only portfolio snapshot placeholder assembled at or before the
+  simulation clock。
+
+Strategy must not see：
+
+- any bar after `current_bar`。
+- any tick after the current simulation clock。
+- any quote after the current simulation clock。
+- future session data。
+- future trading-day data。
+- final daily close before it is available to the simulation clock。
+- future roll decision。
+- full-day aggregate that was not available at the current bar。
+
+Backtest integration must build `historical_bars` by slicing the standardized
+bar stream up to the current bar. It must not pass the complete run data set to
+Strategy.
+
+## Resolver Identity Rule
+
+Strategy is an identity consumer, not an identity resolver.
+
+Strategy must use：
+
+- resolver-derived `symbol`。
+- resolver-derived `instrument_id` for market observation identity。
+- resolver-derived `trade_instrument_id` for simulated execution identity。
+- resolver-derived `exchange`。
+- resolver-derived `trading_day`。
+- resolver lineage summary。
+
+Strategy must not：
+
+- parse contract codes from raw payloads。
+- infer trade contracts from filename, UI label, broker raw field or metadata。
+- switch instruments without a resolver-derived context。
+- continue when resolver status is not `RESOLVED`。
+- continue when resolver metadata is invalid。
+
+Resolver output remains identity input only. It does not decide strategy
+direction, price, quantity, stop loss, take profit or risk acceptance.
+
+## Side-Effect Boundary
+
+Strategy must not：
+
+- write DB。
+- write OMS。
+- write Trade ledger。
+- write Position。
+- write Accounting。
+- write production ledger。
+- call broker。
+- call CTP。
+- call SimNow。
+- call live feed。
+- call quote API。
+- call network。
+- enable or dispatch any execution target。
+- enable `ExecutionTarget.PAPER`。
+- enable `ExecutionTarget.SIM`。
+- enable `ExecutionTarget.LIVE`。
+- mutate market data。
+- mutate resolver context。
+- mutate `StrategyContext`。
+- mutate portfolio snapshot placeholder。
+- run schema or Alembic migration。
+
+Strategy code must be pure decision logic over typed context and config. Any
+persistence of strategy candidates, decisions, lifecycle events or metrics
+requires a separate accepted implementation contract and must remain clearly
+separate from production OMS, Trade, Position and Accounting facts.
+
+## Determinism
+
+For the same：
+
+- strategy implementation。
+- strategy config。
+- resolver context。
+- historical bars visible to the current bar。
+- trading day。
+- timeframe。
+- portfolio snapshot placeholder。
+
+Strategy must return the same decision.
+
+Forbidden nondeterminism：
+
+- wall-clock `now`。
+- random values without seeded config。
+- network calls。
+- file-system side effects。
+- DB reads or writes。
+- repository reads or writes。
+- broker queries。
+- live quote reads。
+- mutable global state that changes decisions between equivalent inputs。
+
+If a future strategy requires randomness for research, the seed must be part of
+typed config and the output must remain replayable.
+
+## Backtest Integration Contract
+
+Future `BacktestEngine` integration must call Strategy through the frozen
+interface：
+
+1. Resolve `symbol + trading_day`。
+2. Build `ResolverConsumerContext`。
+3. Load standardized historical bars without lookahead。
+4. For each bar, build `StrategyContext` with `current_bar` and
+   `historical_bars` up to the current bar only。
+5. Call Strategy and receive `StrategyDecision` / `StrategySignal`。
+6. Preserve decision diagnostics in Backtest research output。
+7. In a later stage, convert decisions into simulated orders / fills through a
+   deterministic simulation boundary。
+
+Stage V.3 freezes this contract only. It does not implement strategy runtime,
+reference strategies, simulated order conversion, fill model, metrics,
+optimization, persistence or UI.
+
+## Paper / SIM Integration Contract
+
+Future Paper and future SIM strategy use must remain local and gate-controlled.
+
+Paper / SIM Strategy integration must：
+
+- consume resolver-derived identity。
+- consume standardized market data or accepted typed feature context。
+- use the same no-lookahead rule。
+- output decisions only。
+- route decisions through accepted workflow gates before any local apply。
+- keep `ExecutionTarget.MOCK` as the only accepted execution target until a
+  separate target enablement contract changes it。
+
+Paper / SIM Strategy integration must not：
+
+- dispatch directly to broker。
+- bypass Risk / OMS / Execution Gateway contracts。
+- bypass local session / runtime job safety gates。
+- write business ledgers from strategy code。
+- imply `ExecutionTarget.PAPER` or `ExecutionTarget.SIM` enablement。
+
+## Source-of-Truth Boundary
+
+Strategy output is research / workflow input only.
+
+Strategy output is not：
+
+- OMS truth。
+- Trade ledger truth。
+- Position truth。
+- Accounting truth。
+- live execution truth。
+- broker report truth。
+- real account truth。
+- market-data truth。
+- resolver truth。
+
+No downstream component may treat `StrategyDecision`, `StrategySignal`,
+strategy diagnostics or strategy metrics as production facts without a separate
+accepted promotion / persistence contract.
+
+## Safety Boundary
+
+Stage V.3 must not：
+
+- implement strategy code。
+- change `BacktestEngine`。
+- change tests。
+- change `src`。
+- write schema。
+- write Alembic migration。
+- add dependency。
+- write DB。
+- write OMS / Trade / Position / Accounting。
+- enable live execution。
+- enable real capital。
+- enable Paper apply。
+- enable SIM apply。
+- enable `ExecutionTarget.PAPER`。
+- enable `ExecutionTarget.SIM`。
+- enable `ExecutionTarget.LIVE`。
+- use raw payload as source-of-truth。
+
+## Future Implementation
+
+Next recommended stages：
+
+```text
+V.4 Strategy Runtime Skeleton
+V.5 Reference No-op Strategy via strategy interface
+V.6 Buy-and-hold or MA Crossover reference strategy
+```
+
+Later, separate contract freezes should cover：
+
+- strategy metrics。
+- strategy optimization。
+- durable strategy run/result storage。
+- strategy lifecycle persistence for Backtest。
+- Paper strategy wiring。
+- SIM strategy wiring。
+- feature-based strategy context。
+- live strategy preflight and enablement。
+
+No future stage may combine strategy interface implementation with live broker,
+CTP, SimNow, real capital, target enablement or schema persistence unless a
+separate accepted contract explicitly opens that scope.
