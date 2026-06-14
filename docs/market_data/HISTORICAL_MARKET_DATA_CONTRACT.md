@@ -286,3 +286,44 @@ bar/tick/quote objects under this contract. U.6 must still avoid live feed,
 quote API, CTP, SimNow, broker, network, schema changes, DB writes and
 non-`MOCK` target enablement unless a separate accepted freeze explicitly
 changes those boundaries.
+
+## Stage U.6 Static Historical Data Fixture
+
+Baseline：`stage-u5-historical-market-data-contract`。
+
+Stage U.6 implements the first deterministic local historical market data
+fixture. It is static fixture data only and is not a live market source, quote
+API, vendor adapter, CTP, SimNow, broker or network integration.
+
+Implemented local fixture scope：
+
+- supported symbols：`ao`, `rb`, `ag`, `cu`。
+- supported trading-day window：2026 resolver fixture window。
+- supported bar timeframes：`1m`, `5m`, `15m`, `1h`, `1d`。
+- deterministic tick stream。
+- latest quote snapshot derived from the latest available fixture tick。
+- no-lookahead filtering through the query `as_of` timestamp。
+
+The fixture provider interface is：
+
+- `get_bars(...)`。
+- `get_ticks(...)`。
+- `get_latest_quote(...)`。
+
+The provider returns typed fixture result objects. Unsupported symbol resolves
+to `NOT_FOUND`; unsupported timeframe resolves to `INVALID_INPUT`. The fixture
+does not write DB rows and does not mutate OMS, Trade, Position, Accounting,
+ledger or schema state.
+
+U.6 keeps the same safety boundary：
+
+- no live feed。
+- no quote API。
+- no CTP。
+- no SimNow。
+- no broker。
+- no network。
+- no schema or Alembic migration。
+- no DB or ledger writes。
+- no `ExecutionTarget.PAPER`, `ExecutionTarget.SIM` or
+  `ExecutionTarget.LIVE` enablement。
