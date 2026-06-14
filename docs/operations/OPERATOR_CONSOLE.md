@@ -975,3 +975,36 @@ Safety boundary remains unchanged：
 - no CTP, SimNow, broker, live feed or network integration。
 - no `ExecutionTarget.PAPER`, `ExecutionTarget.SIM` or
   `ExecutionTarget.LIVE` enablement。
+
+## Stage U.3.1 Resolver Whitelist UX
+
+Baseline：`stage-u21-console-resolver-ui-polish / 9912b24`。
+
+Stage U.3.1 improves the local Console whitelist experience without changing
+resolver safety semantics.
+
+Configuration normal path still asks for `symbol + trading_day`; the editable
+whitelist field now defaults to the resolver trade contract. Operators no
+longer need to copy `ao2609` or another trade contract manually for the happy
+path.
+
+Resolver preview displays：
+
+- `当前白名单：<trade_instrument_id>（由 resolver 推荐）`。
+- the static fixture source warning。
+- resolver-generated market contract, trade contract and exchange。
+
+If the whitelist is cleared or does not contain the resolver
+`trade_instrument_id`, dry-run config assembly remains `BLOCKED` with Chinese
+operator-facing guidance.
+
+If selected main or trade contract metadata is missing or invalid, resolver
+status is `METADATA_INVALID` and Console dry-run remains `BLOCKED`.
+
+Safety boundary remains unchanged：
+
+- no DB write。
+- no schema or Alembic migration。
+- no live feed, quote API, CTP, SimNow, broker or network integration。
+- no `ExecutionTarget.PAPER`, `ExecutionTarget.SIM` or
+  `ExecutionTarget.LIVE` enablement。

@@ -95,6 +95,24 @@ class InstrumentResolver:
                     "main and trade contracts resolve to different exchanges",
                 ),
             )
+        metadata_diagnostics = _metadata_invalid_diagnostics(main_contract, trade_contract)
+        if metadata_diagnostics:
+            return InstrumentResolution(
+                status=InstrumentResolveStatus.METADATA_INVALID,
+                symbol=normalized_symbol,
+                instrument_id=main_contract.instrument_id,
+                trade_instrument_id=trade_contract.instrument_id,
+                exchange=main_contract.exchange,
+                source=main_contract.source,
+                confidence="none",
+                effective_from=max(main_contract.effective_from, trade_contract.effective_from),
+                effective_to=min(main_contract.effective_to, trade_contract.effective_to),
+                diagnostics=(
+                    "static fixture only, not live market source",
+                    "metadata invalid / missing",
+                    *metadata_diagnostics,
+                ),
+            )
         return InstrumentResolution(
             status=InstrumentResolveStatus.RESOLVED,
             symbol=normalized_symbol,
@@ -105,8 +123,18 @@ class InstrumentResolver:
             confidence="static_fixture",
             effective_from=max(main_contract.effective_from, trade_contract.effective_from),
             effective_to=min(main_contract.effective_to, trade_contract.effective_to),
+            metadata=trade_contract.metadata,
             diagnostics=(
+                f"source={main_contract.source}",
                 "static fixture only, not live market source",
+                f"selected main contract={main_contract.instrument_id}",
+                f"selected trade contract={trade_contract.instrument_id}",
+                (
+                    "effective window="
+                    f"{max(main_contract.effective_from, trade_contract.effective_from)}"
+                    f"/{min(main_contract.effective_to, trade_contract.effective_to)}"
+                ),
+                _metadata_summary(trade_contract),
                 "resolver does not create signal, direction, price or quantity",
             ),
         )
@@ -139,3 +167,52 @@ def _contracts_by_role(
     role: ContractRole,
 ) -> tuple[InstrumentContract, ...]:
     return tuple(contract for contract in contracts if contract.role is role)
+
+
+def _metadata_summary(contract: InstrumentContract) -> str:
+    metadata = contract.metadata
+    if metadata is None:
+        return "metadata unavailable"
+    return (
+        "metadata="
+        f"product_name:{metadata.product_name},"
+        f"tick_size:{metadata.tick_size},"
+        f"contract_multiplier:{metadata.contract_multiplier},"
+        f"min_order_qty:{metadata.min_order_qty},"
+        f"price_limit_ref:{metadata.price_limit_ref},"
+        f"trading_session_ref:{metadata.trading_session_ref}"
+    )
+
+
+def _metadata_invalid_diagnostics(
+    main_contract: InstrumentContract,
+    trade_contract: InstrumentContract,
+) -> tuple[str, ...]:
+    return (
+        *_contract_metadata_invalid_diagnostics("main", main_contract),
+        *_contract_metadata_invalid_diagnostics("trade", trade_contract),
+    )
+
+
+def _contract_metadata_invalid_diagnostics(
+    role_name: str,
+    contract: InstrumentContract,
+) -> tuple[str, ...]:
+    metadata = contract.metadata
+    prefix = f"{role_name} contract {contract.instrument_id}"
+    if metadata is None:
+        return (f"{prefix} metadata missing",)
+    diagnostics: list[str] = []
+    if not metadata.product_name.strip():
+        diagnostics.append(f"{prefix} metadata invalid: product_name empty")
+    if metadata.tick_size <= 0:
+        diagnostics.append(f"{prefix} metadata invalid: tick_size <= 0")
+    if metadata.contract_multiplier <= 0:
+        diagnostics.append(f"{prefix} metadata invalid: contract_multiplier <= 0")
+    if metadata.min_order_qty <= 0:
+        diagnostics.append(f"{prefix} metadata invalid: min_order_qty <= 0")
+    if not metadata.price_limit_ref.strip():
+        diagnostics.append(f"{prefix} metadata invalid: price_limit_ref empty")
+    if not metadata.trading_session_ref.strip():
+        diagnostics.append(f"{prefix} metadata invalid: trading_session_ref empty")
+    return tuple(diagnostics)

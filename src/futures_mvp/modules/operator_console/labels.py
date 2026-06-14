@@ -181,11 +181,12 @@ FIELD_LABELS: dict[str, str] = {
     "resolver_notice": "resolver 说明",
     "quantity": "数量",
     "price": "价格",
-    "allowed instruments": "resolver 推荐允许合约",
+    "allowed instruments": "合约白名单：默认使用 resolver 交易合约",
     "direction_offset": "方向/开平",
     "dry_run": "dry-run",
     "db_write": "写库",
-    "instrument whitelist": "resolver 推荐允许合约",
+    "instrument whitelist": "合约白名单：默认使用 resolver 交易合约",
+    "current_whitelist": "当前白名单",
     "max_order_size": "最大委托数量",
     "max_position_size": "最大持仓数量",
     "max_daily_loss": "最大日亏损",
@@ -298,6 +299,7 @@ REASON_LABELS: dict[str, str] = {
     "resolver 结果不唯一": "resolver 结果不唯一，已阻断",
     "resolver 合约已过期": "resolver 合约不覆盖当前交易日，已阻断",
     "resolver 输入无效": "resolver 输入无效，已阻断",
+    "resolver metadata 无效": "resolver 静态元数据缺失或无效，已阻断",
     "resolver 未解析合约": "resolver 未解析出合约，已阻断",
     "missing provider": "当前没有可用的预演执行器",
     "dry-run returned non-MOCK target": "当前目标不是 MOCK，已阻止执行",
@@ -317,7 +319,8 @@ BLOCKED_RESULT_TEXT: dict[str, str] = {
     "description": "系统已安全阻断本次操作，没有写入数据库，也没有连接真实交易所。",
     "next_step_config": "1. 打开配置中心",
     "next_step_check": (
-        "2. 检查账户 ID、交易日、resolver 推荐允许合约、最大单笔数量、最大持仓数量、最大日亏损"
+        "2. 检查账户 ID、交易日、resolver 推荐交易合约白名单、"
+        "最大单笔数量、最大持仓数量、最大日亏损"
     ),
     "next_step_retry": "3. 回到 Paper/SIM 页面重新运行预演",
     "safe_db_delta_zero": "✅ 数据库写入变化：0",

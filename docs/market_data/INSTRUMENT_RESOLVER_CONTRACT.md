@@ -228,7 +228,8 @@ Implemented resolver behavior：
 - requires `trading_day` as ISO `YYYY-MM-DD` or `date` input。
 - selects only contracts whose effective window covers `trading_day`。
 - requires exactly one `CONTINUOUS_MAIN` and one `TRADE_CONTRACT`。
-- returns `RESOLVED`, `NOT_FOUND`, `AMBIGUOUS`, `EXPIRED` or `INVALID_INPUT`。
+- returns `RESOLVED`, `NOT_FOUND`, `AMBIGUOUS`, `EXPIRED`,
+  `INVALID_INPUT` or `METADATA_INVALID`。
 - returns diagnostics that state `static fixture only, not live market source`。
 
 Safety boundary remains unchanged：
@@ -267,3 +268,33 @@ in the resolver preview.
 The resolver preview must continue to state that this is local static fixture
 mapping only, not a live market source, and that no exchange connection is
 made.
+
+## Stage U.3.1 Static Registry Metadata + Fixture Coverage
+
+Baseline：`stage-u21-console-resolver-ui-polish / 9912b24`。
+
+Stage U.3.1 keeps the resolver local and deterministic. It adds static fixture
+metadata to local contracts only：
+
+- `product_name`。
+- `tick_size`。
+- `contract_multiplier`。
+- `min_order_qty`。
+- `price_limit_ref`。
+- `trading_session_ref`。
+
+These metadata values are static fixture metadata. They are not guaranteed to
+be complete real-market values and must not be used for live trading.
+
+Metadata is required for `RESOLVED`. The resolver must fail closed as
+`METADATA_INVALID` when selected main or trade contract metadata is missing or
+when `product_name`, `price_limit_ref` or `trading_session_ref` is empty, or
+when `tick_size`, `contract_multiplier` or `min_order_qty` is not positive.
+
+Fixture coverage includes `ao`, `rb`, `ag` and `cu`, each with base, continuous
+main and trade contracts. Resolver diagnostics include the static source,
+static fixture warning, selected main contract, selected trade contract,
+effective window and metadata summary when available.
+
+Stage U.3.1 still does not add DB persistence, schema, Alembic, live feed,
+quote API, CTP, SimNow, broker, network or non-`MOCK` execution targets.

@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from importlib import import_module
 from typing import Any, Protocol, cast
 
+from futures_mvp.modules.market_data.models import InstrumentResolveStatus
+from futures_mvp.modules.market_data.resolver import InstrumentResolver
 from futures_mvp.modules.operator_console import labels
 from futures_mvp.modules.operator_console.actions import (
     DryRunActionResult,
@@ -423,7 +425,11 @@ def _render_configuration(
     preview_col.subheader(labels.section_label("typed_command_preview"))
     preview_col.markdown(labels.section_label("resolver_preview"))
     if assembly.resolver_resolution is not None:
-        _render_resolver_preview(preview_col, assembly.resolver_resolution)
+        _render_resolver_preview(
+            preview_col,
+            assembly.resolver_resolution,
+            assembly.config.allowed_instruments,
+        )
     if assembly.preview is None:
         preview_col.markdown(labels.config_text("preview_blocked"))
         if assembly.validation.reason:
@@ -668,7 +674,11 @@ def _render_command_preview(ui: OperatorConsoleUI, preview: CommandPreview) -> N
     )
 
 
-def _render_resolver_preview(ui: OperatorConsoleUI, resolution: object) -> None:
+def _render_resolver_preview(
+    ui: OperatorConsoleUI,
+    resolution: object,
+    allowed_instruments: tuple[str, ...] = (),
+) -> None:
     _render_key_values(
         ui,
         (
@@ -697,6 +707,10 @@ def _render_resolver_preview(ui: OperatorConsoleUI, resolution: object) -> None:
                 _resolver_source_label(str(getattr(resolution, "source", "") or "")),
             ),
             ("resolver_confidence", str(getattr(resolution, "confidence", "") or "none")),
+            (
+                "current_whitelist",
+                _resolver_whitelist_value(allowed_instruments),
+            ),
             (
                 "effective_window",
                 _effective_window(
@@ -771,9 +785,14 @@ def _read_config_form(
         value=current.trading_day,
         key="operator_console_config_trading_day",
     )
+    default_allowed_instruments = _default_allowed_instruments(
+        symbol=symbol,
+        trading_day=trading_day,
+        current=current.allowed_instruments,
+    )
     allowed_instruments = first_row[3].text_input(
         labels.field_label("allowed instruments"),
-        value=format_allowed_instruments(current.allowed_instruments),
+        value=format_allowed_instruments(default_allowed_instruments),
         key="operator_console_config_allowed_instruments",
     )
     quantity = second_row[0].number_input(
@@ -913,6 +932,29 @@ def _resolver_source_label(source: str) -> str:
     if not source:
         return "static fixture only, not live market source"
     return source
+
+
+def _default_allowed_instruments(
+    *,
+    symbol: str,
+    trading_day: str,
+    current: tuple[str, ...],
+) -> tuple[str, ...]:
+    if current:
+        return current
+    resolution = InstrumentResolver().resolve(symbol, trading_day)
+    if (
+        resolution.status is InstrumentResolveStatus.RESOLVED
+        and resolution.trade_instrument_id
+    ):
+        return (resolution.trade_instrument_id,)
+    return ()
+
+
+def _resolver_whitelist_value(allowed_instruments: tuple[str, ...]) -> str:
+    if not allowed_instruments:
+        return "未配置"
+    return f"{format_allowed_instruments(allowed_instruments)}（由 resolver 推荐）"
 
 
 def _model_with_session_state(

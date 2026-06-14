@@ -3,10 +3,41 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
 
-from futures_mvp.modules.market_data.models import ContractRole, InstrumentContract
+from futures_mvp.modules.market_data.models import (
+    ContractRole,
+    InstrumentContract,
+    InstrumentMetadata,
+)
 
 STATIC_FIXTURE_SOURCE = "static_fixture"
+
+
+def _metadata(
+    product_name: str,
+    tick_size: str,
+    contract_multiplier: str,
+    min_order_qty: str = "1",
+    price_limit_ref: str = "static_fixture_price_limit_placeholder",
+    trading_session_ref: str = "static_fixture_day_night_session_placeholder",
+) -> InstrumentMetadata:
+    return InstrumentMetadata(
+        product_name=product_name,
+        tick_size=Decimal(tick_size),
+        contract_multiplier=Decimal(contract_multiplier),
+        min_order_qty=Decimal(min_order_qty),
+        price_limit_ref=price_limit_ref,
+        trading_session_ref=trading_session_ref,
+    )
+
+
+METADATA_BY_SYMBOL: dict[str, InstrumentMetadata] = {
+    "ao": _metadata("氧化铝", "1", "20"),
+    "rb": _metadata("螺纹钢", "1", "10"),
+    "ag": _metadata("白银", "1", "15"),
+    "cu": _metadata("沪铜", "10", "5"),
+}
 
 
 def _contract(
@@ -25,6 +56,7 @@ def _contract(
         effective_from=date.fromisoformat(effective_from),
         effective_to=date.fromisoformat(effective_to),
         source=STATIC_FIXTURE_SOURCE,
+        metadata=METADATA_BY_SYMBOL[symbol],
     )
 
 

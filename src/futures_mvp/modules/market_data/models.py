@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
 from enum import StrEnum
 
 
@@ -18,6 +19,17 @@ class InstrumentResolveStatus(StrEnum):
     AMBIGUOUS = "AMBIGUOUS"
     EXPIRED = "EXPIRED"
     INVALID_INPUT = "INVALID_INPUT"
+    METADATA_INVALID = "METADATA_INVALID"
+
+
+@dataclass(frozen=True)
+class InstrumentMetadata:
+    product_name: str
+    tick_size: Decimal
+    contract_multiplier: Decimal
+    min_order_qty: Decimal
+    price_limit_ref: str
+    trading_session_ref: str
 
 
 @dataclass(frozen=True)
@@ -29,6 +41,7 @@ class InstrumentContract:
     effective_from: date
     effective_to: date
     source: str = "static_fixture"
+    metadata: InstrumentMetadata | None = None
 
 
 @dataclass(frozen=True)
@@ -42,4 +55,5 @@ class InstrumentResolution:
     confidence: str = "none"
     effective_from: date | None = None
     effective_to: date | None = None
+    metadata: InstrumentMetadata | None = None
     diagnostics: tuple[str, ...] = ()

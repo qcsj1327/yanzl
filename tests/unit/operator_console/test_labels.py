@@ -116,6 +116,7 @@ def test_blocked_reason_labels_are_user_facing_chinese() -> None:
         "数量必须大于 0": "数量必须大于 0，已阻断",
         "价格必须大于 0": "价格必须大于 0，已阻断",
         "合约不在允许列表中": "合约不在允许列表中，已阻断",
+        "resolver metadata 无效": "resolver 静态元数据缺失或无效，已阻断",
         "non-MOCK target": "当前目标不是 MOCK，已阻止执行",
         "db_delta nonzero": "预演出现数据库写入变化，已阻止标记为成功",
     }

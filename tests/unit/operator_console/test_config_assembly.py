@@ -1,6 +1,10 @@
 from decimal import Decimal
 
 from futures_mvp.domain.enums import ExecutionTarget
+from futures_mvp.modules.market_data.models import (
+    InstrumentResolution,
+    InstrumentResolveStatus,
+)
 from futures_mvp.modules.operator_console.config_assembly import (
     MOCK_TARGET,
     ConsoleDryRunConfig,
@@ -117,6 +121,28 @@ def test_unresolved_resolver_blocks_dry_run_even_with_manual_instruments() -> No
 
     assert validation.blocked is True
     assert validation.reason == "resolver 未找到合约"
+    assert validation.missing_fields == ("resolver",)
+
+
+def test_metadata_invalid_resolver_blocks_dry_run() -> None:
+    validation = validate_config(
+        _valid_config(
+            resolver_resolution=InstrumentResolution(
+                status=InstrumentResolveStatus.METADATA_INVALID,
+                symbol="ao",
+                instrument_id="ao9999",
+                trade_instrument_id="ao2609",
+                diagnostics=(
+                    "static fixture only, not live market source",
+                    "metadata invalid / missing",
+                    "trade contract ao2609 metadata missing",
+                ),
+            )
+        )
+    )
+
+    assert validation.blocked is True
+    assert validation.reason == "resolver metadata 无效"
     assert validation.missing_fields == ("resolver",)
 
 

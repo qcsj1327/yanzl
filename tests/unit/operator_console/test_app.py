@@ -424,7 +424,7 @@ def test_configuration_page_renders_dry_run_required_config() -> None:
     assert "**品种:** 未配置" in rendered
     assert "**resolver 状态:** 未解析" in rendered
     assert "**合约白名单:** 未配置" not in rendered
-    assert "**resolver 推荐允许合约:** 未配置" in rendered
+    assert "**合约白名单：默认使用 resolver 交易合约:** 未配置" in rendered
     assert "**最大委托数量:** 未配置" in rendered
     assert "**最大持仓数量:** 未配置" in rendered
     assert "**最大日亏损:** 未配置" in rendered
@@ -455,6 +455,7 @@ def test_configuration_page_renders_typed_command_preview_from_filled_form() -> 
     assert "**交易所:** SHFE（由 resolver 生成）" in rendered
     assert "**来源:** static fixture only, not live market source" in rendered
     assert "**置信度:** static_fixture" in rendered
+    assert "**当前白名单:** ao2609（由 resolver 推荐）" in rendered
     assert "**生效区间:** 2026-01-01 / 2026-12-31" in rendered
     assert "当前为本地静态合约映射，不是真实行情源，不会连接交易所" in rendered
     assert "**方向/开平:** BUY / OPEN" in rendered
@@ -490,6 +491,55 @@ def test_configuration_normal_form_does_not_render_editable_instrument_inputs() 
     assert "operator_console_config_instrument_id" not in input_keys
     assert "operator_console_config_trade_instrument_id" not in input_keys
     assert "operator_console_config_exchange" not in input_keys
+
+
+def test_configuration_default_allowed_instruments_comes_from_resolver() -> None:
+    ui = FakeUI(
+        selected_label=labels.page_title(OperatorPage.CONFIGURATION.value),
+        input_values=_valid_config_inputs(),
+    )
+
+    render_console(ui, default_console_view_model())
+
+    stored = ui.session_state["operator_console_dry_run_config"]
+    assert isinstance(stored, ConsoleDryRunConfig)
+    assert stored.allowed_instruments == ("ao2609",)
+    rendered = "\n".join(str(item) for item in [*ui.markdowns, *ui.subheaders])
+    assert "**当前白名单:** ao2609（由 resolver 推荐）" in rendered
+
+
+def test_configuration_cleared_allowed_instruments_blocks() -> None:
+    inputs = {
+        **_valid_config_inputs(),
+        "operator_console_config_allowed_instruments": "",
+    }
+    ui = FakeUI(
+        selected_label=labels.page_title(OperatorPage.CONFIGURATION.value),
+        input_values=inputs,
+    )
+
+    render_console(ui, default_console_view_model())
+
+    rendered = "\n".join(str(item) for item in [*ui.markdowns, *ui.subheaders])
+    assert "当前配置还不能生成 typed dry-run command preview。" in rendered
+    assert "原因: 合约不在允许列表中，已阻断" in rendered
+
+
+def test_configuration_mismatched_allowed_instruments_blocks() -> None:
+    inputs = {
+        **_valid_config_inputs(),
+        "operator_console_config_allowed_instruments": "rb2610",
+    }
+    ui = FakeUI(
+        selected_label=labels.page_title(OperatorPage.CONFIGURATION.value),
+        input_values=inputs,
+    )
+
+    render_console(ui, default_console_view_model())
+
+    rendered = "\n".join(str(item) for item in [*ui.markdowns, *ui.subheaders])
+    assert "当前配置还不能生成 typed dry-run command preview。" in rendered
+    assert "原因: 合约不在允许列表中，已阻断" in rendered
 
 
 def test_live_locked_page_renders_strong_warning() -> None:
@@ -623,10 +673,7 @@ def test_sim_blocked_dry_run_renders_user_guidance() -> None:
     rendered = "\n".join(str(item) for item in [*ui.markdowns, *ui.subheaders])
     assert "⚠️ 本次预演未执行" in rendered
     assert "当前缺少完整的 SIM 预演配置，因此没有执行" in rendered
-    assert (
-        "2. 检查账户 ID、交易日、resolver 推荐允许合约、最大单笔数量、最大持仓数量、最大日亏损"
-        in rendered
-    )
+    assert "2. 检查账户 ID、交易日、resolver 推荐交易合约白名单" in rendered
 
 
 def test_apply_click_does_not_call_dry_run_provider() -> None:
@@ -791,7 +838,6 @@ def _valid_config_inputs() -> dict[str, str]:
         "operator_console_config_max_order_size": "1",
         "operator_console_config_max_position_size": "1",
         "operator_console_config_max_daily_loss": "1000",
-        "operator_console_config_allowed_instruments": "ao2609",
     }
 
 

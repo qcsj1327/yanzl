@@ -377,5 +377,6 @@ def _resolver_blocked_reason(resolution: InstrumentResolution) -> str:
         InstrumentResolveStatus.AMBIGUOUS: "resolver 结果不唯一",
         InstrumentResolveStatus.EXPIRED: "resolver 合约已过期",
         InstrumentResolveStatus.INVALID_INPUT: "resolver 输入无效",
+        InstrumentResolveStatus.METADATA_INVALID: "resolver metadata 无效",
     }
     return reason_by_status.get(resolution.status, "resolver 未解析合约")
