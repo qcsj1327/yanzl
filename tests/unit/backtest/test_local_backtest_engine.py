@@ -4,6 +4,8 @@ from datetime import date
 from decimal import Decimal
 from typing import cast
 
+import pytest
+
 from futures_mvp.modules.backtest import (
     BacktestRequest,
     BacktestStatus,
@@ -359,6 +361,43 @@ def test_fill_model_generated_trade_returns_backtest_error() -> None:
     )
     assert len(result.simulated_orders) == 1
     assert len(result.fill_model_results) == 1
+    assert result.simulated_trades == ()
+    assert result.equity_curve == ()
+
+
+@pytest.mark.parametrize(
+    "fill_status",
+    (
+        FillModelStatus.REJECTED,
+        FillModelStatus.DATA_GAP,
+        FillModelStatus.FILLED,
+    ),
+)
+def test_fill_like_status_without_trade_returns_backtest_error(
+    fill_status: FillModelStatus,
+) -> None:
+    class FillLikeStatusModel:
+        def fill(self, order: object) -> FillModelResult:
+            return FillModelResult(
+                status=fill_status,
+                simulated_trade=None,
+                diagnostics=("fill-like status for test",),
+            )
+
+    result = LocalBacktestEngine(
+        strategy=BuyAndHoldStrategy(),
+        fill_model=FillLikeStatusModel(),
+    ).run(_request())
+
+    assert result.status is BacktestStatus.ERROR
+    assert result.diagnostics.messages == (
+        "fill model status is not supported before trade generation stage",
+        f"fill_status={fill_status.value}",
+    )
+    assert len(result.simulated_orders) == 1
+    assert len(result.fill_model_results) == 1
+    assert result.fill_model_results[0].status is fill_status
+    assert result.fill_model_results[0].simulated_trade is None
     assert result.simulated_trades == ()
     assert result.equity_curve == ()
 
