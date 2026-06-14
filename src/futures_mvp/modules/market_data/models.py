@@ -48,6 +48,7 @@ class InstrumentContract:
 class InstrumentResolution:
     status: InstrumentResolveStatus
     symbol: str
+    trading_day: date | None = None
     instrument_id: str | None = None
     trade_instrument_id: str | None = None
     exchange: str | None = None

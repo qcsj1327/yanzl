@@ -14,6 +14,11 @@ from futures_mvp.domain.enums import (
 )
 from futures_mvp.domain.models import ExecutionCommand, OrderRequest, OrderState
 from futures_mvp.modules.execution_gateway import build_execution_command_payload_hash
+from futures_mvp.modules.market_data.consumer import (
+    ResolvedInstrumentIdentity,
+    ResolverConsumerContext,
+    ResolverLineage,
+)
 from futures_mvp.modules.ops_safety import (
     CapitalControlConfig,
     CapitalControlContext,
@@ -165,7 +170,12 @@ def _run_context(command: ExecutionCommand) -> SimRunContext:
     )
 
 
-def _config(*, dry_run: bool = True, apply_confirmed: bool = False) -> SimSessionConfig:
+def _config(
+    *,
+    dry_run: bool = True,
+    apply_confirmed: bool = False,
+    resolver_required: bool = False,
+) -> SimSessionConfig:
     return SimSessionConfig(
         session_name="sim-local-smoke",
         runtime_id="runtime-1",
@@ -174,6 +184,7 @@ def _config(*, dry_run: bool = True, apply_confirmed: bool = False) -> SimSessio
         dry_run=dry_run,
         max_commands=2,
         apply_confirmed=apply_confirmed,
+        resolver_required=resolver_required,
     )
 
 
@@ -291,6 +302,58 @@ def test_sim_local_session_blocks_empty_untyped_and_non_mock_commands() -> None:
     assert non_mock.status is SimSessionStatus.BLOCKED
     assert non_mock.reason == "sim session supports ExecutionTarget.MOCK only"
     assert factory.calls == []
+
+
+def test_resolver_required_session_blocks_missing_context() -> None:
+    coordinator = FakeCoordinator()
+    factory = RecordingJobFactory(coordinator)
+
+    result = SimLocalSession(
+        config=_config(resolver_required=True),
+        commands=(_command(),),
+        job_factory=factory,
+        clock=lambda: NOW,
+    ).run()
+
+    assert result.status is SimSessionStatus.BLOCKED
+    assert result.reason == "sim session requires resolver consumer context"
+    assert factory.calls == []
+
+
+def test_resolver_required_session_blocks_identity_mismatch() -> None:
+    coordinator = FakeCoordinator()
+    factory = RecordingJobFactory(coordinator)
+
+    result = SimLocalSession(
+        config=_config(resolver_required=True),
+        commands=(_command(),),
+        resolver_consumer_context=_resolver_context(trade_instrument_id="rb2610"),
+        job_factory=factory,
+        clock=lambda: NOW,
+    ).run()
+
+    assert result.status is SimSessionStatus.BLOCKED
+    assert result.reason == "sim session resolver identity mismatch: trade_instrument_id"
+    assert factory.calls == []
+
+
+def _resolver_context(*, trade_instrument_id: str = "rb2601") -> ResolverConsumerContext:
+    return ResolverConsumerContext(
+        identity=ResolvedInstrumentIdentity(
+            symbol="rb",
+            instrument_id="rb2601",
+            trade_instrument_id=trade_instrument_id,
+            exchange="SHFE",
+            trading_day=TRADING_DAY,
+        ),
+        lineage=ResolverLineage(
+            resolver_source="static_fixture",
+            resolver_confidence="static_fixture",
+            resolver_effective_from=TRADING_DAY,
+            resolver_effective_to=TRADING_DAY,
+            resolver_diagnostics_summary="static fixture only, not live market source",
+        ),
+    )
 
 
 def test_sim_local_session_conflict_stops_later_commands() -> None:

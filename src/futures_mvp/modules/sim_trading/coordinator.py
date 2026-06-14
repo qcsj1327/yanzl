@@ -45,6 +45,7 @@ from futures_mvp.domain.models import (
     TradeBridgeResult,
     TradingCalendar,
 )
+from futures_mvp.modules.market_data.consumer import ResolverConsumerContext
 from futures_mvp.modules.ops_safety import (
     CapitalControlContext,
     CapitalControlDecision,
@@ -169,6 +170,7 @@ class SimRunContext:
     symbol: str
     trade_instrument_id: str
     runtime_ready: bool
+    resolver_consumer_context: ResolverConsumerContext | None = None
     operator_approval: OperatorApproval | None = None
     unresolved_critical_incidents: tuple[str, ...] = ()
     apply_oms_events: bool = True

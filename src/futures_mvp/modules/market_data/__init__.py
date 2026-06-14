@@ -1,3 +1,11 @@
+from futures_mvp.modules.market_data.consumer import (
+    ResolvedInstrumentIdentity,
+    ResolverConsumerContext,
+    ResolverConsumerContextBuildResult,
+    ResolverLineage,
+    build_resolver_consumer_context,
+    resolver_context_command_mismatch,
+)
 from futures_mvp.modules.market_data.models import (
     ContractRole,
     InstrumentContract,
@@ -16,4 +24,10 @@ __all__ = [
     "InstrumentResolution",
     "InstrumentResolveStatus",
     "InstrumentResolver",
+    "ResolvedInstrumentIdentity",
+    "ResolverConsumerContext",
+    "ResolverConsumerContextBuildResult",
+    "ResolverLineage",
+    "build_resolver_consumer_context",
+    "resolver_context_command_mismatch",
 ]

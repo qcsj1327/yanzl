@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 
 from futures_mvp.domain.enums import ExecutionTarget
+from futures_mvp.modules.market_data.consumer import resolver_context_command_mismatch
 from futures_mvp.modules.ops_safety import RolloutMode, evaluate_capital_controls
 from futures_mvp.modules.ops_safety.kill_switch import (
     evaluate_replay_gate,
@@ -44,6 +45,7 @@ class SimJobConfig:
     require_scheduler_not_paused: bool = True
     require_replay_not_paused: bool = True
     apply_confirmed: bool = False
+    resolver_required: bool = False
 
     def __post_init__(self) -> None:
         if not self.job_name:
@@ -208,6 +210,15 @@ def _context_blocked_reason(context: SimRunContext, config: SimJobConfig) -> str
         return "SafetyConfig rollout mode must be SIM"
     if context.command.execution_target is not ExecutionTarget.MOCK:
         return "sim job supports ExecutionTarget.MOCK only"
+    if config.resolver_required:
+        if context.resolver_consumer_context is None:
+            return "sim run context requires resolver consumer context"
+        mismatch = resolver_context_command_mismatch(
+            context.resolver_consumer_context,
+            context.command,
+        )
+        if mismatch is not None:
+            return f"sim run context {mismatch}"
     if context.operator_approval is None:
         return "operator approval is required"
     if context.operator_approval.environment != "sim":

@@ -7,6 +7,44 @@ Stage U.4.1 is documentation-only. It freezes how local resolver consumers use
 DB writes, live feed, CTP, SimNow, broker, network integration or non-`MOCK`
 execution targets.
 
+## Stage U.4.3 In-Memory Resolver Consumer Context
+
+Baseline：`stage-u41-resolver-consumer-contract-freeze / 4816877`。
+
+Stage U.4.3 implements the first local in-memory resolver consumer context. It
+does not persist resolver snapshots and does not add schema, Alembic migration,
+DB writes, live feed, quote API, CTP, SimNow, broker, network integration or
+non-`MOCK` execution targets.
+
+The typed context is code-local only：
+
+- `ResolvedInstrumentIdentity` carries `symbol`, `instrument_id`,
+  `trade_instrument_id`, `exchange` and `trading_day`。
+- `ResolverLineage` carries resolver source, confidence, effective window,
+  diagnostics summary and optional static metadata summary。
+- `ResolverConsumerContext` combines identity and lineage。
+
+`ResolverConsumerContext` may be built only from
+`InstrumentResolution.status == RESOLVED`. `NOT_FOUND`, `INVALID_INPUT`,
+`EXPIRED`, `AMBIGUOUS` and `METADATA_INVALID` fail closed and do not produce a
+consumer context.
+
+Console dry-run assembly must build both the typed command preview and the
+resolver consumer context from the same resolver result. Paper and SIM console
+dry-run wiring must require the context and block if it is missing or if command
+identity does not match resolver identity.
+
+PaperLocalSession and SimLocalSession expose a `resolver_required` migration
+gate for local dry-run wiring. When the gate is enabled, direct typed commands
+without resolver context are blocked, and command/context identity mismatch is
+blocked. Non-console migration paths may keep the gate disabled until they are
+ported to resolver-derived identity, but they must not claim U.4.1 compliance
+until the gate is enabled.
+
+The context must not be copied into `raw_payload` as a fact source. Durable
+resolver lineage still requires a separate `Resolver Snapshot Persistence
+Contract Freeze`.
+
 ## Consumer Scope
 
 This contract applies to local deterministic consumers only：

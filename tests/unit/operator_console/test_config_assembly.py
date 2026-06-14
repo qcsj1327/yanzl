@@ -38,6 +38,10 @@ def test_valid_config_creates_typed_command_preview() -> None:
     assert assembly.command.trade_instrument_id == "ao2609"
     assert assembly.command.quantity == Decimal("1")
     assert assembly.command.price == Decimal("500")
+    assert assembly.resolver_consumer_context is not None
+    assert assembly.resolver_consumer_context.identity.symbol == "ao"
+    assert assembly.resolver_consumer_context.identity.trading_day.isoformat() == "2026-06-12"
+    assert assembly.resolver_consumer_context.lineage.resolver_source == "static_fixture"
 
 
 def test_missing_fields_are_blocked_with_chinese_reason_and_list() -> None:

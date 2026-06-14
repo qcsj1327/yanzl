@@ -13,6 +13,10 @@ from futures_mvp.domain.enums import (
     OrderType,
 )
 from futures_mvp.domain.models import ExecutionCommand
+from futures_mvp.modules.market_data.consumer import (
+    ResolverConsumerContext,
+    build_resolver_consumer_context,
+)
 from futures_mvp.modules.market_data.models import (
     InstrumentResolution,
     InstrumentResolveStatus,
@@ -77,6 +81,7 @@ class ConfigAssemblyResult:
     preview: CommandPreview | None = None
     command: ExecutionCommand | None = None
     resolver_resolution: InstrumentResolution | None = None
+    resolver_consumer_context: ResolverConsumerContext | None = None
 
 
 @dataclass(frozen=True)
@@ -120,6 +125,17 @@ def assemble_config(config: ConsoleDryRunConfig) -> ConfigAssemblyResult:
             validation=validation,
             resolver_resolution=resolution,
         )
+    context_result = build_resolver_consumer_context(resolution)
+    if context_result.blocked or context_result.context is None:
+        return ConfigAssemblyResult(
+            config=resolved_config,
+            validation=ConfigValidationResult(
+                blocked=True,
+                reason=context_result.reason or "resolver consumer context 无效",
+                missing_fields=("resolver context",),
+            ),
+            resolver_resolution=resolution,
+        )
     command = build_preview_command(resolved_config)
     return ConfigAssemblyResult(
         config=resolved_config,
@@ -127,6 +143,7 @@ def assemble_config(config: ConsoleDryRunConfig) -> ConfigAssemblyResult:
         preview=build_command_preview(resolved_config),
         command=command,
         resolver_resolution=resolution,
+        resolver_consumer_context=context_result.context,
     )
 
 

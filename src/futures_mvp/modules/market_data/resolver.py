@@ -43,6 +43,7 @@ class InstrumentResolver:
             return InstrumentResolution(
                 status=InstrumentResolveStatus.NOT_FOUND,
                 symbol=normalized_symbol,
+                trading_day=parsed_day,
                 diagnostics=(
                     "static fixture only, not live market source",
                     "no contract fixture for symbol",
@@ -58,6 +59,7 @@ class InstrumentResolver:
             return InstrumentResolution(
                 status=InstrumentResolveStatus.EXPIRED,
                 symbol=normalized_symbol,
+                trading_day=parsed_day,
                 diagnostics=(
                     "static fixture only, not live market source",
                     "no contract effective window covers trading_day",
@@ -70,6 +72,7 @@ class InstrumentResolver:
             return InstrumentResolution(
                 status=InstrumentResolveStatus.AMBIGUOUS,
                 symbol=normalized_symbol,
+                trading_day=parsed_day,
                 diagnostics=(
                     "static fixture only, not live market source",
                     "multiple main or trade contracts cover trading_day",
@@ -79,6 +82,7 @@ class InstrumentResolver:
             return InstrumentResolution(
                 status=InstrumentResolveStatus.NOT_FOUND,
                 symbol=normalized_symbol,
+                trading_day=parsed_day,
                 diagnostics=(
                     "static fixture only, not live market source",
                     "main contract and trade contract must both exist",
@@ -90,6 +94,7 @@ class InstrumentResolver:
             return InstrumentResolution(
                 status=InstrumentResolveStatus.AMBIGUOUS,
                 symbol=normalized_symbol,
+                trading_day=parsed_day,
                 diagnostics=(
                     "static fixture only, not live market source",
                     "main and trade contracts resolve to different exchanges",
@@ -100,6 +105,7 @@ class InstrumentResolver:
             return InstrumentResolution(
                 status=InstrumentResolveStatus.METADATA_INVALID,
                 symbol=normalized_symbol,
+                trading_day=parsed_day,
                 instrument_id=main_contract.instrument_id,
                 trade_instrument_id=trade_contract.instrument_id,
                 exchange=main_contract.exchange,
@@ -116,6 +122,7 @@ class InstrumentResolver:
         return InstrumentResolution(
             status=InstrumentResolveStatus.RESOLVED,
             symbol=normalized_symbol,
+            trading_day=parsed_day,
             instrument_id=main_contract.instrument_id,
             trade_instrument_id=trade_contract.instrument_id,
             exchange=main_contract.exchange,

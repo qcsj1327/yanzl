@@ -44,6 +44,7 @@ from futures_mvp.domain.models import (
     TradeBridgeResult,
     TradingCalendar,
 )
+from futures_mvp.modules.market_data.consumer import ResolverConsumerContext
 from futures_mvp.modules.ops_safety import (
     CapitalControlContext,
     CapitalControlDecision,
@@ -166,6 +167,7 @@ class PaperRunContext:
     current_order_state: OrderState
     symbol: str
     trade_instrument_id: str
+    resolver_consumer_context: ResolverConsumerContext | None = None
     operator_approval: OperatorApproval | None = None
     apply_oms_events: bool = True
     accounting: PaperAccountingContext | None = None

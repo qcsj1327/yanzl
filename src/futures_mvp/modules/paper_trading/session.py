@@ -7,6 +7,10 @@ from enum import StrEnum
 
 from futures_mvp.domain.enums import ExecutionTarget
 from futures_mvp.domain.models import ExecutionCommand
+from futures_mvp.modules.market_data.consumer import (
+    ResolverConsumerContext,
+    resolver_context_command_mismatch,
+)
 from futures_mvp.modules.paper_trading.job import (
     PaperJobConfig,
     PaperJobResult,
@@ -35,6 +39,7 @@ class PaperSessionConfig:
     stop_on_first_error: bool = True
     stop_on_conflict: bool = True
     apply_confirmed: bool = False
+    resolver_required: bool = False
 
     def __post_init__(self) -> None:
         if not self.session_name:
@@ -76,12 +81,14 @@ class PaperLocalSession:
         job_factory: PaperRuntimeJobFactory,
         commands: Sequence[ExecutionCommand] | None = None,
         command_provider: PaperCommandProvider | None = None,
+        resolver_consumer_context: ResolverConsumerContext | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._config = config
         self._job_factory = job_factory
         self._commands = tuple(commands) if commands is not None else None
         self._command_provider = command_provider
+        self._resolver_consumer_context = resolver_consumer_context
         self._clock = clock or (lambda: datetime.now(UTC))
 
     def run(self) -> PaperSessionResult:
@@ -95,7 +102,11 @@ class PaperLocalSession:
         except Exception as exc:  # noqa: BLE001
             return self._result(PaperSessionStatus.ERROR, started_at, reason=str(exc))
 
-        command_blocked = _command_blocked_reason(commands)
+        command_blocked = _command_blocked_reason(
+            commands,
+            resolver_required=self._config.resolver_required,
+            resolver_consumer_context=self._resolver_consumer_context,
+        )
         if command_blocked is not None:
             return self._result(
                 PaperSessionStatus.BLOCKED,
@@ -112,6 +123,7 @@ class PaperLocalSession:
             max_commands_per_run=self._config.max_commands,
             stop_on_first_error=self._config.stop_on_first_error,
             stop_on_conflict=self._config.stop_on_conflict,
+            resolver_required=self._config.resolver_required,
         )
         job = self._job_factory(job_config, selected)
         job_result = job()
@@ -182,26 +194,42 @@ def run_paper_local_session(
     config: PaperSessionConfig,
     job_factory: PaperRuntimeJobFactory,
     commands: Sequence[ExecutionCommand] | None = None,
-    command_provider: PaperCommandProvider | None = None,
-    clock: Callable[[], datetime] | None = None,
+        command_provider: PaperCommandProvider | None = None,
+        resolver_consumer_context: ResolverConsumerContext | None = None,
+        clock: Callable[[], datetime] | None = None,
 ) -> PaperSessionResult:
     return PaperLocalSession(
         config=config,
         job_factory=job_factory,
         commands=commands,
         command_provider=command_provider,
+        resolver_consumer_context=resolver_consumer_context,
         clock=clock,
     ).run()
 
 
-def _command_blocked_reason(commands: tuple[ExecutionCommand, ...]) -> str | None:
+def _command_blocked_reason(
+    commands: tuple[ExecutionCommand, ...],
+    *,
+    resolver_required: bool = False,
+    resolver_consumer_context: ResolverConsumerContext | None = None,
+) -> str | None:
     if not commands:
         return "paper session requires at least one typed ExecutionCommand"
+    if resolver_required and resolver_consumer_context is None:
+        return "paper session requires resolver consumer context"
     for command in commands:
         if not isinstance(command, ExecutionCommand):
             return "paper session command source must return typed ExecutionCommand"
         if command.execution_target is not ExecutionTarget.MOCK:
             return "paper session supports ExecutionTarget.MOCK only"
+        if resolver_consumer_context is not None:
+            mismatch = resolver_context_command_mismatch(
+                resolver_consumer_context,
+                command,
+            )
+            if mismatch is not None:
+                return f"paper session {mismatch}"
     return None
 
 

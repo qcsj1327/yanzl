@@ -1033,3 +1033,30 @@ filenames, broker raw fields or manual IDs as identity fallback.
 
 Stage U.4.1 does not add schema, DB writes, live feed, quote API, CTP, SimNow,
 broker, network integration or non-`MOCK` execution targets.
+
+## Stage U.4.3 Resolver Consumer Context Wiring
+
+Baseline：`stage-u41-resolver-consumer-contract-freeze / 4816877`。
+
+Stage U.4.3 keeps resolver consumer context in memory only. Console config
+assembly builds a typed dry-run command preview and a resolver consumer context
+from the same `RESOLVED` resolver result. The context is not persisted and is
+not placed in `raw_payload`.
+
+Console Paper/SIM dry-run providers must pass the resolver consumer context into
+local Paper/SIM session wiring. Missing context, unresolved resolver status,
+`METADATA_INVALID`, cleared whitelist or command/context identity mismatch keeps
+the dry-run `BLOCKED`.
+
+The session gate is local and explicit：Console dry-run uses
+`resolver_required=True`; non-console migration paths may remain disabled until
+ported, but they must not bypass resolver identity in the Console normal path.
+
+Safety boundary remains unchanged：
+
+- no schema or Alembic migration。
+- no DB or ledger write。
+- no live feed, quote API, CTP, SimNow, broker or network integration。
+- no `ExecutionTarget.PAPER`, `ExecutionTarget.SIM` or
+  `ExecutionTarget.LIVE` enablement。
+- resolver context does not decide direction, price, quantity or signal。

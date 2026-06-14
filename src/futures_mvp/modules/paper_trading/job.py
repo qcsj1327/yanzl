@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 
+from futures_mvp.modules.market_data.consumer import resolver_context_command_mismatch
 from futures_mvp.modules.ops_safety import RolloutMode, evaluate_capital_controls
 from futures_mvp.modules.ops_safety.kill_switch import (
     evaluate_replay_gate,
@@ -42,6 +43,7 @@ class PaperJobConfig:
     require_capital_controls: bool = True
     require_scheduler_not_paused: bool = True
     require_replay_not_paused: bool = True
+    resolver_required: bool = False
 
     def __post_init__(self) -> None:
         if not self.job_name:
@@ -166,6 +168,15 @@ class PaperRuntimeJob:
         for context in contexts:
             if context.rollout_mode is not RolloutMode.PAPER:
                 return "paper run context requires RolloutMode.PAPER"
+            if self._config.resolver_required:
+                if context.resolver_consumer_context is None:
+                    return "paper run context requires resolver consumer context"
+                mismatch = resolver_context_command_mismatch(
+                    context.resolver_consumer_context,
+                    context.command,
+                )
+                if mismatch is not None:
+                    return f"paper run context {mismatch}"
             if context.safety_config.rollout.mode is not RolloutMode.PAPER:
                 return "SafetyConfig rollout mode must be PAPER"
             if self._config.require_migration_ready and not context.migration.compatible:

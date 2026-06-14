@@ -3,6 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
+from futures_mvp.modules.market_data.consumer import (
+    ResolvedInstrumentIdentity,
+    ResolverConsumerContext,
+    ResolverLineage,
+)
 from futures_mvp.modules.operator_console.config_assembly import ConsoleDryRunConfig
 from futures_mvp.modules.operator_console.dry_run_wiring import (
     PaperDryRunWiring,
@@ -31,19 +36,30 @@ TRADING_DAY = date(2026, 6, 11)
 @dataclass(frozen=True)
 class FakeCommand:
     execution_target: str = "MOCK"
+    symbol: str = "ao"
+    instrument_id: str = "ao9999"
+    trade_instrument_id: str = "ao2609"
+    exchange: str = "SHFE"
 
 
 class FakePaperSession:
     calls = 0
     configs: list[PaperSessionConfig] = []
+    contexts: list[ResolverConsumerContext | None] = []
 
     def __init__(self, **kwargs: object) -> None:
         self._config = kwargs["config"]
+        self._resolver_context = kwargs.get("resolver_consumer_context")
 
     def run(self) -> PaperSessionResult:
         FakePaperSession.calls += 1
         assert isinstance(self._config, PaperSessionConfig)
         FakePaperSession.configs.append(self._config)
+        assert self._resolver_context is None or isinstance(
+            self._resolver_context,
+            ResolverConsumerContext,
+        )
+        FakePaperSession.contexts.append(self._resolver_context)
         return PaperSessionResult(
             session_name=self._config.session_name,
             status=PaperSessionStatus.DRY_RUN_COMPLETED,
@@ -61,14 +77,21 @@ class FakePaperSession:
 class FakeSimSession:
     calls = 0
     configs: list[SimSessionConfig] = []
+    contexts: list[ResolverConsumerContext | None] = []
 
     def __init__(self, **kwargs: object) -> None:
         self._config = kwargs["config"]
+        self._resolver_context = kwargs.get("resolver_consumer_context")
 
     def run(self) -> SimSessionResult:
         FakeSimSession.calls += 1
         assert isinstance(self._config, SimSessionConfig)
         FakeSimSession.configs.append(self._config)
+        assert self._resolver_context is None or isinstance(
+            self._resolver_context,
+            ResolverConsumerContext,
+        )
+        FakeSimSession.contexts.append(self._resolver_context)
         return SimSessionResult(
             session_name=self._config.session_name,
             status=SimSessionStatus.DRY_RUN_COMPLETED,
@@ -86,6 +109,8 @@ class FakeSimSession:
 def test_paper_dry_run_provider_uses_local_session_path_with_safe_config() -> None:
     FakePaperSession.calls = 0
     FakePaperSession.configs = []
+    FakePaperSession.contexts = []
+    FakePaperSession.contexts = []
 
     result = create_paper_dry_run_provider(
         PaperDryRunWiring(
@@ -201,6 +226,7 @@ def test_sim_config_provider_runs_console_local_fixture_by_default() -> None:
 def test_config_provider_uses_typed_ui_config_when_dependencies_are_injected() -> None:
     FakePaperSession.calls = 0
     FakePaperSession.configs = []
+    FakePaperSession.contexts = []
 
     result = create_paper_config_dry_run_provider(
         _console_config(),
@@ -212,6 +238,9 @@ def test_config_provider_uses_typed_ui_config_when_dependencies_are_injected() -
     assert FakePaperSession.configs[0].account_id == "account-1"
     assert FakePaperSession.configs[0].dry_run is True
     assert FakePaperSession.configs[0].apply_confirmed is False
+    assert FakePaperSession.configs[0].resolver_required is True
+    assert FakePaperSession.contexts[0] is not None
+    assert FakePaperSession.contexts[0].identity.trade_instrument_id == "ao2609"
     assert result.session_status == "DRY_RUN_COMPLETED"
     assert result.target == "MOCK only"
 
@@ -227,6 +256,45 @@ def test_invalid_config_provider_blocks_before_session_run() -> None:
 
     assert result.session_status == "BLOCKED"
     assert result.reason == "数量必须大于 0：quantity"
+    assert FakeSimSession.calls == 0
+
+
+def test_resolver_required_wiring_blocks_missing_context() -> None:
+    FakePaperSession.calls = 0
+
+    result = create_paper_dry_run_provider(
+        PaperDryRunWiring(
+            config=_paper_config(),
+            job_factory=_paper_job_factory,
+            commands=(FakeCommand(),),  # type: ignore[arg-type]
+            session_factory=FakePaperSession,
+            resolver_required=True,
+        )
+    )()
+
+    assert result.session_status == "BLOCKED"
+    assert result.reason == "paper dry-run requires resolver consumer context"
+    assert FakePaperSession.calls == 0
+
+
+def test_resolver_required_wiring_blocks_command_identity_mismatch() -> None:
+    FakeSimSession.calls = 0
+
+    result = create_sim_dry_run_provider(
+        SimDryRunWiring(
+            config=_sim_config(),
+            job_factory=_sim_job_factory,
+            commands=(
+                FakeCommand(trade_instrument_id="manual2609"),  # type: ignore[arg-type]
+            ),
+            resolver_consumer_context=_resolver_context(),
+            session_factory=FakeSimSession,
+            resolver_required=True,
+        )
+    )()
+
+    assert result.session_status == "BLOCKED"
+    assert result.reason == "sim dry-run resolver identity mismatch: trade_instrument_id"
     assert FakeSimSession.calls == 0
 
 
@@ -269,6 +337,25 @@ def _console_config(**overrides: object) -> ConsoleDryRunConfig:
     }
     values.update(overrides)
     return ConsoleDryRunConfig(**values)
+
+
+def _resolver_context() -> ResolverConsumerContext:
+    return ResolverConsumerContext(
+        identity=ResolvedInstrumentIdentity(
+            symbol="ao",
+            instrument_id="ao9999",
+            trade_instrument_id="ao2609",
+            exchange="SHFE",
+            trading_day=TRADING_DAY,
+        ),
+        lineage=ResolverLineage(
+            resolver_source="static_fixture",
+            resolver_confidence="static_fixture",
+            resolver_effective_from=TRADING_DAY,
+            resolver_effective_to=TRADING_DAY,
+            resolver_diagnostics_summary="static fixture only, not live market source",
+        ),
+    )
 
 
 def _paper_job_factory(*_args: object, **_kwargs: object) -> object:

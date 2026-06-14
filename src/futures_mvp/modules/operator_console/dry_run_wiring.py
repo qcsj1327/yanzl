@@ -6,6 +6,10 @@ from datetime import date
 from typing import Any, Protocol
 
 from futures_mvp.domain.models import ExecutionCommand
+from futures_mvp.modules.market_data.consumer import (
+    ResolverConsumerContext,
+    resolver_context_command_mismatch,
+)
 from futures_mvp.modules.operator_console.actions import (
     DryRunActionResult,
     DryRunProvider,
@@ -53,9 +57,11 @@ class PaperDryRunWiring:
     job_factory: PaperRuntimeJobFactory | None = None
     commands: Sequence[ExecutionCommand] | None = None
     command_provider: PaperCommandProvider | None = None
+    resolver_consumer_context: ResolverConsumerContext | None = None
     session_factory: PaperSessionFactory = PaperLocalSession
     target: str = MOCK_TARGET
     apply_requested: bool = False
+    resolver_required: bool = False
 
 
 @dataclass(frozen=True)
@@ -64,9 +70,11 @@ class SimDryRunWiring:
     job_factory: SimRuntimeJobFactory | None = None
     commands: Sequence[ExecutionCommand] | None = None
     command_provider: SimCommandProvider | None = None
+    resolver_consumer_context: ResolverConsumerContext | None = None
     session_factory: SimSessionFactory = SimLocalSession
     target: str = MOCK_TARGET
     apply_requested: bool = False
+    resolver_required: bool = False
 
 
 def create_paper_dry_run_provider(
@@ -85,6 +93,7 @@ def create_paper_dry_run_provider(
             job_factory=safe_wiring.job_factory,
             commands=safe_wiring.commands,
             command_provider=safe_wiring.command_provider,
+            resolver_consumer_context=safe_wiring.resolver_consumer_context,
         )
         return _map_paper_result(session.run())
 
@@ -129,14 +138,17 @@ def create_paper_config_dry_run_provider(
 
         return blocked_provider
     assert assembly.command is not None
+    assert assembly.resolver_consumer_context is not None
     return create_paper_dry_run_provider(
         PaperDryRunWiring(
             config=_paper_session_config(config),
             job_factory=job_factory,
             commands=(assembly.command,),
+            resolver_consumer_context=assembly.resolver_consumer_context,
             session_factory=session_factory,
             target=MOCK_TARGET,
             apply_requested=False,
+            resolver_required=True,
         )
     )
 
@@ -157,6 +169,7 @@ def create_sim_dry_run_provider(
             job_factory=safe_wiring.job_factory,
             commands=safe_wiring.commands,
             command_provider=safe_wiring.command_provider,
+            resolver_consumer_context=safe_wiring.resolver_consumer_context,
         )
         return _map_sim_result(session.run())
 
@@ -201,14 +214,17 @@ def create_sim_config_dry_run_provider(
 
         return blocked_provider
     assert assembly.command is not None
+    assert assembly.resolver_consumer_context is not None
     return create_sim_dry_run_provider(
         SimDryRunWiring(
             config=_sim_session_config(config),
             job_factory=job_factory,
             commands=(assembly.command,),
+            resolver_consumer_context=assembly.resolver_consumer_context,
             session_factory=session_factory,
             target=MOCK_TARGET,
             apply_requested=False,
+            resolver_required=True,
         )
     )
 
@@ -224,7 +240,13 @@ def _paper_blocked_reason(wiring: PaperDryRunWiring) -> str | None:
         return "paper console dry-run requires dry_run=True and apply_confirmed=False"
     if wiring.job_factory is None:
         return "paper dry-run requires a session job factory"
-    return _command_source_blocked_reason(wiring.commands, wiring.command_provider, "paper")
+    return _command_source_blocked_reason(
+        wiring.commands,
+        wiring.command_provider,
+        "paper",
+        resolver_required=wiring.resolver_required,
+        resolver_consumer_context=wiring.resolver_consumer_context,
+    )
 
 
 def _sim_blocked_reason(wiring: SimDryRunWiring) -> str | None:
@@ -238,26 +260,43 @@ def _sim_blocked_reason(wiring: SimDryRunWiring) -> str | None:
         return "sim console dry-run requires dry_run=True and apply_confirmed=False"
     if wiring.job_factory is None:
         return "sim dry-run requires a session job factory"
-    return _command_source_blocked_reason(wiring.commands, wiring.command_provider, "sim")
+    return _command_source_blocked_reason(
+        wiring.commands,
+        wiring.command_provider,
+        "sim",
+        resolver_required=wiring.resolver_required,
+        resolver_consumer_context=wiring.resolver_consumer_context,
+    )
 
 
 def _command_source_blocked_reason(
     commands: Sequence[ExecutionCommand] | None,
     command_provider: Callable[[], Sequence[ExecutionCommand]] | None,
     name: str,
+    *,
+    resolver_required: bool,
+    resolver_consumer_context: ResolverConsumerContext | None,
 ) -> str | None:
+    if resolver_required and resolver_consumer_context is None:
+        return f"{name} dry-run requires resolver consumer context"
     if commands is None and command_provider is None:
         return f"{name} dry-run requires typed commands or command_provider"
     if commands is not None and command_provider is not None:
         return f"{name} dry-run accepts either commands or command_provider, not both"
     if commands is not None:
-        return _commands_blocked_reason(commands, name)
+        return _commands_blocked_reason(
+            commands,
+            name,
+            resolver_consumer_context=resolver_consumer_context,
+        )
     return None
 
 
 def _commands_blocked_reason(
     commands: Sequence[ExecutionCommand],
     name: str,
+    *,
+    resolver_consumer_context: ResolverConsumerContext | None = None,
 ) -> str | None:
     if not commands:
         return f"{name} dry-run requires at least one typed ExecutionCommand"
@@ -265,6 +304,13 @@ def _commands_blocked_reason(
         target = getattr(command, "execution_target", None)
         if target is not None and _target_value(target) != "MOCK":
             return f"{name} console dry-run supports MOCK target only"
+        if resolver_consumer_context is not None:
+            mismatch = resolver_context_command_mismatch(
+                resolver_consumer_context,
+                command,
+            )
+            if mismatch is not None:
+                return f"{name} dry-run {mismatch}"
     return None
 
 
@@ -315,6 +361,7 @@ def _paper_session_config(config: ConsoleDryRunConfig) -> PaperSessionConfig:
         account_id=config.account_id.strip(),
         dry_run=True,
         apply_confirmed=False,
+        resolver_required=True,
     )
 
 
@@ -326,6 +373,7 @@ def _sim_session_config(config: ConsoleDryRunConfig) -> SimSessionConfig:
         account_id=config.account_id.strip(),
         dry_run=True,
         apply_confirmed=False,
+        resolver_required=True,
     )
 
 
