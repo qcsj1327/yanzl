@@ -1,4 +1,5 @@
 from futures_mvp.modules.backtest.engine import LocalBacktestEngine, run_backtest
+from futures_mvp.modules.backtest.fill_model import NoFillModel
 from futures_mvp.modules.backtest.models import (
     BacktestDataSummary,
     BacktestDiagnostics,
@@ -10,6 +11,8 @@ from futures_mvp.modules.backtest.models import (
     BacktestStatus,
     DecisionTranslationResult,
     DecisionTranslationStatus,
+    FillModelResult,
+    FillModelStatus,
     SimulatedOrder,
     SimulatedOrderStatus,
     SimulatedTrade,
@@ -28,7 +31,10 @@ __all__ = [
     "DecisionTranslationResult",
     "DecisionTranslationStatus",
     "DecisionTranslator",
+    "FillModelResult",
+    "FillModelStatus",
     "LocalBacktestEngine",
+    "NoFillModel",
     "SimulatedOrder",
     "SimulatedOrderStatus",
     "SimulatedTrade",

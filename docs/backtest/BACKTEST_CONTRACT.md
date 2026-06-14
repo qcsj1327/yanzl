@@ -749,3 +749,38 @@ V.13 Fill Model Skeleton
 V.14 Backtest Trade Generation
 V.15 Equity / PnL Contract
 ```
+
+## Stage V.13 No-Fill Model Skeleton Status
+
+Baseline：`stage-v12-fill-model-contract-freeze / 4fa21d5`。
+
+Stage V.13 implements Tier 0 `NoFillModel` only. It is a research-only Backtest
+fill model skeleton and does not implement next-bar-open, next-bar-close,
+midpoint or advanced fill behavior.
+
+Implemented behavior：
+
+- input is a `SimulatedOrder`。
+- output is `FillModelResult(status=NO_FILL)`。
+- `simulated_trade` is always `None`。
+- deterministic reason is `no fill model selected`。
+- the input order is not mutated。
+- no historical bars are accepted by the model, so it cannot read future bars。
+
+Implemented statuses for future fill model work：
+
+- `NO_FILL`。
+- `FILLED`。
+- `REJECTED`。
+- `DATA_GAP`。
+- `BLOCKED`。
+- `ERROR`。
+
+`NoFillModel` is not wired into production execution, broker, live feed,
+network, OMS, Trade ledger, Position or Accounting. It does not generate
+`SimulatedTrade`, does not update equity / cash / PnL and does not persist any
+state.
+
+`SimulatedOrder` and `FillModelResult` remain Backtest research /
+observability-only objects and must not be treated as OMS, broker, exchange,
+Trade ledger or Accounting truth.

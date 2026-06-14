@@ -81,6 +81,15 @@ class DecisionTranslationStatus(StrEnum):
     ERROR = "ERROR"
 
 
+class FillModelStatus(StrEnum):
+    NO_FILL = "NO_FILL"
+    FILLED = "FILLED"
+    REJECTED = "REJECTED"
+    DATA_GAP = "DATA_GAP"
+    BLOCKED = "BLOCKED"
+    ERROR = "ERROR"
+
+
 @dataclass(frozen=True)
 class SimulatedOrder:
     order_id: str
@@ -122,6 +131,13 @@ class DecisionTranslationResult:
     status: DecisionTranslationStatus
     simulated_order: SimulatedOrder | None = None
     simulated_trades: tuple[SimulatedTrade, ...] = ()
+    diagnostics: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class FillModelResult:
+    status: FillModelStatus
+    simulated_trade: SimulatedTrade | None = None
     diagnostics: tuple[str, ...] = ()
 
 
