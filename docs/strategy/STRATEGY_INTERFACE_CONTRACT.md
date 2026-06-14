@@ -391,3 +391,173 @@ positions, accounting facts, broker state or live execution truth.
 
 V.5 default behavior remains `NoOpStrategy` / `HOLD`; it creates no simulated
 orders or trades and does not change the flat equity behavior.
+
+## Stage V.6 Reference Strategy Contract Freeze
+
+Baseline：`stage-v5-backtest-strategy-runtime-integration / 5444200`。
+
+Stage V.6 is documentation-only. It freezes reference strategy tiers,
+responsibilities and validation rules. It does not add code, tests, schema,
+Alembic migration, DB writes, live feed, broker, CTP, SimNow, network
+integration, execution target enablement or Backtest order generation.
+
+### Strategy Tiers
+
+Reference strategy tiers are：
+
+- Tier 0：`NoOpStrategy`。
+- Tier 1：`BuyAndHoldStrategy`。
+- Tier 2：`MovingAverageCrossStrategy`。
+- Tier 3：future advanced strategies。
+
+Tier 0 is the current accepted runtime default. Tier 1 and Tier 2 require
+separate implementation stages and acceptance reviews. Tier 3 is future scope
+only and must not be treated as enabled by this contract.
+
+### Reference Strategy Rules
+
+All reference strategies must be：
+
+- deterministic。
+- no-lookahead。
+- side-effect free。
+- resolver-lineage aware。
+- replayable from typed `StrategyContext` and config。
+
+All reference strategies must not：
+
+- write DB。
+- write ledgers。
+- call network。
+- call broker。
+- call CTP。
+- call SimNow。
+- call live feed or quote API。
+- use randomness unless the seed is part of typed config。
+- read future bars, future ticks, future quotes, future sessions or future
+  trading days。
+- infer instrument identity outside resolver-derived context。
+
+### BuyAndHold Contract
+
+`BuyAndHoldStrategy` is Tier 1.
+
+Expected behavior：
+
+- first eligible bar returns `BUY`。
+- every later bar returns `HOLD`。
+
+Eligibility must be based only on current and prior context available at the
+current bar. The strategy must not inspect future bars to decide whether the
+first eligible bar exists.
+
+`BuyAndHoldStrategy` must not：
+
+- automatically add to the position after the first eligible buy。
+- automatically close the position。
+- create orders directly。
+- create trades directly。
+- mutate portfolio snapshot placeholder。
+- treat its decision as position or accounting truth。
+
+Future simulated order conversion belongs to a separate stage after the strategy
+decision is produced.
+
+### Moving Average Contract
+
+`MovingAverageCrossStrategy` is Tier 2.
+
+Required config：
+
+- `fast_window`。
+- `slow_window`。
+
+Window rules：
+
+- `fast_window` and `slow_window` must be positive integers。
+- `fast_window` must be less than `slow_window` unless a future accepted
+  contract explicitly permits another relation。
+- moving averages may use only `historical_bars` available in the
+  `StrategyContext`。
+- moving averages must not use future bars, future ticks, future quotes, future
+  sessions, future trading days or final close values before they are available。
+- insufficient history must produce a deterministic non-trading decision such
+  as `HOLD` or a typed blocked / invalid result defined by the implementation
+  stage。
+
+`MovingAverageCrossStrategy` output remains a `StrategyDecision` only. It must
+not create orders, trades, positions, accounting facts or broker commands.
+
+### Strategy Validation
+
+Every reference strategy implementation must pass：
+
+- deterministic replay。
+- same input => same output。
+- resolver lineage present。
+- no side effects。
+- no mutation of `StrategyContext` or nested context structures。
+- no future bars in decision input。
+- no DB, repository, UnitOfWork, broker, CTP, SimNow, live feed or network
+  imports。
+- no execution target enablement。
+
+Validation tests must include at least：
+
+- repeated evaluation with identical context and config。
+- no-lookahead context inspection。
+- missing resolver lineage blocked before strategy evaluation or rejected by
+  runtime。
+- strategy output is decision only。
+- no simulated order or trade is created by the strategy itself。
+
+### Backtest Integration Rule
+
+`LocalBacktestEngine` consumes `StrategyDecision` only.
+
+Backtest may record strategy decisions and runtime results as research output,
+but strategy code must not create orders directly. Conversion from
+`StrategyDecision` to simulated order / simulated fill is a separate future
+simulation boundary.
+
+Backtest integration must continue to：
+
+- resolve identity before strategy evaluation。
+- pass only current and historical bars up to the current bar。
+- stop on strategy runtime `BLOCKED` / `ERROR`。
+- keep strategy decisions separate from OMS, Trade, Position and Accounting
+  facts。
+
+### Future Implementation Roadmap
+
+Next strategy stages：
+
+```text
+V.7 BuyAndHold implementation
+V.8 MovingAverage implementation
+V.9 Simulated Order Model
+```
+
+V.7 may implement Tier 1 decision generation only. V.8 may implement Tier 2
+decision generation only. V.9 may freeze and implement simulated order modeling
+after decisions exist. None of these stages may enable live execution or write
+production business facts without a separate accepted contract.
+
+### V.6 Safety Boundary
+
+Reference strategy work must not：
+
+- enable live execution。
+- enable `ExecutionTarget.PAPER`。
+- enable `ExecutionTarget.SIM`。
+- enable `ExecutionTarget.LIVE`。
+- mutate OMS。
+- mutate Trade。
+- mutate Position。
+- mutate Accounting。
+- write DB or ledgers。
+- connect broker。
+- connect CTP。
+- connect SimNow。
+- connect live feed, quote API or network。
+- treat `StrategyDecision` as source-of-truth for any production fact。

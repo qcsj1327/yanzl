@@ -303,3 +303,26 @@ Stage V.5 does not implement real trading strategy logic, simulated order
 conversion, fill model, metrics, optimization, persistence, schema, Alembic
 migration, DB writes, OMS / Trade / Position / Accounting mutation, broker,
 CTP, SimNow, live feed, network integration or execution target enablement.
+
+## Stage V.6 Reference Strategy Contract Impact
+
+Baseline：`stage-v5-backtest-strategy-runtime-integration / 5444200`。
+
+Stage V.6 is documentation-only. The detailed reference strategy contract is
+`docs/strategy/STRATEGY_INTERFACE_CONTRACT.md`.
+
+Backtest remains a strategy-decision consumer only. Reference strategies may
+produce `StrategyDecision` values, but they must not create orders, trades,
+positions, accounting facts or broker commands directly.
+
+The frozen reference strategy roadmap is：
+
+- Tier 0：`NoOpStrategy`。
+- Tier 1：`BuyAndHoldStrategy`，future V.7 implementation。
+- Tier 2：`MovingAverageCrossStrategy`，future V.8 implementation。
+- V.9：simulated order model after strategy decisions are available。
+
+All Backtest strategy integration must preserve resolver-derived identity,
+no-lookahead bar slicing, deterministic replay, no side effects and
+research-only result semantics. Simulated order conversion remains a future
+separate boundary.
