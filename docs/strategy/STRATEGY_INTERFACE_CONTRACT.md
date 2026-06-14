@@ -341,3 +341,36 @@ Later, separate contract freezes should cover：
 No future stage may combine strategy interface implementation with live broker,
 CTP, SimNow, real capital, target enablement or schema persistence unless a
 separate accepted contract explicitly opens that scope.
+
+## Stage V.4 Runtime Skeleton Status
+
+Stage V.4 implements the first local Strategy Runtime skeleton only.
+
+Implemented boundary：
+
+- typed in-memory `StrategyContext`, `StrategyDecision` and
+  `StrategyRuntimeResult` models。
+- `StrategyRuntimeStatus` distinguishes `COMPLETED`, `BLOCKED`,
+  `INVALID_INPUT` and `ERROR`。
+- `StrategyEvaluator` interface exposes `evaluate(context) ->
+  StrategyDecision`。
+- `NoOpStrategy` returns deterministic `HOLD` and performs no side effects。
+- `StrategyRuntime` validates required context, calls strategy `evaluate(...)`
+  and returns an in-memory result。
+- `StrategyContext` is deeply immutable at construction time. Mutable mapping,
+  list, tuple and set inputs are recursively frozen before strategy evaluation。
+- `StrategyRuntime` passes a defensive frozen context copy into
+  `strategy.evaluate(...)`。
+- missing resolver lineage, missing current bar, missing historical bars,
+  missing symbol or missing trading day blocks before strategy evaluation。
+- historical bars must contain the current bar and must not contain bars after
+  the current bar。
+
+Strategies must treat every `StrategyContext` field as read-only. They must not
+mutate `config`, `data_source_summary`, `portfolio_snapshot`,
+`historical_bars`, resolver lineage or market data objects.
+
+Stage V.4 does not implement real trading strategy logic, strategy persistence,
+BacktestEngine integration, simulated order conversion, fill model, metrics,
+optimization, schema, Alembic migration, DB writes, broker, CTP, SimNow, live
+feed, network integration or execution target enablement.
