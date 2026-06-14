@@ -596,3 +596,63 @@ while preserving no-lookahead context slicing.
 position and not an accounting fact. V.8 does not implement simulated orders,
 simulated trades, fill model, MA strategy, DB writes, broker integration,
 network integration or execution target enablement.
+
+## Stage V.9 Simulated Order Model Contract Freeze Impact
+
+Baseline：`stage-v8-backtest-buy-hold-decision-flow / 8a92e00`。
+
+Stage V.9 freezes the future Backtest simulated order and simulated trade
+boundary. Strategy runtime behavior remains decision-only.
+
+`StrategyDecision` must not be treated as：
+
+- an order。
+- a trade。
+- a position。
+- an accounting fact。
+- broker intent。
+- execution target intent。
+- production source-of-truth。
+
+Future Backtest conversion must use the dedicated translation boundary：
+
+```text
+StrategyDecision -> DecisionTranslator -> SimulatedOrder
+```
+
+Strategies must not instantiate or return `SimulatedOrder` or
+`SimulatedTrade`. A strategy may only return `StrategyDecision` values derived
+from `StrategyContext`.
+
+The future `DecisionTranslator` must inherit resolver-derived identity from the
+accepted resolver lineage：
+
+- `symbol`。
+- `instrument_id`。
+- `trade_instrument_id`。
+- `exchange`。
+- `trading_day`。
+- `resolver_source`。
+- `resolver_confidence`。
+
+Strategies must not guess `instrument_id`, `trade_instrument_id` or `exchange`.
+Unresolved or metadata-invalid resolver identity must prevent strategy
+evaluation and decision translation.
+
+Stage V.9 does not implement fill modeling. Future fill models such as next bar
+open, next bar close, midpoint or custom fills must be deterministic and must
+not allow strategy code to look ahead or create orders directly.
+
+Simulated orders and simulated trades remain Backtest research / observability
+objects only. They must not write DB, OMS, Trade ledger, Position, Accounting,
+broker state, network state, live execution state or any
+`ExecutionTarget.PAPER` / `ExecutionTarget.SIM` / `ExecutionTarget.LIVE`
+workflow.
+
+Future stages：
+
+```text
+V.10 DecisionTranslator Skeleton
+V.11 Simulated Fill Model Skeleton
+V.12 Backtest Equity / PnL Contract
+```

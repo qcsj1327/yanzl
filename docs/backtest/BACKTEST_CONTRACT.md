@@ -340,3 +340,143 @@ research output and does not convert them into simulated orders, simulated
 trades, positions, accounting facts, broker commands or source-of-truth records.
 The equity curve remains flat until a separate simulated order / fill model is
 accepted.
+
+## Stage V.9 Simulated Order Model Contract Freeze
+
+Baseline：`stage-v8-backtest-buy-hold-decision-flow / 8a92e00`。
+
+Stage V.9 is documentation-only. It freezes the research-only simulated order
+and simulated trade model contract for future Backtest stages.
+
+### Decision to Order Boundary
+
+`StrategyDecision` is not an order.
+
+Future Backtest simulation must convert decisions through a dedicated
+`DecisionTranslator` before any `SimulatedOrder` is created：
+
+```text
+StrategyDecision -> DecisionTranslator -> SimulatedOrder
+```
+
+Strategies must not create `SimulatedOrder` objects directly. Strategies may
+only produce deterministic decisions from `StrategyContext`.
+
+### SimulatedOrder Contract
+
+`SimulatedOrder` is an in-memory Backtest research object only.
+
+Required fields：
+
+- `order_id`。
+- `strategy_name`。
+- `symbol`。
+- `instrument_id`。
+- `trade_instrument_id`。
+- `exchange`。
+- `trading_day`。
+- `side`。
+- `quantity`。
+- `expected_price`。
+- `order_type`。
+- `created_bar_ts`。
+- resolver lineage。
+- diagnostics。
+
+Allowed statuses：
+
+- `CREATED`。
+- `REJECTED`。
+- `FILLED`。
+- `CANCELLED`。
+
+`SimulatedOrder` is not：
+
+- an OMS order。
+- a broker order。
+- an exchange order。
+- a production order source-of-truth。
+
+### SimulatedTrade Contract
+
+`SimulatedTrade` is an in-memory Backtest research object only.
+
+Required fields：
+
+- `trade_id`。
+- `order_id`。
+- `fill_price`。
+- `fill_qty`。
+- `fill_bar_ts`。
+- resolver lineage。
+- diagnostics。
+
+`SimulatedTrade` is not：
+
+- a Trade ledger entry。
+- an Accounting fact。
+- a production trade source-of-truth。
+
+### Fill Model Boundary
+
+Stage V.9 does not implement a fill model.
+
+Future fill models may include：
+
+- next bar open。
+- next bar close。
+- midpoint。
+- custom deterministic fill。
+
+Every future fill model must be deterministic for the same strategy decision,
+resolver context, standardized bars and configuration. Fill modeling must not
+consume future data outside the accepted fill rule.
+
+### Resolver Lineage Requirement
+
+Simulated orders and trades must inherit resolver-derived identity. They must
+not guess contracts.
+
+Required lineage fields：
+
+- `symbol`。
+- `instrument_id`。
+- `trade_instrument_id`。
+- `exchange`。
+- `trading_day`。
+- `resolver_source`。
+- `resolver_confidence`。
+
+If resolver identity is unresolved or metadata-invalid, Backtest must fail
+closed before strategy evaluation, decision translation, simulated order
+creation or simulated trade creation.
+
+### V.9 Safety Boundary
+
+Simulated order and trade modeling must not：
+
+- write DB。
+- write OMS。
+- write Trade ledger。
+- write Position。
+- write Accounting。
+- connect broker。
+- connect network。
+- connect live execution。
+- enable `ExecutionTarget.PAPER`。
+- enable `ExecutionTarget.SIM`。
+- enable `ExecutionTarget.LIVE`。
+
+Backtest simulated orders and simulated trades remain research / observability
+only and must not be promoted to production facts without a separate accepted
+contract.
+
+### Future Stages
+
+Next Backtest simulation stages：
+
+```text
+V.10 DecisionTranslator Skeleton
+V.11 Simulated Fill Model Skeleton
+V.12 Backtest Equity / PnL Contract
+```
