@@ -535,3 +535,42 @@ network and does not enable `ExecutionTarget.PAPER`, `ExecutionTarget.SIM` or
 `SimulatedOrder` remains a Backtest research / observability object only. It is
 not an OMS order, broker order, exchange order, ledger fact or production
 source-of-truth.
+
+## Stage V.11 Backtest DecisionTranslator Integration Status
+
+Baseline：`stage-v10-decision-translator-skeleton / ba39719`。
+
+Stage V.11 wires `DecisionTranslator` into `LocalBacktestEngine` after each
+successful strategy runtime decision：
+
+```text
+StrategyDecision -> DecisionTranslator -> DecisionTranslationResult
+```
+
+Backtest records `decision_translation_results` in `BacktestResult`.
+
+Integrated behavior：
+
+- `BUY` translation `CREATED` appends one research-only `SimulatedOrder` to
+  `BacktestResult.simulated_orders`。
+- `HOLD` translation `SKIPPED` records the translation result and appends no
+  order。
+- `SELL` / `CLOSE` translation `REJECTED` records the translation result and
+  appends no order or trade。
+- `DecisionTranslationStatus.BLOCKED` returns `BacktestStatus.BLOCKED`。
+- `DecisionTranslationStatus.ERROR` returns `BacktestStatus.ERROR`。
+- translator-generated simulated trades are rejected as a Backtest error until
+  a separate fill model stage exists。
+
+Current strategy effects：
+
+- `NoOpStrategy` still produces zero simulated orders。
+- `BuyAndHoldStrategy` produces one `CREATED` simulated order on the first
+  consumed bar and no additional orders for later `HOLD` decisions。
+- `simulated_trades` remains empty。
+- equity and cash curves remain flat because no fill / PnL model exists。
+
+Stage V.11 does not implement fill modeling, does not generate
+`SimulatedTrade`, does not write DB, does not write OMS / Trade / Position /
+Accounting, does not connect broker / live / network and does not enable any
+execution target.

@@ -6,7 +6,10 @@ from decimal import Decimal
 from futures_mvp.modules.backtest import (
     BacktestRequest,
     BacktestStatus,
+    DecisionTranslationResult,
+    DecisionTranslationStatus,
     LocalBacktestEngine,
+    SimulatedOrderStatus,
 )
 from futures_mvp.modules.market_data.contracts import HistoricalBarsResult, HistoricalDataStatus
 from futures_mvp.modules.market_data.fixtures import StaticHistoricalDataFixtureProvider
@@ -66,6 +69,11 @@ def test_valid_request_returns_completed_with_flat_noop_outputs() -> None:
     assert result.data_source_summary is not None
     assert result.data_source_summary.source == "static_historical_fixture"
     assert result.data_source_summary.bars_consumed_count == 3
+    assert len(result.decision_translation_results) == 3
+    assert all(
+        translation.status is DecisionTranslationStatus.SKIPPED
+        for translation in result.decision_translation_results
+    )
     assert result.gap_report == ()
     assert result.simulated_orders == ()
     assert result.simulated_trades == ()
@@ -126,7 +134,7 @@ def test_valid_backtest_calls_strategy_once_per_bar_without_lookahead() -> None:
         assert context.config["strategy"] == "noop"
 
 
-def test_buy_and_hold_backtest_records_buy_then_hold_without_orders_or_trades() -> None:
+def test_buy_and_hold_backtest_records_buy_then_hold_with_one_created_order() -> None:
     result = LocalBacktestEngine(strategy=BuyAndHoldStrategy()).run(_request())
 
     assert result.status is BacktestStatus.COMPLETED
@@ -143,7 +151,25 @@ def test_buy_and_hold_backtest_records_buy_then_hold_without_orders_or_trades() 
     assert result.strategy_decisions[0].reason == "first eligible bar buy"
     assert result.strategy_decisions[1].reason == "already entered hold"
     assert result.strategy_decisions[2].reason == "already entered hold"
-    assert result.simulated_orders == ()
+    assert tuple(
+        translation.status for translation in result.decision_translation_results
+    ) == (
+        DecisionTranslationStatus.CREATED,
+        DecisionTranslationStatus.SKIPPED,
+        DecisionTranslationStatus.SKIPPED,
+    )
+    assert len(result.simulated_orders) == 1
+    order = result.simulated_orders[0]
+    assert order.status is SimulatedOrderStatus.CREATED
+    assert order.side == "BUY"
+    assert order.quantity == Decimal("1")
+    assert order.symbol == "ao"
+    assert order.instrument_id == "ao9999"
+    assert order.trade_instrument_id == "ao2609"
+    assert order.exchange == "SHFE"
+    assert order.resolver_source == "static_fixture"
+    assert order.resolver_confidence == "static_fixture"
+    assert order.order_type == "MARKET"
     assert result.simulated_trades == ()
     assert tuple(point.equity for point in result.equity_curve) == (
         Decimal("100000"),
@@ -155,6 +181,21 @@ def test_buy_and_hold_backtest_records_buy_then_hold_without_orders_or_trades() 
         Decimal("100000"),
         Decimal("100000"),
     )
+
+
+def test_buy_and_hold_order_id_is_deterministic() -> None:
+    request = _request()
+
+    first = LocalBacktestEngine(strategy=BuyAndHoldStrategy()).run(request)
+    second = LocalBacktestEngine(strategy=BuyAndHoldStrategy()).run(request)
+
+    assert first.status is BacktestStatus.COMPLETED
+    assert second.status is BacktestStatus.COMPLETED
+    assert len(first.simulated_orders) == 1
+    assert len(second.simulated_orders) == 1
+    assert first.simulated_orders[0].order_id == second.simulated_orders[0].order_id
+    assert first.simulated_trades == second.simulated_trades == ()
+    assert first.equity_curve == second.equity_curve
 
 
 def test_strategy_exception_returns_backtest_error() -> None:
@@ -171,6 +212,56 @@ def test_strategy_exception_returns_backtest_error() -> None:
     assert len(result.strategy_runtime_results) == 1
     assert result.simulated_orders == ()
     assert result.simulated_trades == ()
+
+
+def test_decision_translator_blocked_returns_backtest_blocked() -> None:
+    class BlockingTranslator:
+        def translate(self, **kwargs: object) -> DecisionTranslationResult:
+            return DecisionTranslationResult(
+                status=DecisionTranslationStatus.BLOCKED,
+                diagnostics=("blocked for test",),
+            )
+
+    result = LocalBacktestEngine(
+        strategy=BuyAndHoldStrategy(),
+        decision_translator=BlockingTranslator(),
+    ).run(_request())
+
+    assert result.status is BacktestStatus.BLOCKED
+    assert result.diagnostics.messages == (
+        "decision translator blocked",
+        "blocked for test",
+    )
+    assert len(result.strategy_decisions) == 1
+    assert len(result.decision_translation_results) == 1
+    assert result.simulated_orders == ()
+    assert result.simulated_trades == ()
+    assert result.equity_curve == ()
+
+
+def test_decision_translator_error_returns_backtest_error() -> None:
+    class ErrorTranslator:
+        def translate(self, **kwargs: object) -> DecisionTranslationResult:
+            return DecisionTranslationResult(
+                status=DecisionTranslationStatus.ERROR,
+                diagnostics=("error for test",),
+            )
+
+    result = LocalBacktestEngine(
+        strategy=BuyAndHoldStrategy(),
+        decision_translator=ErrorTranslator(),
+    ).run(_request())
+
+    assert result.status is BacktestStatus.ERROR
+    assert result.diagnostics.messages == (
+        "decision translator failed",
+        "error for test",
+    )
+    assert len(result.strategy_decisions) == 1
+    assert len(result.decision_translation_results) == 1
+    assert result.simulated_orders == ()
+    assert result.simulated_trades == ()
+    assert result.equity_curve == ()
 
 
 def test_strategy_runtime_blocked_returns_backtest_blocked() -> None:

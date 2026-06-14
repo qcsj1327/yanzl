@@ -11,7 +11,11 @@ from futures_mvp.modules.backtest.models import (
     BacktestRequest,
     BacktestResult,
     BacktestStatus,
+    DecisionTranslationResult,
+    DecisionTranslationStatus,
+    SimulatedOrder,
 )
+from futures_mvp.modules.backtest.translator import DecisionTranslator
 from futures_mvp.modules.market_data.consumer import (
     ResolverConsumerContext,
     build_resolver_consumer_context,
@@ -47,9 +51,11 @@ class LocalBacktestEngine:
         self,
         strategy_runtime: Any | None = None,
         strategy: StrategyEvaluator | None = None,
+        decision_translator: Any | None = None,
     ) -> None:
         self._strategy = strategy or NoOpStrategy()
         self._strategy_runtime = strategy_runtime or StrategyRuntime(self._strategy)
+        self._decision_translator = decision_translator or DecisionTranslator()
 
     def run(self, request: BacktestRequest) -> BacktestResult:
         validation_error = _validate_request(request)
@@ -72,6 +78,8 @@ class LocalBacktestEngine:
             bars_by_day: list[tuple[date, tuple[HistoricalBar, ...]]] = []
             strategy_runtime_results: list[StrategyRuntimeResult] = []
             strategy_decisions: list[StrategyDecision] = []
+            decision_translation_results: list[DecisionTranslationResult] = []
+            simulated_orders: list[SimulatedOrder] = []
             resolver_statuses: list[str] = []
             data_statuses: list[str] = []
             gap_report: list[str] = []
@@ -183,7 +191,10 @@ class LocalBacktestEngine:
                             bars_consumed_count=len(all_bars),
                             strategy_runtime_results=tuple(strategy_runtime_results),
                             strategy_decisions=tuple(strategy_decisions),
-                            simulated_orders=(),
+                            decision_translation_results=tuple(
+                                decision_translation_results
+                            ),
+                            simulated_orders=tuple(simulated_orders),
                             simulated_trades=(),
                         )
                     if runtime_result.status is not StrategyRuntimeStatus.COMPLETED:
@@ -202,7 +213,10 @@ class LocalBacktestEngine:
                             bars_consumed_count=len(all_bars),
                             strategy_runtime_results=tuple(strategy_runtime_results),
                             strategy_decisions=tuple(strategy_decisions),
-                            simulated_orders=(),
+                            decision_translation_results=tuple(
+                                decision_translation_results
+                            ),
+                            simulated_orders=tuple(simulated_orders),
                             simulated_trades=(),
                         )
                     if runtime_result.decision is None:
@@ -218,10 +232,112 @@ class LocalBacktestEngine:
                             bars_consumed_count=len(all_bars),
                             strategy_runtime_results=tuple(strategy_runtime_results),
                             strategy_decisions=tuple(strategy_decisions),
-                            simulated_orders=(),
+                            decision_translation_results=tuple(
+                                decision_translation_results
+                            ),
+                            simulated_orders=tuple(simulated_orders),
                             simulated_trades=(),
                         )
                     strategy_decisions.append(runtime_result.decision)
+                    translation_result = self._translate_decision(
+                        request=request,
+                        decision=runtime_result.decision,
+                        resolver_context=context,
+                        current_bar=bar,
+                    )
+                    decision_translation_results.append(translation_result)
+                    if translation_result.status is DecisionTranslationStatus.BLOCKED:
+                        return BacktestResult(
+                            status=BacktestStatus.BLOCKED,
+                            diagnostics=BacktestDiagnostics(
+                                messages=(
+                                    "decision translator blocked",
+                                    *translation_result.diagnostics,
+                                ),
+                                resolver_statuses=tuple(resolver_statuses),
+                                data_statuses=tuple(data_statuses),
+                            ),
+                            resolver_lineage=tuple(contexts),
+                            data_source_summary=data_summary,
+                            bars_consumed_count=len(all_bars),
+                            strategy_runtime_results=tuple(strategy_runtime_results),
+                            strategy_decisions=tuple(strategy_decisions),
+                            decision_translation_results=tuple(
+                                decision_translation_results
+                            ),
+                            simulated_orders=tuple(simulated_orders),
+                            simulated_trades=(),
+                        )
+                    if translation_result.status is DecisionTranslationStatus.ERROR:
+                        return BacktestResult(
+                            status=BacktestStatus.ERROR,
+                            diagnostics=BacktestDiagnostics(
+                                messages=(
+                                    "decision translator failed",
+                                    *translation_result.diagnostics,
+                                ),
+                                resolver_statuses=tuple(resolver_statuses),
+                                data_statuses=tuple(data_statuses),
+                            ),
+                            resolver_lineage=tuple(contexts),
+                            data_source_summary=data_summary,
+                            bars_consumed_count=len(all_bars),
+                            strategy_runtime_results=tuple(strategy_runtime_results),
+                            strategy_decisions=tuple(strategy_decisions),
+                            decision_translation_results=tuple(
+                                decision_translation_results
+                            ),
+                            simulated_orders=tuple(simulated_orders),
+                            simulated_trades=(),
+                        )
+                    if translation_result.simulated_trades:
+                        return BacktestResult(
+                            status=BacktestStatus.ERROR,
+                            diagnostics=BacktestDiagnostics(
+                                messages=(
+                                    "decision translator generated simulated trades "
+                                    "before fill model",
+                                ),
+                                resolver_statuses=tuple(resolver_statuses),
+                                data_statuses=tuple(data_statuses),
+                            ),
+                            resolver_lineage=tuple(contexts),
+                            data_source_summary=data_summary,
+                            bars_consumed_count=len(all_bars),
+                            strategy_runtime_results=tuple(strategy_runtime_results),
+                            strategy_decisions=tuple(strategy_decisions),
+                            decision_translation_results=tuple(
+                                decision_translation_results
+                            ),
+                            simulated_orders=tuple(simulated_orders),
+                            simulated_trades=(),
+                        )
+                    if translation_result.status is DecisionTranslationStatus.CREATED:
+                        if translation_result.simulated_order is None:
+                            return BacktestResult(
+                                status=BacktestStatus.ERROR,
+                                diagnostics=BacktestDiagnostics(
+                                    messages=(
+                                        "decision translator created result "
+                                        "without simulated order",
+                                    ),
+                                    resolver_statuses=tuple(resolver_statuses),
+                                    data_statuses=tuple(data_statuses),
+                                ),
+                                resolver_lineage=tuple(contexts),
+                                data_source_summary=data_summary,
+                                bars_consumed_count=len(all_bars),
+                                strategy_runtime_results=tuple(
+                                    strategy_runtime_results
+                                ),
+                                strategy_decisions=tuple(strategy_decisions),
+                                decision_translation_results=tuple(
+                                    decision_translation_results
+                                ),
+                                simulated_orders=tuple(simulated_orders),
+                                simulated_trades=(),
+                            )
+                        simulated_orders.append(translation_result.simulated_order)
             return BacktestResult(
                 status=BacktestStatus.COMPLETED,
                 diagnostics=BacktestDiagnostics(
@@ -239,7 +355,8 @@ class LocalBacktestEngine:
                 equity_curve=_flat_equity_curve(all_bars, request.initial_cash),
                 strategy_runtime_results=tuple(strategy_runtime_results),
                 strategy_decisions=tuple(strategy_decisions),
-                simulated_orders=(),
+                decision_translation_results=tuple(decision_translation_results),
+                simulated_orders=tuple(simulated_orders),
                 simulated_trades=(),
                 gap_report=(),
             )
@@ -285,6 +402,25 @@ class LocalBacktestEngine:
         if request.strategy is not None and request.strategy_runtime is None:
             return StrategyRuntime(strategy).run(context)
         return cast(StrategyRuntimeResult, runtime.run(context))
+
+    def _translate_decision(
+        self,
+        *,
+        request: BacktestRequest,
+        decision: StrategyDecision,
+        resolver_context: ResolverConsumerContext,
+        current_bar: HistoricalBar,
+    ) -> DecisionTranslationResult:
+        translator = request.decision_translator or self._decision_translator
+        return cast(
+            DecisionTranslationResult,
+            translator.translate(
+                strategy_name=request.strategy_name,
+                decision=decision,
+                resolver_lineage=resolver_context,
+                current_bar=current_bar,
+            ),
+        )
 
 
 def run_backtest(request: BacktestRequest) -> BacktestResult:
@@ -374,6 +510,7 @@ def _data_gap_result(
         equity_curve=(),
         strategy_runtime_results=(),
         strategy_decisions=(),
+        decision_translation_results=(),
         simulated_orders=(),
         simulated_trades=(),
         gap_report=gap_report,
@@ -416,6 +553,7 @@ def _result(
         resolver_lineage=resolver_lineage,
         strategy_runtime_results=(),
         strategy_decisions=(),
+        decision_translation_results=(),
         simulated_orders=(),
         simulated_trades=(),
     )
