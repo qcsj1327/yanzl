@@ -11,6 +11,7 @@ from futures_mvp.modules.market_data.contracts import BarTimeframe, HistoricalBa
 from futures_mvp.modules.market_data.fixtures import StaticHistoricalDataFixtureProvider
 from futures_mvp.modules.market_data.resolver import InstrumentResolver
 from futures_mvp.modules.strategy_runtime import (
+    BuyAndHoldStrategy,
     NoOpStrategy,
     StrategyContext,
     StrategyDecision,
@@ -67,6 +68,62 @@ def test_noop_strategy_output_is_deterministic() -> None:
 
     assert first == second
     assert first.decision == second.decision
+
+
+def test_buy_and_hold_first_bar_returns_buy() -> None:
+    context = _context()
+    first_bar_context = replace(
+        context,
+        current_bar=context.historical_bars[0],
+        historical_bars=context.historical_bars[:1],
+    )
+
+    decision = BuyAndHoldStrategy().evaluate(first_bar_context)
+
+    assert decision.decision is StrategyDecisionType.BUY
+    assert decision.side == "BUY"
+    assert decision.expected_price == first_bar_context.historical_bars[0].close
+    assert decision.reason == "first eligible bar buy"
+
+
+def test_buy_and_hold_second_or_later_bar_returns_hold() -> None:
+    context = _context()
+
+    decision = BuyAndHoldStrategy().evaluate(context)
+
+    assert decision.decision is StrategyDecisionType.HOLD
+    assert decision.side == "NONE"
+    assert decision.expected_price is None
+    assert decision.reason == "already entered hold"
+
+
+def test_buy_and_hold_output_is_deterministic() -> None:
+    strategy = BuyAndHoldStrategy()
+    context = _context()
+
+    assert strategy.evaluate(context) == strategy.evaluate(context)
+
+
+def test_buy_and_hold_does_not_mutate_context() -> None:
+    context = replace(
+        _context(),
+        config={"nested": {"x": "original"}},
+        data_source_summary={"source": "static_historical_fixture"},
+        portfolio_snapshot={"positions": [{"qty": 1}]},
+    )
+
+    before_config = context.config
+    before_data_source = context.data_source_summary
+    before_portfolio = context.portfolio_snapshot
+    before_bars = context.historical_bars
+
+    decision = BuyAndHoldStrategy().evaluate(context)
+
+    assert decision.decision is StrategyDecisionType.HOLD
+    assert context.config == before_config
+    assert context.data_source_summary == before_data_source
+    assert context.portfolio_snapshot == before_portfolio
+    assert context.historical_bars == before_bars
 
 
 def test_strategy_cannot_mutate_context_config() -> None:

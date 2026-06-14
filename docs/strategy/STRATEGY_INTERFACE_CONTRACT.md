@@ -561,3 +561,25 @@ Reference strategy work must not：
 - connect SimNow。
 - connect live feed, quote API or network。
 - treat `StrategyDecision` as source-of-truth for any production fact。
+
+## Stage V.7 BuyAndHold Implementation Status
+
+Baseline：`stage-v6-reference-strategy-contract-freeze / f14beed`。
+
+Stage V.7 implements Tier 1 `BuyAndHoldStrategy` as local strategy decision
+logic only.
+
+Implemented behavior：
+
+- `len(context.historical_bars) == 1` returns `BUY` with side `BUY`。
+- `len(context.historical_bars) > 1` returns `HOLD` with side `NONE`。
+- `BUY` reason is `first eligible bar buy`。
+- `HOLD` reason is `already entered hold`。
+- `BUY.expected_price` uses `current_bar.close`。
+- `HOLD.expected_price` is `None`。
+
+`BuyAndHoldStrategy` is deterministic and has no internal mutable state. It
+uses only `context.current_bar` and `context.historical_bars`; it does not read
+future bars, mutate `StrategyContext`, create orders, create trades, create
+positions, write accounting facts, write DB, call broker / CTP / SimNow / live
+feed / network, or enable execution targets.
