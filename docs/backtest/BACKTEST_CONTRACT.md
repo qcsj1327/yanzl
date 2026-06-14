@@ -574,3 +574,178 @@ Stage V.11 does not implement fill modeling, does not generate
 `SimulatedTrade`, does not write DB, does not write OMS / Trade / Position /
 Accounting, does not connect broker / live / network and does not enable any
 execution target.
+
+## Stage V.12 Fill Model Contract Freeze
+
+Baseline：`stage-v11-backtest-decision-translator-integration / 4c5873d`。
+
+Stage V.12 is documentation-only. It freezes the Backtest simulated fill model
+contract before any fill implementation, trade generation or equity / PnL
+calculation is added.
+
+### Fill Model Scope
+
+The simulated fill model applies only to：
+
+- Backtest。
+
+The simulated fill model does not apply to：
+
+- Paper。
+- SIM。
+- LIVE。
+- broker。
+- exchange。
+
+Backtest fills are local research artifacts only. They do not imply executable
+intent, broker acceptance, exchange matching, real capital movement or any
+production trading fact.
+
+### Fill Inputs
+
+Allowed fill inputs：
+
+- `SimulatedOrder`。
+- standardized `HistoricalBar`。
+- resolver lineage inherited from the order and current Backtest run。
+
+Forbidden fill inputs：
+
+- raw CSV rows。
+- raw vendor payload。
+- raw broker payload。
+- `raw_payload` identity。
+- broker order state。
+- exchange order state。
+- live quote / live feed state。
+
+Fill logic must consume standardized market data only. It must not use raw
+payloads as source-of-truth for price, instrument identity or order state.
+
+### Fill Status
+
+Allowed simulated fill statuses：
+
+- `CREATED`。
+- `FILLED`。
+- `REJECTED`。
+- `CANCELLED`。
+
+`CREATED` means a research-only simulated order exists and is eligible for a
+future fill decision. `FILLED`, `REJECTED` and `CANCELLED` are simulated
+Backtest outcomes only; none are OMS, broker, exchange, Trade ledger,
+Position or Accounting truth.
+
+### Fill Policy Tiers
+
+Frozen policy tiers：
+
+- Tier 0：No Fill。
+- Tier 1：Next Bar Open Fill。
+- Tier 2：Next Bar Close Fill。
+- Tier 3：Midpoint Fill。
+- Tier 4：Advanced deterministic model。
+
+Stage V.12 freezes these tiers only. It does not implement any tier.
+
+Any future enabled fill policy must be explicit in request/config, deterministic
+for the same order, resolver lineage, bars and policy config, and testable
+without network, broker, DB or wall-clock state.
+
+### No-Lookahead Rule
+
+Fill decisions may use only：
+
+- the `SimulatedOrder`。
+- resolver lineage。
+- the next available standardized `HistoricalBar` accepted by the selected fill
+  policy。
+
+Fill decisions must not use：
+
+- future run summary。
+- future session data beyond the selected next bar。
+- future trading day data unless a later accepted contract explicitly defines
+  cross-day next-bar behavior。
+- final daily close before it is available。
+- performance metrics, equity curve, PnL summary or hindsight state。
+
+For next-bar policies, the fill candidate is the next available bar after
+`SimulatedOrder.created_bar_ts` for the same resolver-derived instrument
+identity unless a later accepted contract defines a different deterministic
+ordering rule.
+
+### Resolver Lineage Requirement
+
+Every simulated fill and future `SimulatedTrade` must inherit resolver-derived
+identity from the `SimulatedOrder` and Backtest resolver context：
+
+- `symbol`。
+- `instrument_id`。
+- `trade_instrument_id`。
+- `exchange`。
+- `trading_day`。
+- resolver lineage。
+
+Fill logic must not guess contracts or override resolver identity. If resolver
+lineage is missing, inconsistent or metadata-invalid, fill simulation must fail
+closed before producing a simulated trade.
+
+### Research Only
+
+`SimulatedTrade` is a Backtest research / observability object only.
+
+`SimulatedTrade` is not：
+
+- Trade ledger。
+- Accounting fact。
+- OMS truth。
+- broker execution。
+- exchange match。
+- position truth。
+- real account truth。
+
+No downstream component may treat a simulated fill or `SimulatedTrade` as
+production source-of-truth without a separate accepted persistence and promotion
+contract.
+
+### Gap Policy
+
+Missing next bar must be handled deterministically.
+
+The allowed future gap policies are：
+
+- return `BacktestStatus.DATA_GAP` and do not produce a simulated trade。
+- deterministically reject the simulated fill and do not produce a simulated
+  trade。
+
+The selected policy must be frozen by the implementation stage that enables a
+fill model. Stage V.12 does not choose or implement either behavior.
+
+### V.12 Safety Boundary
+
+Fill model work must not：
+
+- write DB。
+- write OMS。
+- write Trade ledger。
+- write Position。
+- write Accounting。
+- connect broker。
+- connect live feed。
+- connect network。
+- enable `ExecutionTarget.PAPER`。
+- enable `ExecutionTarget.SIM`。
+- enable `ExecutionTarget.LIVE`。
+- mutate schema。
+- add Alembic migration。
+
+### Future Stages
+
+Next Backtest fill / trade / equity stages：
+
+```text
+V.13 Fill Model Skeleton
+V.14 Backtest Trade Generation
+V.15 Equity / PnL Contract
+```
