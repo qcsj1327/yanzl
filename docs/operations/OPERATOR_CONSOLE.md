@@ -1008,3 +1008,28 @@ Safety boundary remains unchanged：
 - no live feed, quote API, CTP, SimNow, broker or network integration。
 - no `ExecutionTarget.PAPER`, `ExecutionTarget.SIM` or
   `ExecutionTarget.LIVE` enablement。
+
+## Stage U.4.1 Resolver Consumer Contract Impact
+
+Baseline：`stage-u31-static-registry-metadata-coverage / e76811a`。
+
+Stage U.4.1 is documentation-only. The detailed consumer contract is
+`docs/market_data/RESOLVER_CONSUMER_CONTRACT.md`.
+
+The Operator Console remains a local dry-run resolver consumer. Normal
+configuration must use `symbol + trading_day`; the resolver preview supplies
+`instrument_id`, `trade_instrument_id` and `exchange`. Allowed instruments
+default to the resolver `trade_instrument_id`.
+
+Manual instrument fields are review-only and must not bypass resolver status.
+If resolver status is `NOT_FOUND`, `INVALID_INPUT`, `EXPIRED`, `AMBIGUOUS` or
+`METADATA_INVALID`, Console dry-run remains `BLOCKED` and no typed command is
+generated.
+
+Console resolver output is identity input only. It is not order truth, trade
+truth, position truth, accounting truth, signal truth, price truth, quantity
+truth or direction truth. Console must not use `raw_payload`, UI labels,
+filenames, broker raw fields or manual IDs as identity fallback.
+
+Stage U.4.1 does not add schema, DB writes, live feed, quote API, CTP, SimNow,
+broker, network integration or non-`MOCK` execution targets.

@@ -298,3 +298,32 @@ effective window and metadata summary when available.
 
 Stage U.3.1 still does not add DB persistence, schema, Alembic, live feed,
 quote API, CTP, SimNow, broker, network or non-`MOCK` execution targets.
+
+## Stage U.4.1 Backtest / Paper / SIM Resolver Consumer Contract Freeze
+
+Baseline：`stage-u31-static-registry-metadata-coverage / e76811a`。
+
+Stage U.4.1 is documentation-only. The detailed consumer contract is frozen in
+`docs/market_data/RESOLVER_CONSUMER_CONTRACT.md`.
+
+Backtest, Paper, SIM and Operator Console dry-run must consume
+`InstrumentResolution` through `symbol + trading_day + mode`. Consumers must not
+ask users, fixtures or strategy code to guess `instrument_id`,
+`trade_instrument_id` or `exchange`.
+
+Only `InstrumentResolveStatus.RESOLVED` may continue to command, order, report
+or trade generation. `NOT_FOUND`, `INVALID_INPUT`, `EXPIRED`, `AMBIGUOUS` and
+`METADATA_INVALID` must fail closed.
+
+Downstream objects introduced by future stages must preserve resolver-derived
+identity lineage：`symbol`, `instrument_id`, `trade_instrument_id`, `exchange`,
+`trading_day`, resolver source, resolver confidence, effective window and
+diagnostics reference or summary.
+
+Resolver result remains an identity input, not order truth, trade truth,
+position truth, accounting truth, signal truth, price truth, quantity truth or
+direction truth. `raw_payload`, UI labels, filenames, broker raw fields and
+manual IDs must not become identity fallbacks.
+
+Default schema decision remains NO schema. Durable resolver snapshots require a
+separate `Resolver Snapshot Persistence Contract Freeze`.

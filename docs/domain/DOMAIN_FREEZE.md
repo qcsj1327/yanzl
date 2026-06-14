@@ -7669,3 +7669,31 @@ uv run mypy src
 - `expected_price`
 
 `symbol` 和 `trade_instrument_id` 已随 Stage G 进入 Market Data domain/schema；非 Market Data 事实如需新增这些字段仍必须另走 migration。
+
+## Stage U.4.1 Resolver Consumer Contract Freeze
+
+Baseline：`stage-u31-static-registry-metadata-coverage / e76811a`。
+
+Stage U.4.1 is documentation-only. The detailed contract is
+`docs/market_data/RESOLVER_CONSUMER_CONTRACT.md`.
+
+Backtest, Paper, SIM and Operator Console dry-run must use resolver-derived
+identity from `symbol + trading_day + mode`. They must not independently input,
+infer or guess `instrument_id`, `trade_instrument_id` or `exchange`.
+
+Consumers must obtain `InstrumentResolution` before generating any command,
+order, report or trade candidate. Only `RESOLVED` may continue. `NOT_FOUND`,
+`INVALID_INPUT`, `EXPIRED`, `AMBIGUOUS` and `METADATA_INVALID` must fail closed.
+
+Future downstream objects that are allowed by a later implementation stage must
+preserve resolver-derived identity lineage：`symbol`, `instrument_id`,
+`trade_instrument_id`, `exchange`, `trading_day`, resolver source, resolver
+confidence, effective window and diagnostics reference or summary.
+
+Resolver result is identity input only. It is not order truth, trade truth,
+position truth, accounting truth, signal truth, price truth, quantity truth or
+direction truth. `raw_payload`, UI labels, filenames, broker raw fields,
+market-data raw strings and manual IDs are forbidden identity fallbacks.
+
+Default schema decision remains NO schema. Durable resolver snapshot storage
+requires a separate `Resolver Snapshot Persistence Contract Freeze`.

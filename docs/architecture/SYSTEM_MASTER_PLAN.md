@@ -2531,3 +2531,25 @@ Stage N Broker Adapter Core、Stage O Operations / Safety Core、Pre-Stage-P Sys
 - ExecutionGateway replay dry-run 为 no-write preview；live replay 冲突默认停止下游。
 - Broker / Adapter 不拥有 OMS / Trade / Position / Accounting facts，且 live submit/cancel 默认不启用。
 - PAPER / SIM / LIVE 互斥，`LIVE` 默认禁用，并受 operator approval、kill switch、migration readiness、Runtime READY、broker credentials、scheduler/replay policy 和 capital controls 共同约束。
+
+## 13. Stage U.4.1 Resolver Consumer Baseline
+
+Baseline：`stage-u31-static-registry-metadata-coverage / e76811a`。
+
+Stage U.4.1 freezes the local resolver consumer contract in
+`docs/market_data/RESOLVER_CONSUMER_CONTRACT.md`. It is documentation-only and
+does not add schema, code, tests, DB writes, live feed, quote API, CTP, SimNow,
+broker, network integration or non-`MOCK` targets.
+
+Backtest, Paper, SIM and Operator Console dry-run must consume the same
+resolver-derived identity from `symbol + trading_day + mode`. They must not
+guess `instrument_id`, `trade_instrument_id` or `exchange` independently.
+
+Only `InstrumentResolution.status == RESOLVED` may continue to command, order,
+report or trade generation. `NOT_FOUND`, `INVALID_INPUT`, `EXPIRED`,
+`AMBIGUOUS` and `METADATA_INVALID` fail closed.
+
+Future implementation stages should route identity through a shared resolver
+consumer boundary and preserve resolver lineage on downstream objects. Durable
+resolver snapshots remain a separate future schema decision and require a
+`Resolver Snapshot Persistence Contract Freeze`.
