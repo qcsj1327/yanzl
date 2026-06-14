@@ -223,3 +223,29 @@ Default schema decision：no schema.
 V.2 must not add live feed, quote API, CTP, SimNow, broker, network, production
 ledger writes or execution target enablement unless a separate accepted freeze
 explicitly changes those boundaries.
+
+## Stage V.2 Skeleton Status
+
+Stage V.2 implements the first local deterministic skeleton only.
+
+Implemented boundary：
+
+- typed in-memory `BacktestRequest` / `BacktestResult` models。
+- `BacktestStatus` distinguishes `COMPLETED`, `BLOCKED`, `DATA_GAP`,
+  `INVALID_INPUT` and `ERROR`。
+- request validation requires strategy name, symbol, trading-day range,
+  timeframe, positive initial cash, resolver and data provider。
+- resolver consumption requires `InstrumentResolution.RESOLVED` and builds
+  `ResolverConsumerContext` before market data consumption。
+- standardized bars are consumed through
+  `StaticHistoricalDataFixtureProvider.get_bars(...)`。
+- unresolved identity, ambiguous identity, expired identity or invalid metadata
+  fail closed as `BLOCKED`。
+- unsupported timeframe fails as `INVALID_INPUT`。
+- missing bars fail as `DATA_GAP`。
+- current strategy is a deterministic no-op placeholder: no simulated orders,
+  no simulated trades and a flat equity curve equal to initial cash。
+
+Stage V.2 result objects remain research / observability only. They do not
+write DB, schema, Alembic, OMS, Trade, Position, Accounting or broker state and
+must not be promoted to production truth without a separate accepted contract.
