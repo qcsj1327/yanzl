@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from decimal import Decimal
+from inspect import signature
 from typing import Any, cast
 
 from futures_mvp.modules.backtest.fill_model import NoFillModel
@@ -17,6 +18,7 @@ from futures_mvp.modules.backtest.models import (
     FillModelResult,
     FillModelStatus,
     SimulatedOrder,
+    SimulatedTrade,
 )
 from futures_mvp.modules.backtest.translator import DecisionTranslator
 from futures_mvp.modules.market_data.consumer import (
@@ -60,7 +62,7 @@ class LocalBacktestEngine:
         self._strategy = strategy or NoOpStrategy()
         self._strategy_runtime = strategy_runtime or StrategyRuntime(self._strategy)
         self._decision_translator = decision_translator or DecisionTranslator()
-        self._fill_model = fill_model or NoFillModel()
+        self._fill_model: Any = fill_model or NoFillModel()
 
     def run(self, request: BacktestRequest) -> BacktestResult:
         validation_error = _validate_request(request)
@@ -86,6 +88,7 @@ class LocalBacktestEngine:
             decision_translation_results: list[DecisionTranslationResult] = []
             fill_model_results: list[FillModelResult] = []
             simulated_orders: list[SimulatedOrder] = []
+            simulated_trades: list[SimulatedTrade] = []
             resolver_statuses: list[str] = []
             data_statuses: list[str] = []
             gap_report: list[str] = []
@@ -202,7 +205,7 @@ class LocalBacktestEngine:
                             ),
                             fill_model_results=tuple(fill_model_results),
                             simulated_orders=tuple(simulated_orders),
-                            simulated_trades=(),
+                            simulated_trades=tuple(simulated_trades),
                         )
                     if runtime_result.status is not StrategyRuntimeStatus.COMPLETED:
                         return BacktestResult(
@@ -225,7 +228,7 @@ class LocalBacktestEngine:
                             ),
                             fill_model_results=tuple(fill_model_results),
                             simulated_orders=tuple(simulated_orders),
-                            simulated_trades=(),
+                            simulated_trades=tuple(simulated_trades),
                         )
                     if runtime_result.decision is None:
                         return BacktestResult(
@@ -245,7 +248,7 @@ class LocalBacktestEngine:
                             ),
                             fill_model_results=tuple(fill_model_results),
                             simulated_orders=tuple(simulated_orders),
-                            simulated_trades=(),
+                            simulated_trades=tuple(simulated_trades),
                         )
                     strategy_decisions.append(runtime_result.decision)
                     translation_result = self._translate_decision(
@@ -276,7 +279,7 @@ class LocalBacktestEngine:
                             ),
                             fill_model_results=tuple(fill_model_results),
                             simulated_orders=tuple(simulated_orders),
-                            simulated_trades=(),
+                            simulated_trades=tuple(simulated_trades),
                         )
                     if translation_result.status is DecisionTranslationStatus.ERROR:
                         return BacktestResult(
@@ -299,7 +302,7 @@ class LocalBacktestEngine:
                             ),
                             fill_model_results=tuple(fill_model_results),
                             simulated_orders=tuple(simulated_orders),
-                            simulated_trades=(),
+                            simulated_trades=tuple(simulated_trades),
                         )
                     if translation_result.simulated_trades:
                         return BacktestResult(
@@ -322,7 +325,7 @@ class LocalBacktestEngine:
                             ),
                             fill_model_results=tuple(fill_model_results),
                             simulated_orders=tuple(simulated_orders),
-                            simulated_trades=(),
+                            simulated_trades=tuple(simulated_trades),
                         )
                     if translation_result.status is DecisionTranslationStatus.CREATED:
                         if translation_result.simulated_order is None:
@@ -348,22 +351,50 @@ class LocalBacktestEngine:
                                 ),
                                 fill_model_results=tuple(fill_model_results),
                                 simulated_orders=tuple(simulated_orders),
-                                simulated_trades=(),
+                                simulated_trades=tuple(simulated_trades),
                             )
                         simulated_order = translation_result.simulated_order
                         simulated_orders.append(simulated_order)
                         fill_result = self._fill_order(
                             request=request,
                             order=simulated_order,
+                            bars=bars,
                         )
                         fill_model_results.append(fill_result)
+                        if fill_result.status is FillModelStatus.FILLED:
+                            if fill_result.simulated_trade is None:
+                                return BacktestResult(
+                                    status=BacktestStatus.ERROR,
+                                    diagnostics=BacktestDiagnostics(
+                                        messages=(
+                                            "fill model returned FILLED without simulated trade",
+                                        ),
+                                        resolver_statuses=tuple(resolver_statuses),
+                                        data_statuses=tuple(data_statuses),
+                                    ),
+                                    resolver_lineage=tuple(contexts),
+                                    data_source_summary=data_summary,
+                                    bars_consumed_count=len(all_bars),
+                                    strategy_runtime_results=tuple(
+                                        strategy_runtime_results
+                                    ),
+                                    strategy_decisions=tuple(strategy_decisions),
+                                    decision_translation_results=tuple(
+                                        decision_translation_results
+                                    ),
+                                    fill_model_results=tuple(fill_model_results),
+                                    simulated_orders=tuple(simulated_orders),
+                                    simulated_trades=tuple(simulated_trades),
+                                )
+                            simulated_trades.append(fill_result.simulated_trade)
+                            continue
                         if fill_result.simulated_trade is not None:
                             return BacktestResult(
                                 status=BacktestStatus.ERROR,
                                 diagnostics=BacktestDiagnostics(
                                     messages=(
-                                        "fill model generated simulated trade before "
-                                        "trade generation stage",
+                                        "fill model generated simulated trade with "
+                                        "non-FILLED status",
                                     ),
                                     resolver_statuses=tuple(resolver_statuses),
                                     data_statuses=tuple(data_statuses),
@@ -380,7 +411,7 @@ class LocalBacktestEngine:
                                 ),
                                 fill_model_results=tuple(fill_model_results),
                                 simulated_orders=tuple(simulated_orders),
-                                simulated_trades=(),
+                                simulated_trades=tuple(simulated_trades),
                             )
                         if fill_result.status is FillModelStatus.BLOCKED:
                             return BacktestResult(
@@ -405,7 +436,7 @@ class LocalBacktestEngine:
                                 ),
                                 fill_model_results=tuple(fill_model_results),
                                 simulated_orders=tuple(simulated_orders),
-                                simulated_trades=(),
+                                simulated_trades=tuple(simulated_trades),
                             )
                         if fill_result.status is FillModelStatus.ERROR:
                             return BacktestResult(
@@ -430,7 +461,33 @@ class LocalBacktestEngine:
                                 ),
                                 fill_model_results=tuple(fill_model_results),
                                 simulated_orders=tuple(simulated_orders),
-                                simulated_trades=(),
+                                simulated_trades=tuple(simulated_trades),
+                            )
+                        if fill_result.status is FillModelStatus.DATA_GAP:
+                            return BacktestResult(
+                                status=BacktestStatus.DATA_GAP,
+                                diagnostics=BacktestDiagnostics(
+                                    messages=(
+                                        "fill model data gap",
+                                        *fill_result.diagnostics,
+                                    ),
+                                    resolver_statuses=tuple(resolver_statuses),
+                                    data_statuses=tuple(data_statuses),
+                                ),
+                                resolver_lineage=tuple(contexts),
+                                data_source_summary=data_summary,
+                                bars_consumed_count=len(all_bars),
+                                strategy_runtime_results=tuple(
+                                    strategy_runtime_results
+                                ),
+                                strategy_decisions=tuple(strategy_decisions),
+                                decision_translation_results=tuple(
+                                    decision_translation_results
+                                ),
+                                fill_model_results=tuple(fill_model_results),
+                                simulated_orders=tuple(simulated_orders),
+                                simulated_trades=tuple(simulated_trades),
+                                gap_report=tuple(fill_result.diagnostics),
                             )
                         if fill_result.status is not FillModelStatus.NO_FILL:
                             return BacktestResult(
@@ -456,7 +513,7 @@ class LocalBacktestEngine:
                                 ),
                                 fill_model_results=tuple(fill_model_results),
                                 simulated_orders=tuple(simulated_orders),
-                                simulated_trades=(),
+                                simulated_trades=tuple(simulated_trades),
                             )
             return BacktestResult(
                 status=BacktestStatus.COMPLETED,
@@ -478,7 +535,7 @@ class LocalBacktestEngine:
                 decision_translation_results=tuple(decision_translation_results),
                 fill_model_results=tuple(fill_model_results),
                 simulated_orders=tuple(simulated_orders),
-                simulated_trades=(),
+                simulated_trades=tuple(simulated_trades),
                 gap_report=(),
             )
         except Exception as exc:  # pragma: no cover - defensive fail-closed wrapper
@@ -548,9 +605,13 @@ class LocalBacktestEngine:
         *,
         request: BacktestRequest,
         order: SimulatedOrder,
+        bars: tuple[HistoricalBar, ...],
     ) -> FillModelResult:
         fill_model = request.fill_model or self._fill_model
-        return cast(FillModelResult, fill_model.fill(order))
+        fill = fill_model.fill
+        if len(signature(fill).parameters) >= 2:
+            return cast(FillModelResult, fill(order, bars))
+        return cast(FillModelResult, fill(order))
 
 
 def run_backtest(request: BacktestRequest) -> BacktestResult:

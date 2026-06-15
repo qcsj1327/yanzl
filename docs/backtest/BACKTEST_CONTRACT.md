@@ -1055,3 +1055,49 @@ update equity / cash / PnL, does not write DB, does not write OMS / Trade /
 Position / Accounting, does not connect broker / CTP / SimNow / live feed /
 network and does not enable `ExecutionTarget.PAPER`, `ExecutionTarget.SIM` or
 `ExecutionTarget.LIVE`.
+
+## Stage V.17 Backtest NextBarOpenFillModel Integration Status
+
+Baseline：`stage-v161-next-bar-open-fill-fail-closed-tests / b7b5633`。
+
+Stage V.17 allows `LocalBacktestEngine` to run with injected
+`NextBarOpenFillModel`. The default fill model remains `NoFillModel` so existing
+no-fill Backtest behavior stays stable unless a caller explicitly injects a
+different fill model.
+
+Integrated flow：
+
+```text
+StrategyDecision
+-> DecisionTranslator
+-> SimulatedOrder(CREATED)
+-> fill_model.fill(order, bars)
+-> FillModelResult
+```
+
+When `NextBarOpenFillModel` is injected and returns
+`FillModelResult(status=FILLED, simulated_trade=...)`, Backtest appends the
+research-only `SimulatedTrade` to `BacktestResult.simulated_trades`.
+
+Status handling：
+
+- `NO_FILL` keeps `simulated_trades` unchanged。
+- `FILLED` requires a `SimulatedTrade`; missing trade returns
+  `BacktestStatus.ERROR`。
+- `DATA_GAP` returns `BacktestStatus.DATA_GAP` and does not synthesize a trade。
+- `BLOCKED` returns `BacktestStatus.BLOCKED`。
+- `ERROR` returns `BacktestStatus.ERROR`。
+- `REJECTED` fails closed as `BacktestStatus.ERROR` until a later accepted
+  contract defines rejected-fill handling。
+- any non-`FILLED` status carrying a `SimulatedTrade` fails closed as
+  `BacktestStatus.ERROR`。
+
+`BuyAndHoldStrategy` with injected `NextBarOpenFillModel` produces one
+`CREATED` simulated order and one research-only `SimulatedTrade` at the second
+bar open. The first bar cannot fill on itself.
+
+Stage V.17 still does not update equity / cash / PnL, does not create Position
+or Accounting facts, does not write DB, does not write OMS / Trade / Position /
+Accounting, does not connect broker / CTP / SimNow / live feed / network and
+does not enable `ExecutionTarget.PAPER`, `ExecutionTarget.SIM` or
+`ExecutionTarget.LIVE`.
