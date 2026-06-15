@@ -17,6 +17,8 @@ from futures_mvp.modules.backtest.models import (
     DecisionTranslationStatus,
     FillModelResult,
     FillModelStatus,
+    ResearchPnLPoint,
+    ResearchPosition,
     SimulatedOrder,
     SimulatedTrade,
 )
@@ -515,11 +517,18 @@ class LocalBacktestEngine:
                                 simulated_orders=tuple(simulated_orders),
                                 simulated_trades=tuple(simulated_trades),
                             )
+            equity_curve, research_positions, research_pnl_curve = (
+                _research_position_pnl_and_equity(
+                    bars=all_bars,
+                    trades=tuple(simulated_trades),
+                    initial_cash=request.initial_cash,
+                )
+            )
             return BacktestResult(
                 status=BacktestStatus.COMPLETED,
                 diagnostics=BacktestDiagnostics(
                     messages=(
-                        "deterministic local no-op backtest completed",
+                        "deterministic local research-only backtest completed",
                         "no OMS/Trade/Position/Accounting mutation",
                         "no DB write, broker, CTP, SimNow, live feed, or execution target",
                     ),
@@ -529,13 +538,15 @@ class LocalBacktestEngine:
                 resolver_lineage=tuple(contexts),
                 data_source_summary=data_summary,
                 bars_consumed_count=len(all_bars),
-                equity_curve=_flat_equity_curve(all_bars, request.initial_cash),
+                equity_curve=equity_curve,
                 strategy_runtime_results=tuple(strategy_runtime_results),
                 strategy_decisions=tuple(strategy_decisions),
                 decision_translation_results=tuple(decision_translation_results),
                 fill_model_results=tuple(fill_model_results),
                 simulated_orders=tuple(simulated_orders),
                 simulated_trades=tuple(simulated_trades),
+                research_positions=research_positions,
+                research_pnl_curve=research_pnl_curve,
                 gap_report=(),
             )
         except Exception as exc:  # pragma: no cover - defensive fail-closed wrapper
@@ -672,6 +683,79 @@ def _flat_equity_curve(
         )
         for bar in bars
     )
+
+
+def _research_position_pnl_and_equity(
+    *,
+    bars: tuple[HistoricalBar, ...],
+    trades: tuple[SimulatedTrade, ...],
+    initial_cash: Decimal,
+) -> tuple[
+    tuple[BacktestEquityPoint, ...],
+    tuple[ResearchPosition, ...],
+    tuple[ResearchPnLPoint, ...],
+]:
+    if not trades:
+        return _flat_equity_curve(bars, initial_cash), (), ()
+
+    ordered_trades = tuple(sorted(trades, key=lambda trade: trade.fill_bar_ts))
+    cash = initial_cash
+    quantity = Decimal("0")
+    cost_basis = Decimal("0")
+    position: ResearchPosition | None = None
+    pnl_points: list[ResearchPnLPoint] = []
+    equity_points: list[BacktestEquityPoint] = []
+
+    for bar in sorted(bars, key=lambda item: item.bar_ts):
+        for trade in ordered_trades:
+            if trade.fill_bar_ts == bar.bar_ts:
+                notional = trade.fill_price * trade.fill_qty
+                cash -= notional
+                quantity += trade.fill_qty
+                cost_basis += notional
+                avg_price = cost_basis / quantity
+                position = ResearchPosition(
+                    symbol=trade.symbol,
+                    instrument_id=trade.instrument_id,
+                    trade_instrument_id=trade.trade_instrument_id,
+                    exchange=trade.exchange,
+                    trading_day=trade.trading_day,
+                    side="LONG",
+                    quantity=quantity,
+                    avg_price=avg_price,
+                    resolver_lineage=trade.resolver_lineage,
+                )
+
+        avg_price = position.avg_price if position is not None else Decimal("0")
+        market_value = quantity * bar.close
+        unrealized_pnl = (bar.close - avg_price) * quantity if quantity else Decimal("0")
+        realized_pnl = Decimal("0")
+        equity = cash + market_value
+        equity_points.append(
+            BacktestEquityPoint(
+                trading_day=bar.trading_day,
+                ts=bar.bar_ts,
+                equity=equity,
+                cash=cash,
+            )
+        )
+        pnl_points.append(
+            ResearchPnLPoint(
+                trading_day=bar.trading_day,
+                ts=bar.bar_ts,
+                cash=cash,
+                position_quantity=quantity,
+                avg_price=avg_price,
+                mark_price=bar.close,
+                market_value=market_value,
+                realized_pnl=realized_pnl,
+                unrealized_pnl=unrealized_pnl,
+                equity=equity,
+            )
+        )
+
+    positions = (position,) if position is not None else ()
+    return tuple(equity_points), positions, tuple(pnl_points)
 
 
 def _data_gap_result(

@@ -90,6 +90,8 @@ def test_valid_request_returns_completed_with_flat_noop_outputs() -> None:
     assert result.gap_report == ()
     assert result.simulated_orders == ()
     assert result.simulated_trades == ()
+    assert result.research_positions == ()
+    assert result.research_pnl_curve == ()
     assert tuple(point.equity for point in result.equity_curve) == (
         Decimal("100000"),
         Decimal("100000"),
@@ -112,6 +114,8 @@ def test_equity_curve_is_deterministic() -> None:
     assert first.bars_consumed_count == second.bars_consumed_count
     assert first.simulated_orders == second.simulated_orders == ()
     assert first.simulated_trades == second.simulated_trades == ()
+    assert first.research_positions == second.research_positions == ()
+    assert first.research_pnl_curve == second.research_pnl_curve == ()
     assert first.strategy_decisions == second.strategy_decisions
 
 
@@ -189,6 +193,8 @@ def test_buy_and_hold_backtest_records_buy_then_hold_with_one_created_order() ->
     assert fill_result.simulated_trade is None
     assert fill_result.diagnostics[0] == "no fill model selected"
     assert result.simulated_trades == ()
+    assert result.research_positions == ()
+    assert result.research_pnl_curve == ()
     assert tuple(point.equity for point in result.equity_curve) == (
         Decimal("100000"),
         Decimal("100000"),
@@ -216,10 +222,12 @@ def test_buy_and_hold_order_id_is_deterministic() -> None:
     assert first.simulated_orders[0].order_id == second.simulated_orders[0].order_id
     assert first.fill_model_results == second.fill_model_results
     assert first.simulated_trades == second.simulated_trades == ()
+    assert first.research_positions == second.research_positions == ()
+    assert first.research_pnl_curve == second.research_pnl_curve == ()
     assert first.equity_curve == second.equity_curve
 
 
-def test_buy_and_hold_with_next_bar_open_fill_records_one_research_trade() -> None:
+def test_buy_and_hold_with_next_bar_open_fill_marks_research_equity_to_close() -> None:
     resolver = InstrumentResolver()
     data_provider = StaticHistoricalDataFixtureProvider(resolver)
     result = LocalBacktestEngine(
@@ -248,15 +256,50 @@ def test_buy_and_hold_with_next_bar_open_fill_records_one_research_trade() -> No
     assert trade.resolver_source == order.resolver_source
     assert trade.resolver_confidence == order.resolver_confidence
     assert trade.resolver_lineage == order.resolver_lineage
+
+    assert len(result.research_positions) == 1
+    position = result.research_positions[0]
+    assert position.source == "backtest_research_only_position"
+    assert position.symbol == trade.symbol
+    assert position.instrument_id == trade.instrument_id
+    assert position.trade_instrument_id == trade.trade_instrument_id
+    assert position.exchange == trade.exchange
+    assert position.trading_day == trade.trading_day
+    assert position.side == "LONG"
+    assert position.quantity == Decimal("1")
+    assert position.avg_price == bars[1].open
+    assert position.resolver_lineage == trade.resolver_lineage
+
     assert tuple(point.equity for point in result.equity_curve) == (
         Decimal("100000"),
-        Decimal("100000"),
-        Decimal("100000"),
+        Decimal("100001"),
+        Decimal("100002"),
     )
     assert tuple(point.cash for point in result.equity_curve) == (
         Decimal("100000"),
+        Decimal("96799"),
+        Decimal("96799"),
+    )
+    assert len(result.research_pnl_curve) == 3
+    assert tuple(point.market_value for point in result.research_pnl_curve) == (
+        Decimal("0"),
+        bars[1].close,
+        bars[2].close,
+    )
+    assert tuple(point.unrealized_pnl for point in result.research_pnl_curve) == (
+        Decimal("0"),
+        Decimal("1"),
+        Decimal("2"),
+    )
+    assert tuple(point.realized_pnl for point in result.research_pnl_curve) == (
+        Decimal("0"),
+        Decimal("0"),
+        Decimal("0"),
+    )
+    assert tuple(point.equity for point in result.research_pnl_curve) == (
         Decimal("100000"),
-        Decimal("100000"),
+        Decimal("100001"),
+        Decimal("100002"),
     )
 
 
@@ -630,3 +673,4 @@ def test_result_is_research_only_not_business_truth() -> None:
     assert "research/observability only" in result.diagnostics.source_of_truth_notice
     assert "OMS" in result.diagnostics.source_of_truth_notice
     assert "Accounting" in result.diagnostics.source_of_truth_notice
+    assert "Position" in result.diagnostics.source_of_truth_notice

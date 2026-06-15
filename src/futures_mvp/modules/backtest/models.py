@@ -67,6 +67,35 @@ class BacktestEquityPoint:
     cash: Decimal
 
 
+@dataclass(frozen=True)
+class ResearchPosition:
+    symbol: str
+    instrument_id: str
+    trade_instrument_id: str
+    exchange: str
+    trading_day: date
+    side: str
+    quantity: Decimal
+    avg_price: Decimal
+    resolver_lineage: ResolverConsumerContext
+    source: str = "backtest_research_only_position"
+
+
+@dataclass(frozen=True)
+class ResearchPnLPoint:
+    trading_day: date
+    ts: datetime
+    cash: Decimal
+    position_quantity: Decimal
+    avg_price: Decimal
+    mark_price: Decimal
+    market_value: Decimal
+    realized_pnl: Decimal
+    unrealized_pnl: Decimal
+    equity: Decimal
+    source: str = "backtest_research_only_pnl"
+
+
 class SimulatedOrderStatus(StrEnum):
     CREATED = "CREATED"
     REJECTED = "REJECTED"
@@ -165,4 +194,6 @@ class BacktestResult:
     fill_model_results: tuple[FillModelResult, ...] = ()
     simulated_orders: tuple[SimulatedOrder, ...] = ()
     simulated_trades: tuple[SimulatedTrade, ...] = ()
+    research_positions: tuple[ResearchPosition, ...] = ()
+    research_pnl_curve: tuple[ResearchPnLPoint, ...] = ()
     gap_report: tuple[str, ...] = ()
