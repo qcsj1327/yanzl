@@ -126,6 +126,17 @@ def test_non_created_order_is_blocked() -> None:
     assert result.diagnostics == ("order status must be CREATED",)
 
 
+def test_non_positive_quantity_is_blocked() -> None:
+    order, bars = _created_order_and_bars()
+    zero_quantity_order = replace(order, quantity=Decimal("0"))
+
+    result = NextBarOpenFillModel().fill(zero_quantity_order, bars)
+
+    assert result.status is FillModelStatus.BLOCKED
+    assert result.simulated_trade is None
+    assert result.diagnostics == ("order quantity must be greater than 0",)
+
+
 def test_unsupported_side_is_rejected() -> None:
     order, bars = _created_order_and_bars()
     sell_order = replace(order, side="SELL")
@@ -135,6 +146,17 @@ def test_unsupported_side_is_rejected() -> None:
     assert result.status is FillModelStatus.REJECTED
     assert result.simulated_trade is None
     assert result.diagnostics == ("unsupported order side: SELL",)
+
+
+def test_close_side_is_rejected() -> None:
+    order, bars = _created_order_and_bars()
+    close_order = replace(order, side="CLOSE")
+
+    result = NextBarOpenFillModel().fill(close_order, bars)
+
+    assert result.status is FillModelStatus.REJECTED
+    assert result.simulated_trade is None
+    assert result.diagnostics == ("unsupported order side: CLOSE",)
 
 
 def test_trade_id_is_deterministic_for_same_order_and_next_bar() -> None:
