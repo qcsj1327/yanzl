@@ -826,3 +826,181 @@ Stage V.14 does not implement next-bar-open fill, next-bar-close fill, midpoint
 fill, advanced fill, `SimulatedTrade` generation, equity / cash / PnL updates,
 DB writes, OMS / Trade / Position / Accounting mutation, broker / live /
 network integration or execution target enablement.
+
+## Stage V.15 Next-Bar-Open Fill Contract Freeze
+
+Baseline：`stage-v141-fill-status-fail-closed-tests / ded48fa`。
+
+Stage V.15 is documentation-only. It freezes the Backtest research-only
+Next-Bar-Open fill model contract. It defines fill eligibility, timing, price,
+quantity, output and fail-closed behavior before any成交 implementation.
+
+### Scope
+
+Next-Bar-Open Fill applies only to：
+
+- Backtest research / observability。
+
+Next-Bar-Open Fill does not apply to：
+
+- Paper。
+- SIM。
+- LIVE。
+- broker。
+- exchange。
+
+It is not an execution model for real capital, broker routing, exchange
+matching or production order state.
+
+### Inputs
+
+Allowed inputs：
+
+- `SimulatedOrder(status=CREATED)`。
+- standardized `HistoricalBar` series。
+- resolver lineage。
+- explicit fill policy config。
+
+Forbidden inputs：
+
+- raw CSV rows。
+- raw vendor payload。
+- raw broker payload。
+- live quote。
+- live feed。
+- `raw_payload` identity。
+- broker order state。
+- exchange order state。
+
+Fill logic must use standardized market data and resolver-derived identity
+only. Raw payloads must not become source-of-truth for instrument identity,
+price, fill status or trade facts.
+
+### Eligibility
+
+A simulated order is eligible for Next-Bar-Open Fill only when all conditions
+are true：
+
+- `order.status == CREATED`。
+- order side is supported by the accepted implementation stage。
+- `order.quantity > 0`。
+- resolver lineage is present。
+- a next available standardized bar exists。
+- the next bar resolver identity matches the order resolver identity。
+
+If any condition fails, the model must fail closed before producing a
+`SimulatedTrade`.
+
+### Fill Timing
+
+The fill candidate is the first standardized bar after
+`order.created_bar_ts` for the same resolver-derived identity.
+
+Rules：
+
+- same-bar fill is forbidden。
+- future run summary is forbidden。
+- future session data beyond the selected next bar is forbidden。
+- future trading day data is forbidden unless a later accepted contract
+  explicitly defines cross-day next-bar behavior。
+- bars from a different resolver identity are forbidden。
+
+The selected next bar must be determined by bar timestamp ordering and
+resolver identity, not by hindsight PnL, final run metrics or future session
+knowledge.
+
+### Fill Price
+
+For eligible fills：
+
+- `fill_price = next_bar.open`。
+- `next_bar.open` must be greater than `0`。
+
+Default invalid-open behavior：
+
+- `FillModelStatus.DATA_GAP`。
+- no `SimulatedTrade`。
+- deterministic diagnostics。
+
+Invalid open must not be silently replaced by close, midpoint, last price,
+vendor payload or any future value.
+
+### Fill Quantity
+
+For eligible fills：
+
+- `fill_qty = order.quantity`。
+
+Partial fill is forbidden. Overfill is forbidden. Quantity must not be derived
+from account state, broker state, liquidity simulation or future volume unless
+a later accepted deterministic model explicitly freezes those rules.
+
+### Output
+
+An eligible fill may generate one research-only `SimulatedTrade` with：
+
+- deterministic `trade_id`。
+- `order_id`。
+- `fill_price`。
+- `fill_qty`。
+- `fill_bar_ts`。
+- resolver lineage。
+- diagnostics。
+
+`trade_id` must be deterministic for the same order id, resolver identity,
+fill bar timestamp, fill price, fill quantity and policy config.
+
+### Gap Policy
+
+If no next available bar exists：
+
+- `FillModelStatus.DATA_GAP`。
+- no `SimulatedTrade`。
+- deterministic diagnostics。
+
+Backtest handling after `DATA_GAP` is deferred to the V.16 implementation, but
+the contract requires fail-closed behavior. `DATA_GAP` must not be converted
+into a synthetic fill or hidden successful result.
+
+### Source-of-Truth Boundary
+
+`SimulatedTrade` is not：
+
+- Trade ledger。
+- Accounting fact。
+- OMS truth。
+- broker execution。
+- exchange execution。
+- position truth。
+- real account truth。
+
+No downstream component may use a Next-Bar-Open `SimulatedTrade` as production
+source-of-truth without a separate accepted persistence and promotion contract.
+
+### Safety Boundary
+
+Next-Bar-Open Fill work must not：
+
+- write DB。
+- write OMS。
+- write Trade ledger。
+- write Position。
+- write Accounting。
+- connect broker。
+- connect live feed。
+- connect network。
+- enable `ExecutionTarget.PAPER`。
+- enable `ExecutionTarget.SIM`。
+- enable `ExecutionTarget.LIVE`。
+- mutate schema。
+- add Alembic migration。
+
+### Future Implementation
+
+Next stages：
+
+```text
+V.16 Next-Bar-Open Fill Model Skeleton
+V.17 Backtest trade generation integration
+V.18 Backtest Equity/PnL Contract
+```
