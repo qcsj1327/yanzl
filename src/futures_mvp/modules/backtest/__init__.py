@@ -1,5 +1,5 @@
 from futures_mvp.modules.backtest.engine import LocalBacktestEngine, run_backtest
-from futures_mvp.modules.backtest.fill_model import NoFillModel
+from futures_mvp.modules.backtest.fill_model import NextBarOpenFillModel, NoFillModel
 from futures_mvp.modules.backtest.models import (
     BacktestDataSummary,
     BacktestDiagnostics,
@@ -34,6 +34,7 @@ __all__ = [
     "FillModelResult",
     "FillModelStatus",
     "LocalBacktestEngine",
+    "NextBarOpenFillModel",
     "NoFillModel",
     "SimulatedOrder",
     "SimulatedOrderStatus",

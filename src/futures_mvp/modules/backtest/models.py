@@ -120,6 +120,11 @@ class SimulatedTrade:
     fill_price: Decimal
     fill_qty: Decimal
     fill_bar_ts: datetime
+    symbol: str
+    instrument_id: str
+    trade_instrument_id: str
+    exchange: str
+    trading_day: date
     resolver_source: str
     resolver_confidence: str
     resolver_lineage: ResolverConsumerContext

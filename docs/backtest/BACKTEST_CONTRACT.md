@@ -1004,3 +1004,54 @@ V.16 Next-Bar-Open Fill Model Skeleton
 V.17 Backtest trade generation integration
 V.18 Backtest Equity/PnL Contract
 ```
+
+## Stage V.16 Next-Bar-Open Fill Model Skeleton Status
+
+Baseline：`stage-v15-next-bar-open-fill-contract-freeze / dd8f174`。
+
+Stage V.16 implements `NextBarOpenFillModel` as an independent Backtest
+research-only fill model skeleton. It is not wired into `LocalBacktestEngine`.
+
+Implemented behavior：
+
+- input is `SimulatedOrder` plus a standardized `HistoricalBar` tuple。
+- only `SimulatedOrder(status=CREATED)` is eligible。
+- only `BUY` side is supported。
+- `order.quantity` must be greater than `0`。
+- same-bar fill is forbidden。
+- bars with mismatched resolver identity are skipped and must not fill。
+- the fill candidate is the first bar after `order.created_bar_ts` with the
+  same `symbol`, `instrument_id`, `trade_instrument_id`, `exchange` and
+  `trading_day`。
+- `fill_price = next_bar.open`。
+- `fill_qty = order.quantity`。
+- `next_bar.open <= 0` returns `FillModelStatus.DATA_GAP` and no trade。
+- missing next bar returns `FillModelStatus.DATA_GAP` and no trade。
+- non-created orders return `FillModelStatus.BLOCKED`。
+- unsupported side returns `FillModelStatus.REJECTED`。
+
+Generated `SimulatedTrade` fields include：
+
+- deterministic `trade_id`。
+- `order_id`。
+- `fill_price`。
+- `fill_qty`。
+- `fill_bar_ts`。
+- `symbol`。
+- `instrument_id`。
+- `trade_instrument_id`。
+- `exchange`。
+- `trading_day`。
+- `resolver_source`。
+- `resolver_confidence`。
+- resolver lineage。
+- diagnostics。
+
+`trade_id` is deterministic from order id, fill bar timestamp, fill price, fill
+quantity and resolver identity.
+
+Stage V.16 does not integrate the fill model into BacktestEngine, does not
+update equity / cash / PnL, does not write DB, does not write OMS / Trade /
+Position / Accounting, does not connect broker / CTP / SimNow / live feed /
+network and does not enable `ExecutionTarget.PAPER`, `ExecutionTarget.SIM` or
+`ExecutionTarget.LIVE`.
