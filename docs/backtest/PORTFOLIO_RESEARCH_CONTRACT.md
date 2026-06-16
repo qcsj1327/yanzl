@@ -1,0 +1,186 @@
+# Stage W.1 组合研究层契约冻结
+
+基线：`stage-v19-local-research-backtest-mvp-baseline / b410f68`。
+
+Stage W.1 只改文档。本文冻结研究专用组合层契约，为后续多品种、多持仓、多策略 Backtest 定义边界。本文不新增代码、测试、schema、Alembic migration、DB write、broker 连接、live feed、network 集成或 execution target enablement。
+
+`ResearchPortfolio` 只属于 Backtest 研究 / 观测对象。它不是生产组合、会计账本、broker 账户或 live position 事实来源。
+
+## ResearchPortfolio 契约
+
+未来 `ResearchPortfolio` 必须是类型化、确定性的对象。
+
+必需字段：
+
+- `portfolio_id`。
+- `strategy_name`。
+- `run_id`。
+- `initial_cash`。
+- `cash`。
+- `total_market_value`。
+- `total_equity`。
+- `positions`。
+- `pnl_points`。
+- `diagnostics`。
+
+身份规则：
+
+- 同一 `strategy_name`、`run_id`、初始资金、resolver lineage 集合和已接受 Backtest 配置必须生成确定性的 `portfolio_id`。
+- `strategy_name` 和 `run_id` 必须参与组合身份。
+- 即使消费相同 market data，不同 `strategy_name` 或 `run_id` 的两次运行也必须生成隔离的 portfolio 对象。
+- `positions` 必须按 resolver-derived instrument identity 建模，不得按 UI label、filename、raw payload 或人工猜测的合约字符串建模。
+
+`ResearchPortfolio` 可以汇总模拟订单、模拟成交、研究持仓和研究 PnL points。这些汇总仍只是 Backtest 输出视图；不得成为 OMS、Trade、Position、Accounting、broker 或 live account 事实。
+
+## ResearchPosition 契约
+
+Stage W.1 冻结一个研究组合内可包含多个 `ResearchPosition` 对象。
+
+每个 `ResearchPosition` 必须携带：
+
+- `symbol`。
+- `instrument_id`。
+- `trade_instrument_id`。
+- `exchange`。
+- `trading_day` 或生效交易日窗口。
+- `side`。
+- `quantity`。
+- `avg_price`。
+- `market_value`。
+- resolver lineage。
+- diagnostics。
+
+resolver lineage 必须包含：
+
+- resolver source。
+- resolver confidence。
+- resolver 生效窗口或 diagnostics summary。
+- resolver status。
+- 本次 Backtest run 使用的数据源摘要。
+
+同一个研究组合允许跨不同 `symbol`、`instrument_id` 和 `trade_instrument_id` 持有多个 position。resolver-derived identity 不同的两个 position 不得被合并。
+
+当前冻结方向范围仍为 long-only：
+
+- 接受研究专用模拟成交后可以 long open。
+- 禁止 short。
+- 禁止 close / exit，直到后续单独接受 close / exit contract。
+- 禁止 partial fill。
+
+resolver identity 为 unresolved、expired、ambiguous 或 metadata-invalid 时，必须在创建或更新任何 `ResearchPosition` 前 fail closed。
+
+## 资金分配规则
+
+Stage W.1 冻结单一组合资金池。
+
+cash 规则：
+
+- `initial_cash` 是一次 Backtest run 的起始研究资金。
+- `cash` 从 `initial_cash` 开始。
+- 每笔 accepted research trade 都从单一资金池扣减 notional。
+- buy notional 按已接受研究成交契约下的 `fill_price * fill_qty` 计算。
+- `cash` 不得为负。
+- 会导致 `cash` 为负的 trade 必须 fail closed，且不得创建或更新 `ResearchPosition`。
+
+负资金、leverage、margin 和 borrowing 都不是已冻结能力。实现前必须先单独冻结 leverage / margin contract。
+
+研究资金不代表生产资金变动。研究资金不得写入 account balance、broker balance、margin snapshot、settlement snapshot 或 accounting ledger。
+
+## 组合权益曲线
+
+组合权益是研究专用曲线。
+
+每个 portfolio PnL point 的计算规则：
+
+```text
+total_market_value = sum(position market value)
+total_equity = cash + total_market_value
+```
+
+必须能观测每个品种的贡献。未来每个 `pnl_points` entry 必须能按组合内每个 symbol / resolver identity 识别对应 position market value 及其对 total equity 的贡献。
+
+equity 规则：
+
+- position market value 只能使用计算点之前或当时可用的、无前视的标准化历史行情数据。
+- 禁止使用未来 bar、未来 tick、未来 quote 和最终运行汇总。
+- `total_market_value` 是 research position market value 的总和，不是 broker valuation。
+- `total_equity` 只是研究权益，不是账户权益。
+- portfolio PnL point 必须保留复现该点所需的 `strategy_name`、`run_id` 和 resolver lineage。
+
+组合权益曲线输出不是生产会计事实。没有单独接受的 promotion contract 前，不得用于 settlement、reconciliation、broker account display、live risk 或 production replay。
+
+## 策略隔离
+
+Stage W.1 冻结单策略组合隔离。
+
+隔离规则：
+
+- 每个 `ResearchPortfolio` 只属于一个 `strategy_name` 和一个 `run_id`。
+- `strategy_name` 和 `run_id` 必须参与组合身份、position grouping 和 PnL point lineage。
+- 两个 strategy 不得共享可变研究资金、positions、PnL points、diagnostics 或 simulated trade state。
+- 一个 failed 或 blocked strategy run 不得污染另一个 strategy run。
+- multi-strategy portfolio aggregation 不在 W.1 冻结范围内，必须另开阶段。
+
+未来 multi-strategy portfolio work 必须先定义明确的 ownership、allocation、aggregation 和 conflict rules，才能进入实现。
+
+## Fail-Closed 能力列表
+
+Stage W.1 继续禁止以下能力：
+
+- close。
+- short。
+- partial fill。
+- commission。
+- slippage。
+- leverage。
+- margin。
+- multi-currency。
+
+任何 request、strategy decision、simulated order、simulated trade 或 portfolio update 只要需要上述能力，都必须 fail closed，并保持研究资金、positions 和 PnL points 不变。
+
+## 安全边界
+
+`ResearchPortfolio` 不是：
+
+- production portfolio。
+- accounting ledger。
+- broker account。
+- live position。
+- account balance。
+- settlement source-of-truth。
+- reconciliation source-of-truth。
+
+Stage W.1 和未来组合研究层实现不得：
+
+- write DB。
+- write OMS。
+- write Trade ledger。
+- write production Position。
+- write Accounting。
+- mutate schema 或 Alembic migrations。
+- call broker。
+- call CTP。
+- call SimNow。
+- call live feed。
+- call network。
+- enable `ExecutionTarget.PAPER`。
+- enable `ExecutionTarget.SIM`。
+- enable `ExecutionTarget.LIVE`。
+- 使用 raw CSV rows、raw vendor payloads、raw broker payloads 或 `raw_payload` 作为 identity、price、cash 或 portfolio facts。
+
+默认 schema decision：NO schema。
+
+任何 durable portfolio storage、run table、allocation table、portfolio position table 或 portfolio equity table 都必须单独 contract freeze 并接受 review。
+
+## 后续路线
+
+后续组合研究层阶段：
+
+```text
+W.2 ResearchPortfolio skeleton
+W.3 multi-symbol fixture backtest
+W.4 portfolio equity aggregation
+W.5 close/exit contract
+```
+
+W.2 如被单独接受，只能实现内存内研究骨架。它必须保留 W.1 安全边界，不得新增 schema、DB writes、OMS / Trade / Position / Accounting mutation、broker / live / network connectivity 或 execution target enablement。

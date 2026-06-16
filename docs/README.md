@@ -12,6 +12,8 @@
 - `risk/README.md`：风控模块文档入口。
 - `execution/README.md`：执行与 Mock Exchange 模块文档入口。
 - `market_data/INSTRUMENT_RESOLVER_CONTRACT.md`：Instrument Resolver / Market Data Source 合同冻结。
+- `backtest/BACKTEST_CONTRACT.md`：本地 Backtest 研究专用契约入口。
+- `backtest/PORTFOLIO_RESEARCH_CONTRACT.md`：Stage W.1 组合研究层契约冻结。
 - `position/README.md`：持仓模块文档入口。
 - `settlement/README.md`：结算模块文档入口。
 - `operations/README.md`：本地开发与运维类文档入口。

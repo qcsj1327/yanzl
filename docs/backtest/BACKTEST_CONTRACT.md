@@ -1275,3 +1275,26 @@ V.19 Position Model Hardening
 V.20 PnL Model Hardening
 
 V.21 Equity Curve Integration Hardening
+
+## Stage W.1 组合研究层契约冻结
+
+基线：`stage-v19-local-research-backtest-mvp-baseline / b410f68`。
+
+Stage W.1 只改文档。详细契约见
+`docs/backtest/PORTFOLIO_RESEARCH_CONTRACT.md`。
+
+W.1 将 `ResearchPortfolio` 冻结为 Backtest 研究专用组合视图，为未来多品种、多持仓、多策略工作定义边界。未来 `ResearchPortfolio` 必须携带 `portfolio_id`、`strategy_name`、`run_id`、`initial_cash`、`cash`、`total_market_value`、`total_equity`、`positions`、`pnl_points` 和 `diagnostics`。
+
+portfolio 使用单一资金池。每笔 accepted research trade 都从 cash 扣减 notional；cash 不得为负；leverage / margin 仍是未冻结能力。Portfolio equity 计算规则为：
+
+```text
+total_equity = cash + sum(position market value)
+```
+
+per-symbol contribution 必须可观测。每个 position 必须保留其 `symbol`、`instrument_id`、`trade_instrument_id`、exchange 和 trading-day context 的 resolver lineage。
+
+Stage W.1 仍为 long-only。close、short、partial fill、commission、slippage、leverage、margin 和 multi-currency 在单独 contract 被接受前继续 fail closed。
+
+`ResearchPortfolio` 不是生产组合、会计账本、broker account 或 live position truth。W.1 不得 write DB、OMS、Trade、Position 或 Accounting；不得 mutate schema / Alembic；不得 connect broker / CTP / SimNow / live feed / network；不得 enable `ExecutionTarget.PAPER`、`ExecutionTarget.SIM` 或 `ExecutionTarget.LIVE`。
+
+后续组合研究层阶段为 `W.2 ResearchPortfolio skeleton`、`W.3 multi-symbol fixture backtest`、`W.4 portfolio equity aggregation` 和 `W.5 close/exit contract`。

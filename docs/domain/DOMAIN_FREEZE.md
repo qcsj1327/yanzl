@@ -7819,3 +7819,20 @@ production ledgers; must not call broker / CTP / SimNow / live feed / quote API
 This stage adds no current Domain fields and no schema. Any future persistence
 of strategy decisions, metrics, lifecycle events or backtest strategy results
 requires a separate accepted contract.
+
+## Stage W.1 组合研究层契约冻结
+
+基线：`stage-v19-local-research-backtest-mvp-baseline / b410f68`。
+
+Stage W.1 只改文档。详细契约见
+`docs/backtest/PORTFOLIO_RESEARCH_CONTRACT.md`。
+
+`ResearchPortfolio` 和 `ResearchPosition` 只是未来 Backtest 研究 / 观测对象。它们不是当前 Domain fields、production portfolio facts、accounting ledger facts、broker account facts 或 live position facts。
+
+未来 `ResearchPortfolio` 必须携带 `portfolio_id`、`strategy_name`、`run_id`、`initial_cash`、`cash`、`total_market_value`、`total_equity`、`positions`、`pnl_points` 和 `diagnostics`。`strategy_name` 与 `run_id` 必须参与 identity 和 isolation，确保不同 strategy run 不能共享 mutable research cash、positions 或 PnL state。
+
+未来多个 `ResearchPosition` objects 可以表示不同 resolver-derived `symbol`、`instrument_id` 和 `trade_instrument_id`。每个 research position 必须携带 resolver lineage。当前 W.1 范围仍为 long-only；close、short、partial fill、commission、slippage、leverage、margin 和 multi-currency 都是 fail-closed future capabilities。
+
+Portfolio cash 是单一研究资金池。每笔 accepted research trade 扣减 notional，cash 不得为负，total equity 按 `cash + sum(position market value)` 计算。per-symbol contribution 必须可观测。这些值只是 Backtest 研究输出，不得 mutate production cash、Position、Trade、Accounting、broker 或 settlement facts。
+
+默认 schema decision 仍为 NO schema。durable portfolio storage、run tables、allocation tables、portfolio position tables 或 portfolio equity tables 都必须另行 contract freeze 并通过 accepted migration。

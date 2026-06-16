@@ -2634,3 +2634,19 @@ current and previous bars, receive a deterministic decision and defer simulated
 order / fill conversion to a later accepted stage. Recommended next stages are
 `V.4 Strategy Runtime Skeleton`, `V.5 Reference No-op Strategy via strategy
 interface` and `V.6 Buy-and-hold or MA Crossover reference strategy`.
+
+## 17. Stage W.1 组合研究层契约冻结
+
+基线：`stage-v19-local-research-backtest-mvp-baseline / b410f68`。
+
+Stage W.1 在 `docs/backtest/PORTFOLIO_RESEARCH_CONTRACT.md` 冻结研究专用组合层契约。该阶段只改文档，不新增 schema、代码、测试、DB writes、live feed、CTP、SimNow、broker、network integration 或 execution target enablement。
+
+`ResearchPortfolio` 只是 Backtest 研究 / 观测对象。它必须携带 `portfolio_id`、`strategy_name`、`run_id`、`initial_cash`、`cash`、`total_market_value`、`total_equity`、`positions`、`pnl_points` 和 `diagnostics`。`strategy_name` 与 `run_id` 必须参与 identity，确保不同 strategy run 不能共享 mutable cash、positions 或 PnL state。
+
+W.1 允许一个 research portfolio 内包含多个 long-only research positions，覆盖 resolver-derived `symbol`、`instrument_id` 和 `trade_instrument_id`。每个 position 必须携带 resolver lineage。close、short、partial fill、commission、slippage、leverage、margin 和 multi-currency 继续 fail closed。
+
+Portfolio cash 是单一研究资金池。每笔 accepted research trade 扣减 notional，cash 不得为负，portfolio equity 为 `cash + sum(position market value)`。per-symbol contribution 必须可观测，但所有 cash、market value、equity 和 contribution 值都只是研究输出，不是 production accounting truth。
+
+`ResearchPortfolio` 不是生产组合、会计账本、broker account 或 live position。W.1 不得 write DB、OMS、Trade、Position 或 Accounting；不得 mutate schema / Alembic；不得 connect broker / CTP / SimNow / live feed / network；不得 enable `ExecutionTarget.PAPER`、`ExecutionTarget.SIM` 或 `ExecutionTarget.LIVE`。
+
+后续组合研究层阶段为 `W.2 ResearchPortfolio skeleton`、`W.3 multi-symbol fixture backtest`、`W.4 portfolio equity aggregation` 和 `W.5 close/exit contract`。
