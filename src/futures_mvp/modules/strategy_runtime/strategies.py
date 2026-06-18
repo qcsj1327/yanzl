@@ -62,3 +62,37 @@ class BuyAndHoldStrategy:
                 "no side effects",
             ),
         )
+
+
+class ExitReferenceStrategy:
+    def evaluate(self, context: StrategyContext) -> StrategyDecision:
+        if len(context.historical_bars) == 1:
+            return StrategyDecision(
+                decision=StrategyDecisionType.BUY,
+                side="BUY",
+                confidence=Decimal("1"),
+                reason="first eligible bar buy before exit reference",
+                expected_price=context.current_bar.close if context.current_bar else None,
+                tags=("exit_reference",),
+                diagnostics=(
+                    "decision only",
+                    "research-only entry order skeleton",
+                    "no trades",
+                    "no side effects",
+                ),
+            )
+        return StrategyDecision(
+            decision=StrategyDecisionType.CLOSE,
+            side="CLOSE",
+            confidence=Decimal("1"),
+            reason="exit reference closes after first bar",
+            expected_price=context.current_bar.close if context.current_bar else None,
+            tags=("exit_reference",),
+            diagnostics=(
+                "decision only",
+                "research-only exit order skeleton",
+                "no exit fill",
+                "no realized pnl",
+                "no cash return",
+            ),
+        )

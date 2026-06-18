@@ -12,6 +12,7 @@ from futures_mvp.modules.market_data.fixtures import StaticHistoricalDataFixture
 from futures_mvp.modules.market_data.resolver import InstrumentResolver
 from futures_mvp.modules.strategy_runtime import (
     BuyAndHoldStrategy,
+    ExitReferenceStrategy,
     NoOpStrategy,
     StrategyContext,
     StrategyDecision,
@@ -95,6 +96,35 @@ def test_buy_and_hold_second_or_later_bar_returns_hold() -> None:
     assert decision.side == "NONE"
     assert decision.expected_price is None
     assert decision.reason == "already entered hold"
+
+
+def test_exit_reference_first_bar_returns_buy() -> None:
+    context = _context()
+    first_bar_context = replace(
+        context,
+        current_bar=context.historical_bars[0],
+        historical_bars=context.historical_bars[:1],
+    )
+
+    decision = ExitReferenceStrategy().evaluate(first_bar_context)
+
+    assert decision.decision is StrategyDecisionType.BUY
+    assert decision.side == "BUY"
+    assert decision.expected_price == first_bar_context.historical_bars[0].close
+    assert decision.reason == "first eligible bar buy before exit reference"
+
+
+def test_exit_reference_second_or_later_bar_returns_close() -> None:
+    context = _context()
+    assert context.current_bar is not None
+
+    decision = ExitReferenceStrategy().evaluate(context)
+
+    assert decision.decision is StrategyDecisionType.CLOSE
+    assert decision.side == "CLOSE"
+    assert decision.expected_price == context.current_bar.close
+    assert decision.reason == "exit reference closes after first bar"
+    assert "no exit fill" in decision.diagnostics
 
 
 def test_buy_and_hold_output_is_deterministic() -> None:

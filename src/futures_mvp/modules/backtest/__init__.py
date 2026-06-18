@@ -17,6 +17,7 @@ from futures_mvp.modules.backtest.models import (
     ResearchPortfolio,
     ResearchPosition,
     SimulatedOrder,
+    SimulatedOrderIntent,
     SimulatedOrderStatus,
     SimulatedTrade,
 )
@@ -45,6 +46,7 @@ __all__ = [
     "ResearchPortfolio",
     "ResearchPosition",
     "SimulatedOrder",
+    "SimulatedOrderIntent",
     "SimulatedOrderStatus",
     "SimulatedTrade",
     "run_backtest",

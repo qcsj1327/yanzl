@@ -117,6 +117,11 @@ class SimulatedOrderStatus(StrEnum):
     CANCELLED = "CANCELLED"
 
 
+class SimulatedOrderIntent(StrEnum):
+    ENTRY = "ENTRY"
+    EXIT = "EXIT"
+
+
 class DecisionTranslationStatus(StrEnum):
     CREATED = "CREATED"
     SKIPPED = "SKIPPED"
@@ -153,6 +158,7 @@ class SimulatedOrder:
     resolver_lineage: ResolverConsumerContext
     diagnostics: tuple[str, ...] = ()
     status: SimulatedOrderStatus = SimulatedOrderStatus.CREATED
+    intent: SimulatedOrderIntent = SimulatedOrderIntent.ENTRY
     source: str = "backtest_research_only_simulated_order"
 
 

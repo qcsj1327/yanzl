@@ -16,6 +16,7 @@ from futures_mvp.modules.backtest import (
     LocalBacktestEngine,
     NextBarOpenFillModel,
     SimulatedOrder,
+    SimulatedOrderIntent,
     SimulatedOrderStatus,
     SimulatedTrade,
 )
@@ -34,6 +35,7 @@ from futures_mvp.modules.market_data.registry import InstrumentRegistry
 from futures_mvp.modules.market_data.resolver import InstrumentResolver
 from futures_mvp.modules.strategy_runtime import (
     BuyAndHoldStrategy,
+    ExitReferenceStrategy,
     StrategyContext,
     StrategyDecision,
     StrategyDecisionType,
@@ -195,6 +197,63 @@ def test_buy_and_hold_backtest_records_buy_then_hold_with_one_created_order() ->
     assert fill_result.status is FillModelStatus.NO_FILL
     assert fill_result.simulated_trade is None
     assert fill_result.diagnostics[0] == "no fill model selected"
+    assert result.simulated_trades == ()
+    assert result.research_positions == ()
+    assert result.research_pnl_curve == ()
+    assert result.research_portfolio is None
+    assert tuple(point.equity for point in result.equity_curve) == (
+        Decimal("100000"),
+        Decimal("100000"),
+        Decimal("100000"),
+    )
+    assert tuple(point.cash for point in result.equity_curve) == (
+        Decimal("100000"),
+        Decimal("100000"),
+        Decimal("100000"),
+    )
+
+
+def test_exit_reference_backtest_generates_exit_orders_without_trade_or_cash_change() -> None:
+    result = LocalBacktestEngine(strategy=ExitReferenceStrategy()).run(_request())
+
+    assert result.status is BacktestStatus.COMPLETED
+    assert tuple(decision.decision for decision in result.strategy_decisions) == (
+        StrategyDecisionType.BUY,
+        StrategyDecisionType.CLOSE,
+        StrategyDecisionType.CLOSE,
+    )
+    assert tuple(decision.side for decision in result.strategy_decisions) == (
+        "BUY",
+        "CLOSE",
+        "CLOSE",
+    )
+    assert tuple(
+        translation.status for translation in result.decision_translation_results
+    ) == (
+        DecisionTranslationStatus.CREATED,
+        DecisionTranslationStatus.CREATED,
+        DecisionTranslationStatus.CREATED,
+    )
+    assert len(result.simulated_orders) == 3
+    assert tuple(order.side for order in result.simulated_orders) == (
+        "BUY",
+        "CLOSE",
+        "CLOSE",
+    )
+    assert tuple(order.intent for order in result.simulated_orders) == (
+        SimulatedOrderIntent.ENTRY,
+        SimulatedOrderIntent.EXIT,
+        SimulatedOrderIntent.EXIT,
+    )
+    assert all(
+        order.status is SimulatedOrderStatus.CREATED
+        for order in result.simulated_orders
+    )
+    assert len(result.fill_model_results) == 3
+    assert all(
+        fill_result.status is FillModelStatus.NO_FILL
+        for fill_result in result.fill_model_results
+    )
     assert result.simulated_trades == ()
     assert result.research_positions == ()
     assert result.research_pnl_curve == ()

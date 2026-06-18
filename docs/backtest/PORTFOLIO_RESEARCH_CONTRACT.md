@@ -318,3 +318,25 @@ C.2 Exit Skeleton
 C.3 Realized PnL Skeleton
 C.4 Cash Return Integration
 ```
+
+## Stage C.2 Exit Skeleton Status
+
+基线：`stage-c1-close-exit-research-contract-freeze / 6826086`。
+
+Stage C.2 实现 research-only CLOSE skeleton，只生成 `Exit SimulatedOrder`。
+该阶段不实现 exit fill、exit trade、realized PnL、cash return、schema、
+DB write、broker/live/network 或 execution target enablement。
+
+`StrategyDecision.CLOSE` 保持 long-only exit 语义。`ExitReferenceStrategy`
+仅用于研究测试：bar 1 产生 `BUY`，bar 2+ 产生 `CLOSE`。
+
+`DecisionTranslator` 支持：
+
+```text
+BUY   -> SimulatedOrder(intent=ENTRY, side=BUY, status=CREATED)
+CLOSE -> SimulatedOrder(intent=EXIT, side=CLOSE, status=CREATED)
+```
+
+`DecisionTranslator` 不生成 `SimulatedTrade`。默认 `NoFillModel` 继续返回
+`NO_FILL`，因此 C.2 不修改 equity、cash、research position 或 PnL curve。
+`SELL` 仍不属于 long-only research skeleton，必须拒绝。

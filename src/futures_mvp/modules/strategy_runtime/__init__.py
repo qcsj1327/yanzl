@@ -8,12 +8,14 @@ from futures_mvp.modules.strategy_runtime.models import (
 from futures_mvp.modules.strategy_runtime.runtime import StrategyRuntime
 from futures_mvp.modules.strategy_runtime.strategies import (
     BuyAndHoldStrategy,
+    ExitReferenceStrategy,
     NoOpStrategy,
     StrategyEvaluator,
 )
 
 __all__ = [
     "BuyAndHoldStrategy",
+    "ExitReferenceStrategy",
     "NoOpStrategy",
     "StrategyContext",
     "StrategyDecision",

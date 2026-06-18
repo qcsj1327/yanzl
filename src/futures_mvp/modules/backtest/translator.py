@@ -8,6 +8,7 @@ from futures_mvp.modules.backtest.models import (
     DecisionTranslationResult,
     DecisionTranslationStatus,
     SimulatedOrder,
+    SimulatedOrderIntent,
     SimulatedOrderStatus,
 )
 from futures_mvp.modules.market_data.consumer import ResolverConsumerContext
@@ -55,18 +56,18 @@ class DecisionTranslator:
                 status=DecisionTranslationStatus.SKIPPED,
                 diagnostics=("HOLD decision does not create simulated order",),
             )
-        if decision.decision in (
-            StrategyDecisionType.SELL,
-            StrategyDecisionType.CLOSE,
-        ):
+        if decision.decision is StrategyDecisionType.SELL:
             return DecisionTranslationResult(
                 status=DecisionTranslationStatus.REJECTED,
                 diagnostics=(
-                    f"{decision.decision.value} decision translation is not supported "
-                    "before a fill and position model exists",
+                    "SELL decision translation is not supported by the "
+                    "long-only research skeleton",
                 ),
             )
-        if decision.decision is not StrategyDecisionType.BUY:
+        if decision.decision not in (
+            StrategyDecisionType.BUY,
+            StrategyDecisionType.CLOSE,
+        ):
             return DecisionTranslationResult(
                 status=DecisionTranslationStatus.ERROR,
                 diagnostics=(f"unsupported decision: {decision.decision.value}",),
@@ -78,13 +79,21 @@ class DecisionTranslator:
             else current_bar.close
         )
         if expected_price <= Decimal("0"):
+            decision_name = decision.decision.value
             return DecisionTranslationResult(
                 status=DecisionTranslationStatus.BLOCKED,
-                diagnostics=("BUY decision requires a positive expected price",),
+                diagnostics=(
+                    f"{decision_name} decision requires a positive expected price",
+                ),
             )
 
         identity = resolver_lineage.identity
         lineage = resolver_lineage.lineage
+        order_intent = (
+            SimulatedOrderIntent.EXIT
+            if decision.decision is StrategyDecisionType.CLOSE
+            else SimulatedOrderIntent.ENTRY
+        )
         simulated_order = SimulatedOrder(
             order_id=_order_id(
                 strategy_name=strategy_name,
@@ -109,14 +118,19 @@ class DecisionTranslator:
             diagnostics=(
                 "research-only simulated order",
                 "not OMS order, broker order, exchange order, or ledger fact",
+                f"intent={order_intent.value}",
             ),
             status=SimulatedOrderStatus.CREATED,
+            intent=order_intent,
         )
         return DecisionTranslationResult(
             status=DecisionTranslationStatus.CREATED,
             simulated_order=simulated_order,
             simulated_trades=(),
-            diagnostics=("BUY decision translated to CREATED simulated order",),
+            diagnostics=(
+                f"{decision.decision.value} decision translated to "
+                f"CREATED {order_intent.value} simulated order",
+            ),
         )
 
 

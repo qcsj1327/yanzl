@@ -4,11 +4,10 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
-import pytest
-
 from futures_mvp.modules.backtest import (
     DecisionTranslationStatus,
     DecisionTranslator,
+    SimulatedOrderIntent,
     SimulatedOrderStatus,
 )
 from futures_mvp.modules.market_data.consumer import (
@@ -79,6 +78,7 @@ def test_buy_decision_creates_research_only_simulated_order() -> None:
     assert order.exchange == "SHFE"
     assert order.trading_day == date(2026, 6, 12)
     assert order.side == "BUY"
+    assert order.intent is SimulatedOrderIntent.ENTRY
     assert order.quantity == Decimal("1")
     assert order.expected_price == Decimal("101")
     assert order.order_type == "MARKET"
@@ -144,21 +144,35 @@ def test_hold_decision_is_skipped_without_order_or_trade() -> None:
     assert result.simulated_trades == ()
 
 
-@pytest.mark.parametrize(
-    ("decision_type", "side"),
-    (
-        (StrategyDecisionType.SELL, "SELL"),
-        (StrategyDecisionType.CLOSE, "NONE"),
-    ),
-)
-def test_sell_and_close_are_rejected_until_position_model_exists(
-    decision_type: StrategyDecisionType,
-    side: str,
-) -> None:
+def test_close_decision_creates_research_only_exit_simulated_order() -> None:
+    resolver_lineage, current_bar = _resolver_context_and_bar()
+    result = DecisionTranslator().translate(
+        strategy_name="exit-reference",
+        decision=_decision(StrategyDecisionType.CLOSE, side="CLOSE"),
+        resolver_lineage=resolver_lineage,
+        current_bar=current_bar,
+    )
+
+    assert result.status is DecisionTranslationStatus.CREATED
+    assert result.simulated_order is not None
+    assert result.simulated_trades == ()
+    order = result.simulated_order
+    assert order.status is SimulatedOrderStatus.CREATED
+    assert order.side == "CLOSE"
+    assert order.intent is SimulatedOrderIntent.EXIT
+    assert order.quantity == Decimal("1")
+    assert order.expected_price == Decimal("101")
+    assert "intent=EXIT" in order.diagnostics
+    assert result.diagnostics == (
+        "CLOSE decision translated to CREATED EXIT simulated order",
+    )
+
+
+def test_sell_is_rejected_by_long_only_research_skeleton() -> None:
     resolver_lineage, current_bar = _resolver_context_and_bar()
     result = DecisionTranslator().translate(
         strategy_name="reference",
-        decision=_decision(decision_type, side=side),
+        decision=_decision(StrategyDecisionType.SELL, side="SELL"),
         resolver_lineage=resolver_lineage,
         current_bar=current_bar,
     )
@@ -166,7 +180,9 @@ def test_sell_and_close_are_rejected_until_position_model_exists(
     assert result.status is DecisionTranslationStatus.REJECTED
     assert result.simulated_order is None
     assert result.simulated_trades == ()
-    assert "before a fill and position model exists" in result.diagnostics[0]
+    assert result.diagnostics == (
+        "SELL decision translation is not supported by the long-only research skeleton",
+    )
 
 
 def test_missing_resolver_lineage_blocks_translation() -> None:

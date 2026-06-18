@@ -1344,3 +1344,20 @@ zero quantity、cross-position close、same bar exit fill 都必须 fail closed�
 
 后续阶段为 `C.2 Exit Skeleton`、`C.3 Realized PnL Skeleton` 和
 `C.4 Cash Return Integration`。
+
+## Stage C.2 Exit Skeleton Status
+
+基线：`stage-c1-close-exit-research-contract-freeze / 6826086`。
+
+Stage C.2 implements the research-only CLOSE skeleton. It adds
+`ExitReferenceStrategy` for tests and allows `DecisionTranslator` to convert
+`StrategyDecision.CLOSE` into `SimulatedOrder(intent=EXIT, side=CLOSE,
+status=CREATED)`.
+
+`BUY` remains `SimulatedOrder(intent=ENTRY, side=BUY, status=CREATED)`.
+`SELL` remains rejected by the long-only research skeleton.
+
+C.2 does not implement exit fill, exit trade, realized PnL or cash return.
+Translator output must contain no `SimulatedTrade`; default Backtest execution
+keeps exit orders at `NO_FILL`, with no equity, cash, research position or PnL
+mutation.
