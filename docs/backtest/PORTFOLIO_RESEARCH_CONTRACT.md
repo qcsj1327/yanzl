@@ -180,7 +180,141 @@ Stage W.1 和未来组合研究层实现不得：
 W.2 ResearchPortfolio skeleton
 W.3 multi-symbol fixture backtest
 W.4 portfolio equity aggregation
-W.5 close/exit contract
+C.1 Close / Exit research contract freeze
+C.2 Exit skeleton
+C.3 Realized PnL skeleton
+C.4 Cash return integration
 ```
 
 W.2 如被单独接受，只能实现内存内研究骨架。它必须保留 W.1 安全边界，不得新增 schema、DB writes、OMS / Trade / Position / Accounting mutation、broker / live / network connectivity 或 execution target enablement。
+
+## Stage C.1 Close / Exit 研究契约冻结
+
+基线：`stage-w3-backtest-research-portfolio-integration / d69a7cd`
+以及 `stage-v19-local-research-backtest-mvp-baseline`。
+
+Stage C.1 只改文档。本文冻结 research-only close / exit contract，
+为后续 Exit skeleton、Realized PnL skeleton 和 Cash return integration
+定义边界。本文不新增代码、测试、schema、Alembic migration、DB write、
+broker 连接、live feed、network 集成或 execution target enablement。
+
+### Position Lifecycle
+
+研究专用 long-only lifecycle 冻结为：
+
+```text
+FLAT
+-> OPEN_LONG
+-> LONG
+-> CLOSE
+-> FLAT
+```
+
+当前 C.1 只冻结 `LONG -> CLOSE` 退出路径。`SHORT`、short open、
+short cover、long/short reversal 和 cross-position close 均未冻结为可用能力。
+
+### StrategyDecision.CLOSE
+
+未来 `StrategyDecision` 必须冻结 `CLOSE` 语义：
+
+- `CLOSE` 只表示退出已有 `LONG` research position。
+- `CLOSE` 不是 `SELL SHORT`。
+- `CLOSE` 不得开空、反手、增加仓位或跨 position 合并退出。
+- 没有已有 matching long position 时必须 fail closed。
+
+### Exit Order
+
+未来 exit order conversion 必须经过专用 Backtest research 边界：
+
+```text
+StrategyDecision(CLOSE)
+-> DecisionTranslator
+-> Exit SimulatedOrder
+```
+
+`Exit SimulatedOrder` 仍是 in-memory Backtest research object。它必须继承
+原 research position 的 `strategy_name`、`run_id`、resolver lineage、
+`symbol`、`instrument_id`、`trade_instrument_id`、exchange 和 trading-day
+context。它不得成为 OMS order、Trade ledger fact、Accounting fact、
+broker order 或 live execution truth。
+
+### Exit Fill
+
+未来 exit fill 默认冻结为 Next Bar Open Exit Fill：
+
+```text
+close order created at bar N
+-> filled at bar N+1 open
+```
+
+同 bar exit fill 禁止。没有下一根可用标准化 bar、resolver lineage 不匹配、
+或下一根 bar 无 open price 时必须 fail closed，不得合成 exit fill。
+
+### Realized PnL
+
+long-only realized PnL 公式冻结为：
+
+```text
+realized_pnl = (exit_price - entry_price) * quantity
+```
+
+Stage C.1 不冻结 short PnL、fee、commission、slippage、margin、leverage、
+multi-currency 或 settlement PnL。上述能力必须在单独 contract freeze 后
+才能实现。
+
+### Cash Return
+
+研究资金流冻结为：
+
+```text
+entry: cash -= entry_notional
+exit:  cash += exit_notional
+```
+
+`entry_notional` 和 `exit_notional` 均为 research-only notional。它们不得
+mutate production account balance、Trade ledger、Position、Accounting、
+Settlement、Margin、broker balance 或 live account facts。
+
+### Fail-Closed 规则
+
+以下情况必须 fail closed，并保持 research cash、positions、orders、
+trades 和 PnL points 不变：
+
+- close without position。
+- close wrong symbol。
+- close wrong resolver lineage。
+- close wrong `strategy_name` 或 `run_id`。
+- negative quantity 或 zero quantity。
+- close quantity 大于当前 matching long research position quantity。
+- cross-position close。
+- `CLOSE` 被解释为 sell short。
+- same bar exit fill。
+- unresolved、expired、ambiguous 或 metadata-invalid resolver identity。
+
+### Research Only
+
+Exit order、exit trade 和 realized PnL 都是 Backtest research /
+observability output。它们不是：
+
+- OMS truth。
+- Trade ledger。
+- Accounting fact。
+- Broker truth。
+- production Position truth。
+- settlement source-of-truth。
+
+Stage C.1 不得 write DB、OMS、Trade ledger、production Position、
+Accounting、Margin、Settlement 或 broker state；不得 mutate schema /
+Alembic；不得 connect broker / CTP / SimNow / live feed / network；不得
+enable `ExecutionTarget.PAPER`、`ExecutionTarget.SIM` 或
+`ExecutionTarget.LIVE`。
+
+### Future Stages
+
+后续 research close / exit 阶段冻结为：
+
+```text
+C.2 Exit Skeleton
+C.3 Realized PnL Skeleton
+C.4 Cash Return Integration
+```

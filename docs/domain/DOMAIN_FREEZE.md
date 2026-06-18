@@ -7836,3 +7836,58 @@ Stage W.1 只改文档。详细契约见
 Portfolio cash 是单一研究资金池。每笔 accepted research trade 扣减 notional，cash 不得为负，total equity 按 `cash + sum(position market value)` 计算。per-symbol contribution 必须可观测。这些值只是 Backtest 研究输出，不得 mutate production cash、Position、Trade、Accounting、broker 或 settlement facts。
 
 默认 schema decision 仍为 NO schema。durable portfolio storage、run tables、allocation tables、portfolio position tables 或 portfolio equity tables 都必须另行 contract freeze 并通过 accepted migration。
+
+## Stage C.1 Close / Exit 研究契约冻结
+
+基线：`stage-w3-backtest-research-portfolio-integration / d69a7cd`
+以及 `stage-v19-local-research-backtest-mvp-baseline`。
+
+Stage C.1 只改文档。详细契约见
+`docs/backtest/PORTFOLIO_RESEARCH_CONTRACT.md`。
+
+Research position lifecycle 冻结为：
+
+```text
+FLAT -> OPEN_LONG -> LONG -> CLOSE -> FLAT
+```
+
+当前只冻结 `LONG -> CLOSE`。`SHORT`、sell short、short cover、
+position reversal 和 cross-position close 仍未支持。
+
+`StrategyDecision.CLOSE` 只表示退出已有 `LONG` research position，不是
+`SELL SHORT`。未来 exit order flow 必须为：
+
+```text
+StrategyDecision(CLOSE)
+-> DecisionTranslator
+-> Exit SimulatedOrder
+```
+
+Exit order 和 exit fill 都是 Backtest research-only。Next Bar Open Exit
+Fill 冻结为：close order 在 bar N 创建，只能在 bar N+1 open 成交。
+same bar exit fill 禁止。
+
+long-only realized PnL 公式冻结为：
+
+```text
+realized_pnl = (exit_price - entry_price) * quantity
+```
+
+research cash flow 冻结为：
+
+```text
+entry: cash -= entry_notional
+exit:  cash += exit_notional
+```
+
+close without position、close wrong symbol、close wrong resolver lineage、
+negative 或 zero quantity、cross-position close 和 same bar exit fill 都必须
+fail closed，并保持 research cash、positions、orders、trades 和 PnL points
+不变。
+
+Exit order、exit trade 和 realized PnL 不是 OMS truth、Trade ledger、
+Accounting fact、Broker truth、production Position truth 或 settlement
+source-of-truth。
+
+后续阶段为 `C.2 Exit Skeleton`、`C.3 Realized PnL Skeleton` 和
+`C.4 Cash Return Integration`。

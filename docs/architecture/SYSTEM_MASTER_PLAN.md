@@ -2649,4 +2649,38 @@ Portfolio cash 是单一研究资金池。每笔 accepted research trade 扣减 
 
 `ResearchPortfolio` 不是生产组合、会计账本、broker account 或 live position。W.1 不得 write DB、OMS、Trade、Position 或 Accounting；不得 mutate schema / Alembic；不得 connect broker / CTP / SimNow / live feed / network；不得 enable `ExecutionTarget.PAPER`、`ExecutionTarget.SIM` 或 `ExecutionTarget.LIVE`。
 
-后续组合研究层阶段为 `W.2 ResearchPortfolio skeleton`、`W.3 multi-symbol fixture backtest`、`W.4 portfolio equity aggregation` 和 `W.5 close/exit contract`。
+后续组合研究层阶段为 `W.2 ResearchPortfolio skeleton`、`W.3 multi-symbol fixture backtest`、`W.4 portfolio equity aggregation`、`C.1 close/exit research contract freeze`、`C.2 Exit Skeleton`、`C.3 Realized PnL Skeleton` 和 `C.4 Cash Return Integration`。
+
+## 18. Stage C.1 Close / Exit 研究契约冻结
+
+基线：`stage-w3-backtest-research-portfolio-integration / d69a7cd`
+以及 `stage-v19-local-research-backtest-mvp-baseline`。
+
+Stage C.1 在 `docs/backtest/PORTFOLIO_RESEARCH_CONTRACT.md` 冻结
+research-only close / exit contract。该阶段只改文档，不新增 schema、
+代码、测试、DB writes、OMS / Trade / Position / Accounting mutation、
+broker、CTP、SimNow、live feed、network integration 或 execution target
+enablement。
+
+Position lifecycle 冻结为 `FLAT -> OPEN_LONG -> LONG -> CLOSE -> FLAT`。
+当前只冻结 `LONG -> CLOSE`，不支持 `SHORT`、sell short、short cover、
+reversal 或 cross-position close。
+
+未来 `StrategyDecision.CLOSE` 只表示退出已有 `LONG` research position，
+不是 `SELL SHORT`。Exit order flow 冻结为
+`StrategyDecision(CLOSE) -> DecisionTranslator -> Exit SimulatedOrder`，
+且仍为 research-only。
+
+Exit fill 冻结为 Next Bar Open Exit Fill：close order 在 bar N 创建，
+只能在 bar N+1 open 成交；same bar exit fill 禁止。
+
+long-only realized PnL 公式为
+`realized_pnl = (exit_price - entry_price) * quantity`。cash flow 为
+`entry: cash -= entry_notional` 和 `exit: cash += exit_notional`。
+
+close without position、wrong symbol、wrong resolver lineage、negative 或
+zero quantity、cross-position close 和 same bar exit fill 都必须 fail closed。
+
+Exit order、exit trade 和 realized PnL 都不是 OMS truth、Trade ledger、
+Accounting fact 或 Broker truth。后续阶段为 `C.2 Exit Skeleton`、
+`C.3 Realized PnL Skeleton` 和 `C.4 Cash Return Integration`。

@@ -1297,4 +1297,50 @@ Stage W.1 仍为 long-only。close、short、partial fill、commission、slippag
 
 `ResearchPortfolio` 不是生产组合、会计账本、broker account 或 live position truth。W.1 不得 write DB、OMS、Trade、Position 或 Accounting；不得 mutate schema / Alembic；不得 connect broker / CTP / SimNow / live feed / network；不得 enable `ExecutionTarget.PAPER`、`ExecutionTarget.SIM` 或 `ExecutionTarget.LIVE`。
 
-后续组合研究层阶段为 `W.2 ResearchPortfolio skeleton`、`W.3 multi-symbol fixture backtest`、`W.4 portfolio equity aggregation` 和 `W.5 close/exit contract`。
+后续组合研究层阶段为 `W.2 ResearchPortfolio skeleton`、`W.3 multi-symbol fixture backtest`、`W.4 portfolio equity aggregation`、`C.1 close/exit research contract freeze`、`C.2 Exit Skeleton`、`C.3 Realized PnL Skeleton` 和 `C.4 Cash Return Integration`。
+
+## Stage C.1 Close / Exit 研究契约冻结
+
+基线：`stage-w3-backtest-research-portfolio-integration / d69a7cd`
+以及 `stage-v19-local-research-backtest-mvp-baseline`。
+
+Stage C.1 只改文档。详细契约见
+`docs/backtest/PORTFOLIO_RESEARCH_CONTRACT.md`。
+
+Research position lifecycle 冻结为：
+
+```text
+FLAT -> OPEN_LONG -> LONG -> CLOSE -> FLAT
+```
+
+当前只冻结 `LONG -> CLOSE`。`SHORT`、sell short、short cover、
+position reversal 和 cross-position close 仍未支持。
+
+未来 `StrategyDecision.CLOSE` 只表示退出已有 `LONG` research position，
+不是 `SELL SHORT`。未来 exit order flow 必须为：
+
+```text
+StrategyDecision(CLOSE)
+-> DecisionTranslator
+-> Exit SimulatedOrder
+```
+
+Exit fill 冻结为 Next Bar Open Exit Fill：bar N 创建 close order，
+bar N+1 open 成交；same bar exit fill 禁止。
+
+long-only realized PnL 公式冻结为：
+
+```text
+realized_pnl = (exit_price - entry_price) * quantity
+```
+
+cash flow 冻结为 `entry: cash -= entry_notional` 和
+`exit: cash += exit_notional`。Exit order、exit trade 和 realized PnL
+均为 Backtest research-only output，不是 OMS truth、Trade ledger、
+Accounting fact 或 Broker truth。
+
+close without position、wrong symbol、wrong resolver lineage、negative 或
+zero quantity、cross-position close、same bar exit fill 都必须 fail closed。
+
+后续阶段为 `C.2 Exit Skeleton`、`C.3 Realized PnL Skeleton` 和
+`C.4 Cash Return Integration`。
