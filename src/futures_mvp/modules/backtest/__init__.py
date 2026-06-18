@@ -14,11 +14,13 @@ from futures_mvp.modules.backtest.models import (
     FillModelResult,
     FillModelStatus,
     ResearchPnLPoint,
+    ResearchPortfolio,
     ResearchPosition,
     SimulatedOrder,
     SimulatedOrderStatus,
     SimulatedTrade,
 )
+from futures_mvp.modules.backtest.portfolio import PortfolioAggregator
 from futures_mvp.modules.backtest.translator import DecisionTranslator
 
 __all__ = [
@@ -38,7 +40,9 @@ __all__ = [
     "LocalBacktestEngine",
     "NextBarOpenFillModel",
     "NoFillModel",
+    "PortfolioAggregator",
     "ResearchPnLPoint",
+    "ResearchPortfolio",
     "ResearchPosition",
     "SimulatedOrder",
     "SimulatedOrderStatus",

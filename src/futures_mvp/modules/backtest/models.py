@@ -78,6 +78,7 @@ class ResearchPosition:
     quantity: Decimal
     avg_price: Decimal
     resolver_lineage: ResolverConsumerContext
+    market_value: Decimal = Decimal("0")
     source: str = "backtest_research_only_position"
 
 
@@ -94,6 +95,19 @@ class ResearchPnLPoint:
     unrealized_pnl: Decimal
     equity: Decimal
     source: str = "backtest_research_only_pnl"
+
+
+@dataclass(frozen=True)
+class ResearchPortfolio:
+    portfolio_id: str
+    strategy_name: str
+    initial_cash: Decimal
+    cash: Decimal
+    total_market_value: Decimal
+    total_equity: Decimal
+    positions: tuple[ResearchPosition, ...]
+    pnl_points: tuple[ResearchPnLPoint, ...]
+    diagnostics: tuple[str, ...]
 
 
 class SimulatedOrderStatus(StrEnum):
