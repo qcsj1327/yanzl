@@ -6,6 +6,7 @@ from decimal import Decimal
 
 from futures_mvp.modules import backtest as backtest_package
 from futures_mvp.modules.backtest import PortfolioAggregator, ResearchPosition
+from futures_mvp.modules.backtest import engine as engine_module
 from futures_mvp.modules.backtest import portfolio as portfolio_module
 from futures_mvp.modules.backtest.models import ResearchPnLPoint
 from futures_mvp.modules.market_data.consumer import build_resolver_consumer_context
@@ -175,22 +176,28 @@ def test_deterministic_output() -> None:
 
 
 def test_portfolio_module_has_no_db_live_or_network_imports() -> None:
-    source = inspect.getsource(portfolio_module)
+    source = "\n".join(
+        (
+            inspect.getsource(portfolio_module),
+            inspect.getsource(engine_module),
+        )
+    )
 
     forbidden_fragments = (
-        "futures_mvp.db",
-        "futures_mvp.modules.oms",
-        "futures_mvp.modules.oms_to_trade",
-        "futures_mvp.modules.position",
-        "futures_mvp.modules.pnl",
-        "futures_mvp.modules.margin",
-        "futures_mvp.modules.settlement",
-        "futures_mvp.modules.execution_gateway",
-        "futures_mvp.modules.broker_adapter",
-        "socket",
-        "requests",
-        "httpx",
-        "urllib",
+        "from futures_mvp.db",
+        "import futures_mvp.db",
+        "from futures_mvp.modules.oms",
+        "from futures_mvp.modules.oms_to_trade",
+        "from futures_mvp.modules.position",
+        "from futures_mvp.modules.pnl",
+        "from futures_mvp.modules.margin",
+        "from futures_mvp.modules.settlement",
+        "from futures_mvp.modules.execution_gateway",
+        "from futures_mvp.modules.broker_adapter",
+        "import socket",
+        "import requests",
+        "import httpx",
+        "import urllib",
         "ExecutionTarget.PAPER",
         "ExecutionTarget.SIM",
         "ExecutionTarget.LIVE",

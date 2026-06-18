@@ -18,10 +18,12 @@ from futures_mvp.modules.backtest.models import (
     FillModelResult,
     FillModelStatus,
     ResearchPnLPoint,
+    ResearchPortfolio,
     ResearchPosition,
     SimulatedOrder,
     SimulatedTrade,
 )
+from futures_mvp.modules.backtest.portfolio import PortfolioAggregator
 from futures_mvp.modules.backtest.translator import DecisionTranslator
 from futures_mvp.modules.market_data.consumer import (
     ResolverConsumerContext,
@@ -524,6 +526,11 @@ class LocalBacktestEngine:
                     initial_cash=request.initial_cash,
                 )
             )
+            research_portfolio = _research_portfolio(
+                request=request,
+                positions=research_positions,
+                pnl_points=research_pnl_curve,
+            )
             return BacktestResult(
                 status=BacktestStatus.COMPLETED,
                 diagnostics=BacktestDiagnostics(
@@ -547,6 +554,7 @@ class LocalBacktestEngine:
                 simulated_trades=tuple(simulated_trades),
                 research_positions=research_positions,
                 research_pnl_curve=research_pnl_curve,
+                research_portfolio=research_portfolio,
                 gap_report=(),
             )
         except Exception as exc:  # pragma: no cover - defensive fail-closed wrapper
@@ -728,6 +736,19 @@ def _research_position_pnl_and_equity(
 
         avg_price = position.avg_price if position is not None else Decimal("0")
         market_value = quantity * bar.close
+        if position is not None:
+            position = ResearchPosition(
+                symbol=position.symbol,
+                instrument_id=position.instrument_id,
+                trade_instrument_id=position.trade_instrument_id,
+                exchange=position.exchange,
+                trading_day=position.trading_day,
+                side=position.side,
+                quantity=position.quantity,
+                avg_price=position.avg_price,
+                resolver_lineage=position.resolver_lineage,
+                market_value=market_value,
+            )
         unrealized_pnl = (bar.close - avg_price) * quantity if quantity else Decimal("0")
         realized_pnl = Decimal("0")
         equity = cash + market_value
@@ -756,6 +777,26 @@ def _research_position_pnl_and_equity(
 
     positions = (position,) if position is not None else ()
     return tuple(equity_points), positions, tuple(pnl_points)
+
+
+def _research_portfolio(
+    *,
+    request: BacktestRequest,
+    positions: tuple[ResearchPosition, ...],
+    pnl_points: tuple[ResearchPnLPoint, ...],
+) -> ResearchPortfolio | None:
+    if not positions:
+        return None
+    cash = pnl_points[-1].cash if pnl_points else request.initial_cash
+    return PortfolioAggregator(
+        strategy_name=request.strategy_name,
+        initial_cash=request.initial_cash,
+    ).aggregate(
+        positions=positions,
+        pnl_points=pnl_points,
+        cash=cash,
+        diagnostics=("aggregated from LocalBacktestEngine research outputs",),
+    )
 
 
 def _data_gap_result(

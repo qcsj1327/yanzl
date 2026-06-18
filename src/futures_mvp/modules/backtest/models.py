@@ -210,4 +210,5 @@ class BacktestResult:
     simulated_trades: tuple[SimulatedTrade, ...] = ()
     research_positions: tuple[ResearchPosition, ...] = ()
     research_pnl_curve: tuple[ResearchPnLPoint, ...] = ()
+    research_portfolio: ResearchPortfolio | None = None
     gap_report: tuple[str, ...] = ()

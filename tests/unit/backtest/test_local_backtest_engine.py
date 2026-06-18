@@ -92,6 +92,7 @@ def test_valid_request_returns_completed_with_flat_noop_outputs() -> None:
     assert result.simulated_trades == ()
     assert result.research_positions == ()
     assert result.research_pnl_curve == ()
+    assert result.research_portfolio is None
     assert tuple(point.equity for point in result.equity_curve) == (
         Decimal("100000"),
         Decimal("100000"),
@@ -116,6 +117,8 @@ def test_equity_curve_is_deterministic() -> None:
     assert first.simulated_trades == second.simulated_trades == ()
     assert first.research_positions == second.research_positions == ()
     assert first.research_pnl_curve == second.research_pnl_curve == ()
+    assert first.research_portfolio is None
+    assert second.research_portfolio is None
     assert first.strategy_decisions == second.strategy_decisions
 
 
@@ -195,6 +198,7 @@ def test_buy_and_hold_backtest_records_buy_then_hold_with_one_created_order() ->
     assert result.simulated_trades == ()
     assert result.research_positions == ()
     assert result.research_pnl_curve == ()
+    assert result.research_portfolio is None
     assert tuple(point.equity for point in result.equity_curve) == (
         Decimal("100000"),
         Decimal("100000"),
@@ -224,6 +228,8 @@ def test_buy_and_hold_order_id_is_deterministic() -> None:
     assert first.simulated_trades == second.simulated_trades == ()
     assert first.research_positions == second.research_positions == ()
     assert first.research_pnl_curve == second.research_pnl_curve == ()
+    assert first.research_portfolio is None
+    assert second.research_portfolio is None
     assert first.equity_curve == second.equity_curve
 
 
@@ -268,6 +274,7 @@ def test_buy_and_hold_with_next_bar_open_fill_marks_research_equity_to_close() -
     assert position.side == "LONG"
     assert position.quantity == Decimal("1")
     assert position.avg_price == bars[1].open
+    assert position.market_value == bars[2].close
     assert position.resolver_lineage == trade.resolver_lineage
 
     assert tuple(point.equity for point in result.equity_curve) == (
@@ -301,6 +308,40 @@ def test_buy_and_hold_with_next_bar_open_fill_marks_research_equity_to_close() -
         Decimal("100001"),
         Decimal("100002"),
     )
+    assert result.research_portfolio is not None
+    assert result.research_portfolio.positions == result.research_positions
+    assert result.research_portfolio.pnl_points == result.research_pnl_curve
+    assert result.research_portfolio.cash == result.research_pnl_curve[-1].cash
+    assert result.research_portfolio.total_market_value == sum(
+        (position.market_value for position in result.research_positions),
+        Decimal("0"),
+    )
+    assert result.research_portfolio.total_equity == (
+        result.research_portfolio.cash
+        + result.research_portfolio.total_market_value
+    )
+    assert result.research_portfolio.total_equity == result.equity_curve[-1].equity
+    assert "research/observability only" in result.research_portfolio.diagnostics[-1]
+
+
+def test_research_portfolio_id_is_deterministic_for_filled_backtest() -> None:
+    resolver = InstrumentResolver()
+    data_provider = StaticHistoricalDataFixtureProvider(resolver)
+    request = _request(resolver=resolver, data_provider=data_provider)
+
+    first = LocalBacktestEngine(
+        strategy=BuyAndHoldStrategy(),
+        fill_model=NextBarOpenFillModel(),
+    ).run(request)
+    second = LocalBacktestEngine(
+        strategy=BuyAndHoldStrategy(),
+        fill_model=NextBarOpenFillModel(),
+    ).run(request)
+
+    assert first.research_portfolio is not None
+    assert second.research_portfolio is not None
+    assert first.research_portfolio == second.research_portfolio
+    assert first.research_portfolio.portfolio_id == second.research_portfolio.portfolio_id
 
 
 def test_strategy_exception_returns_backtest_error() -> None:
