@@ -31,6 +31,7 @@ class BacktestRequest:
     initial_cash: Decimal
     resolver: Any | None
     data_provider: Any | None
+    data_source: str = "static_fixture"
     symbols: list[str] | tuple[str, ...] = ()
     quantity_mode: str = "fixed_quantity"
     fixed_quantity: Decimal = Decimal("1")

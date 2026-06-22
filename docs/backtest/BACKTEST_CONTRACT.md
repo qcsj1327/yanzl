@@ -250,6 +250,31 @@ Stage V.2 result objects remain research / observability only. They do not
 write DB, schema, Alembic, OMS, Trade, Position, Accounting or broker state and
 must not be promoted to production truth without a separate accepted contract.
 
+## Phase L Backtest Data Source Selection
+
+Baseline：`phase-rp-v1 / 76ec4cf`。
+
+`BacktestRequest.data_source` is introduced with these accepted values：
+
+- `static_fixture`：default and the only executable Phase L source。
+- `read_only_adapter_placeholder`：recognized but blocked until a future
+  provider is explicitly configured and accepted。
+
+When `data_source=static_fixture`, Backtest keeps the existing deterministic
+fixture path through `InstrumentResolver`, `ResolverConsumerContext` and
+`StaticHistoricalDataFixtureProvider`.
+
+When `data_source=read_only_adapter_placeholder`, Backtest must return
+`BacktestStatus.BLOCKED` with diagnostics that state the read-only adapter is
+not configured. It must consume zero bars and must not evaluate strategy,
+create simulated orders, connect network, call broker, call CTP / SimNow, write
+DB rows, mutate schema or enable any non-`MOCK` execution target.
+
+Backtest data source selection does not change the source-of-truth boundary：
+Backtest remains research / observability only and adapter raw payloads must
+not become identity, market-data, OMS, Trade, Position, Accounting, broker,
+live execution or real account truth.
+
 ## Stage V.3 Strategy Interface Contract Freeze
 
 Baseline：`stage-v2-local-backtest-engine-skeleton / cfe55be`。

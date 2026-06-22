@@ -29,6 +29,7 @@ from futures_mvp.modules.market_data.contracts import (
     BarTimeframe,
     HistoricalBarsResult,
     HistoricalDataStatus,
+    MarketDataSource,
 )
 from futures_mvp.modules.market_data.fixtures import StaticHistoricalDataFixtureProvider
 from futures_mvp.modules.market_data.models import (
@@ -191,6 +192,26 @@ def test_valid_request_returns_completed_with_flat_noop_outputs() -> None:
         Decimal("100000"),
         Decimal("100000"),
     )
+
+
+def test_read_only_adapter_data_source_blocks_before_market_data_read() -> None:
+    result = LocalBacktestEngine().run(replace(_request(), data_provider=None))
+
+    assert result.status is BacktestStatus.INVALID_INPUT
+
+    blocked = LocalBacktestEngine().run(
+        replace(
+            _request(),
+            data_provider=None,
+            data_source=MarketDataSource.READ_ONLY_ADAPTER.value,
+        )
+    )
+
+    assert blocked.status is BacktestStatus.BLOCKED
+    assert blocked.data_source_summary is not None
+    assert blocked.data_source_summary.source == MarketDataSource.READ_ONLY_ADAPTER.value
+    assert "read-only market data adapter not configured" in blocked.diagnostics.messages
+    assert blocked.bars_consumed_count == 0
 
 
 def test_equity_curve_is_deterministic() -> None:

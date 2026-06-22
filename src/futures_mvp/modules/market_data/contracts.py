@@ -4,12 +4,22 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
+from typing import Protocol
+
+from futures_mvp.modules.market_data.models import InstrumentContract
 
 
 class HistoricalDataStatus(StrEnum):
     OK = "OK"
     NOT_FOUND = "NOT_FOUND"
     INVALID_INPUT = "INVALID_INPUT"
+    BLOCKED = "BLOCKED"
+
+
+class MarketDataSource(StrEnum):
+    STATIC_FIXTURE = "static_fixture"
+    LOCAL_HISTORICAL_CACHE = "local_historical_cache_placeholder"
+    READ_ONLY_ADAPTER = "read_only_adapter_placeholder"
 
 
 class BarTimeframe(StrEnum):
@@ -100,3 +110,40 @@ class HistoricalQuoteResult:
     status: HistoricalDataStatus
     quote: HistoricalQuote | None = None
     diagnostics: tuple[str, ...] = ()
+
+
+class MarketDataAdapter(Protocol):
+    def list_symbols(self) -> tuple[str, ...]: ...
+
+    def list_contracts(
+        self,
+        symbol: str,
+        trading_day: str | date,
+    ) -> tuple[InstrumentContract, ...]: ...
+
+    def get_main_contract(
+        self,
+        symbol: str,
+        trading_day: str | date,
+    ) -> InstrumentContract | None: ...
+
+    def get_trade_contract(
+        self,
+        symbol: str,
+        trading_day: str | date,
+    ) -> InstrumentContract | None: ...
+
+    def get_bars(
+        self,
+        identity: object,
+        timeframe: str | BarTimeframe,
+        start: datetime | date | None = None,
+        end: datetime | date | None = None,
+        as_of: datetime | None = None,
+    ) -> HistoricalBarsResult: ...
+
+    def get_latest_quote(
+        self,
+        identity: object,
+        as_of: datetime | None = None,
+    ) -> HistoricalQuoteResult: ...

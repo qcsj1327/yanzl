@@ -59,6 +59,11 @@ def test_default_config_view_model_is_unconfigured_and_mock_only() -> None:
     assert model.configuration.dry_run_config.target == "MOCK only"
     assert model.configuration.dry_run_config.apply_requested is False
     assert model.configuration.validation.blocked is True
+    assert ("Static Fixture", "enabled") in model.configuration.market_data_sources
+    assert (
+        "Read-only Adapter Placeholder",
+        "blocked/not configured",
+    ) in model.configuration.market_data_sources
     assert "instrument_id" not in dict(model.configuration.dry_run_required)
     assert "trade_instrument_id" not in dict(model.configuration.dry_run_required)
     assert "resolver_status" in dict(model.configuration.dry_run_required)

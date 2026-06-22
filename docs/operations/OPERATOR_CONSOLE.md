@@ -178,6 +178,24 @@ Stage R.1 does not add durable configuration storage. Persisted Console configur
 
 Configuration UI must not allow selecting or enabling `ExecutionTarget.PAPER`, `ExecutionTarget.SIM`, `ExecutionTarget.LIVE`, live broker, CTP or SimNow.
 
+### Phase L Market Data Source Preview
+
+Baseline：`phase-rp-v1 / 76ec4cf`。
+
+Configuration may display these market data source choices：
+
+- Static Fixture：enabled for local dry-run preview。
+- Read-only Adapter Placeholder：visible but blocked / not configured。
+
+Only Static Fixture may produce a successful dry-run command preview in Phase
+L. Selecting Read-only Adapter Placeholder must show a blocked preview and must
+not create a command, call a network source, call broker, call CTP / SimNow,
+connect a live account, submit an order, write DB rows, mutate schema or enable
+`ExecutionTarget.PAPER`, `ExecutionTarget.SIM` or `ExecutionTarget.LIVE`.
+
+This is a read-only market data framework preview only. It is not broker
+enablement, not live trading, not CTP order entry and not real account access.
+
 ## Results / History page
 
 Results / History displays local observability and accepted ledger inspection results. It is not a business source-of-truth.

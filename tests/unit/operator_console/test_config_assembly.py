@@ -7,6 +7,8 @@ from futures_mvp.modules.market_data.models import (
 )
 from futures_mvp.modules.operator_console.config_assembly import (
     MOCK_TARGET,
+    READ_ONLY_ADAPTER_DATA_SOURCE,
+    STATIC_FIXTURE_DATA_SOURCE,
     ConsoleDryRunConfig,
     append_history,
     assemble_config,
@@ -32,6 +34,7 @@ def test_valid_config_creates_typed_command_preview() -> None:
     assert assembly.preview.target == MOCK_TARGET
     assert assembly.preview.dry_run == "是"
     assert assembly.preview.db_write == "否"
+    assert assembly.preview.market_data_source == STATIC_FIXTURE_DATA_SOURCE
     assert assembly.command is not None
     assert assembly.command.execution_target is ExecutionTarget.MOCK
     assert assembly.command.instrument_id == "ao9999"
@@ -42,6 +45,18 @@ def test_valid_config_creates_typed_command_preview() -> None:
     assert assembly.resolver_consumer_context.identity.symbol == "ao"
     assert assembly.resolver_consumer_context.identity.trading_day.isoformat() == "2026-06-12"
     assert assembly.resolver_consumer_context.lineage.resolver_source == "static_fixture"
+
+
+def test_read_only_adapter_placeholder_blocks_preview_without_command() -> None:
+    assembly = assemble_config(
+        _valid_config(market_data_source=READ_ONLY_ADAPTER_DATA_SOURCE)
+    )
+
+    assert assembly.validation.blocked is True
+    assert assembly.validation.reason == "只读行情 Adapter 尚未配置"
+    assert assembly.validation.missing_fields == ("market_data_source",)
+    assert assembly.preview is None
+    assert assembly.command is None
 
 
 def test_missing_fields_are_blocked_with_chinese_reason_and_list() -> None:

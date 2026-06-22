@@ -253,6 +253,26 @@ advanced review fields labeled as resolver-generated and not recommended for
 manual entry. Unresolved resolver status blocks dry-run config assembly and
 does not fail open.
 
+## Phase L Resolver Source Diagnostics
+
+Baseline：`phase-rp-v1 / 76ec4cf`。
+
+Phase L allows resolver diagnostics to identify the selected market data source
+as either：
+
+- `static_fixture`。
+- `read_only_adapter_placeholder`。
+
+The default remains `static_fixture`. If `read_only_adapter_placeholder` is
+selected before a future provider is configured, resolver output must fail
+closed with not configured diagnostics. It must not infer `instrument_id`,
+`trade_instrument_id`, `exchange`, effective windows or metadata from adapter
+raw payloads.
+
+Resolver source diagnostics are lineage and observability only. They are not a
+license to connect a broker, CTP, SimNow, live feed, live account, order path or
+real capital path.
+
 ## Stage U.2.1 Console Resolver UI Polish
 
 Baseline：`stage-u2-static-instrument-registry-resolver / 9996a7d`。

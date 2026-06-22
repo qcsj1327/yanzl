@@ -7,6 +7,8 @@ from enum import StrEnum
 from typing import cast
 
 from futures_mvp.modules.operator_console.config_assembly import (
+    READ_ONLY_ADAPTER_DATA_SOURCE,
+    STATIC_FIXTURE_DATA_SOURCE,
     CommandPreview,
     ConfigValidationResult,
     ConsoleDryRunConfig,
@@ -134,6 +136,10 @@ class ConfigurationViewModel:
             ),
         )
     )
+    market_data_sources: tuple[tuple[str, str], ...] = (
+        ("Static Fixture", "enabled"),
+        ("Read-only Adapter Placeholder", "blocked/not configured"),
+    )
     dry_run_required: tuple[tuple[str, str], ...] = (
         ("account_id", "未配置"),
         ("trading_day", "未配置"),
@@ -146,6 +152,7 @@ class ConfigurationViewModel:
         ("max position size", "未配置"),
         ("max daily loss", "未配置"),
         ("command source / typed command provider", "未配置"),
+        ("market_data_source", STATIC_FIXTURE_DATA_SOURCE),
         ("job_factory", "未配置"),
     )
 
@@ -299,6 +306,7 @@ def default_console_view_model() -> OperatorConsoleViewModel:
                 ("max daily loss", "未配置"),
                 ("Paper/SIM mode", "PAPER"),
                 ("dry-run/apply", "dry-run"),
+                ("market data source", "Static Fixture"),
             ),
             advanced=(
                 ("runtime_id", "未配置"),
@@ -311,6 +319,8 @@ def default_console_view_model() -> OperatorConsoleViewModel:
                 "local TOML/YAML",
                 "environment variables",
                 "UI session state",
+                f"{STATIC_FIXTURE_DATA_SOURCE} enabled",
+                f"{READ_ONLY_ADAPTER_DATA_SOURCE} blocked/not configured",
             ),
         ),
         results=ResultHistoryViewModel(

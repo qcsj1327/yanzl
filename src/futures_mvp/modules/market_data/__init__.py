@@ -1,3 +1,4 @@
+from futures_mvp.modules.market_data.adapters import ReadOnlyMarketDataAdapter
 from futures_mvp.modules.market_data.consumer import (
     ResolvedInstrumentIdentity,
     ResolverConsumerContext,
@@ -24,6 +25,7 @@ __all__ = [
     "InstrumentResolution",
     "InstrumentResolveStatus",
     "InstrumentResolver",
+    "ReadOnlyMarketDataAdapter",
     "ResolvedInstrumentIdentity",
     "ResolverConsumerContext",
     "ResolverConsumerContextBuildResult",

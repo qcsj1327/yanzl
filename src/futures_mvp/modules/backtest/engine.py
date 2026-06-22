@@ -37,6 +37,7 @@ from futures_mvp.modules.market_data.contracts import (
     BarTimeframe,
     HistoricalBar,
     HistoricalDataStatus,
+    MarketDataSource,
 )
 from futures_mvp.modules.market_data.models import InstrumentResolveStatus
 from futures_mvp.modules.strategy_runtime import (
@@ -50,6 +51,8 @@ from futures_mvp.modules.strategy_runtime import (
 from futures_mvp.modules.strategy_runtime.strategies import StrategyEvaluator
 
 _STATIC_FIXTURE_SOURCE = "static_historical_fixture"
+_DEFAULT_DATA_SOURCE = MarketDataSource.STATIC_FIXTURE.value
+_READ_ONLY_ADAPTER_SOURCE = MarketDataSource.READ_ONLY_ADAPTER.value
 _NOOP_STRATEGY_NAME = "noop"
 _STRATEGY_CONFIG_PLACEHOLDER = {"strategy_runtime_stage": "V.5", "strategy": "noop"}
 _PORTFOLIO_SNAPSHOT_SOURCE = "backtest_research_placeholder"
@@ -97,10 +100,38 @@ class LocalBacktestEngine:
             )
         resolver = request.resolver
         data_provider = request.data_provider
-        if resolver is None or data_provider is None:
+        data_source = _request_data_source(request)
+        if resolver is None:
             return _result(
                 BacktestStatus.INVALID_INPUT,
-                messages=("resolver and data provider are required",),
+                messages=("resolver is required",),
+            )
+        if data_source == _READ_ONLY_ADAPTER_SOURCE:
+            return BacktestResult(
+                status=BacktestStatus.BLOCKED,
+                diagnostics=BacktestDiagnostics(
+                    messages=(
+                        "read-only market data adapter not configured",
+                        f"data_source={_READ_ONLY_ADAPTER_SOURCE}",
+                        "Phase L placeholder only: no network, broker, CTP, SimNow, "
+                        "live trading, live account, order, or execution target",
+                    ),
+                    data_statuses=(f"data_source:{_READ_ONLY_ADAPTER_SOURCE}:BLOCKED",),
+                ),
+                data_source_summary=BacktestDataSummary(
+                    source=_READ_ONLY_ADAPTER_SOURCE,
+                    timeframe=request.timeframe.strip().lower(),
+                    start_trading_day=request.start_trading_day,
+                    end_trading_day=request.end_trading_day,
+                    bars_consumed_count=0,
+                    trading_days_consumed=(),
+                    diagnostics_summary="read-only adapter placeholder not configured",
+                ),
+            )
+        if data_provider is None:
+            return _result(
+                BacktestStatus.INVALID_INPUT,
+                messages=("data provider is required",),
             )
 
         try:
@@ -872,15 +903,22 @@ def _validate_request(request: BacktestRequest) -> str | None:
         BarTimeframe(request.timeframe.strip().lower())
     except ValueError:
         return "unsupported timeframe"
+    if _request_data_source(request) not in (
+        _DEFAULT_DATA_SOURCE,
+        _READ_ONLY_ADAPTER_SOURCE,
+    ):
+        return "unsupported data_source"
     if request.initial_cash <= Decimal("0"):
         return "initial_cash must be greater than 0"
     if request.resolver is None:
         return "resolver is required"
     if not hasattr(request.resolver, "resolve"):
         return "resolver must provide resolve(symbol, trading_day)"
-    if request.data_provider is None:
+    if request.data_provider is None and _request_data_source(request) != (
+        _READ_ONLY_ADAPTER_SOURCE
+    ):
         return "data provider is required"
-    if not hasattr(request.data_provider, "get_bars"):
+    if request.data_provider is not None and not hasattr(request.data_provider, "get_bars"):
         return "data provider must provide get_bars(symbol, trading_day, timeframe)"
     return None
 
@@ -1274,6 +1312,10 @@ def _data_summary(
         trading_days_consumed=trading_days_consumed,
         diagnostics_summary="; ".join(dict.fromkeys(diagnostics)),
     )
+
+
+def _request_data_source(request: BacktestRequest) -> str:
+    return request.data_source.strip() or _DEFAULT_DATA_SOURCE
 
 
 def _result(

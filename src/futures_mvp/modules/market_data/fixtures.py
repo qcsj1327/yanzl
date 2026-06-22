@@ -14,7 +14,12 @@ from futures_mvp.modules.market_data.contracts import (
     HistoricalTick,
     HistoricalTicksResult,
 )
-from futures_mvp.modules.market_data.models import InstrumentResolveStatus
+from futures_mvp.modules.market_data.models import (
+    ContractRole,
+    InstrumentContract,
+    InstrumentResolveStatus,
+)
+from futures_mvp.modules.market_data.registry import InstrumentRegistry
 from futures_mvp.modules.market_data.resolver import InstrumentResolver
 
 STATIC_HISTORICAL_FIXTURE_SOURCE = "static_historical_fixture"
@@ -34,16 +39,66 @@ _SYMBOL_PRICE_BASE: dict[str, Decimal] = {
 class StaticHistoricalDataFixtureProvider:
     def __init__(self, resolver: InstrumentResolver | None = None) -> None:
         self._resolver = resolver or InstrumentResolver()
+        self._registry = InstrumentRegistry()
 
-    def get_bars(
+    def list_symbols(self) -> tuple[str, ...]:
+        return self._registry.symbols()
+
+    def list_contracts(
         self,
         symbol: str,
         trading_day: str | date,
-        timeframe: str | BarTimeframe,
+    ) -> tuple[InstrumentContract, ...]:
+        parsed_day = _normalize_fixture_day(trading_day)
+        if parsed_day is None:
+            return ()
+        return tuple(
+            contract
+            for contract in self._registry.list_contracts(symbol)
+            if contract.effective_from <= parsed_day <= contract.effective_to
+        )
+
+    def get_main_contract(
+        self,
+        symbol: str,
+        trading_day: str | date,
+    ) -> InstrumentContract | None:
+        return _single_contract(
+            self.list_contracts(symbol, trading_day),
+            ContractRole.CONTINUOUS_MAIN,
+        )
+
+    def get_trade_contract(
+        self,
+        symbol: str,
+        trading_day: str | date,
+    ) -> InstrumentContract | None:
+        return _single_contract(
+            self.list_contracts(symbol, trading_day),
+            ContractRole.TRADE_CONTRACT,
+        )
+
+    def get_bars(
+        self,
+        identity: object,
+        trading_day_or_timeframe: str | date | BarTimeframe,
+        timeframe: str | BarTimeframe | None = None,
+        start: datetime | date | None = None,
+        end: datetime | date | None = None,
         *,
         as_of: datetime | None = None,
     ) -> HistoricalBarsResult:
-        normalized_timeframe = _normalize_timeframe(timeframe)
+        identity_args = _identity_args(identity, trading_day_or_timeframe, timeframe)
+        if identity_args is None:
+            return HistoricalBarsResult(
+                status=HistoricalDataStatus.INVALID_INPUT,
+                diagnostics=(
+                    STATIC_HISTORICAL_FIXTURE_WARNING,
+                    "identity must provide symbol and trading_day",
+                ),
+            )
+        symbol, trading_day, requested_timeframe = identity_args
+        normalized_timeframe = _normalize_timeframe(requested_timeframe)
         if normalized_timeframe is None:
             return HistoricalBarsResult(
                 status=HistoricalDataStatus.INVALID_INPUT,
@@ -119,11 +174,24 @@ class StaticHistoricalDataFixtureProvider:
 
     def get_latest_quote(
         self,
-        symbol: str,
-        trading_day: str | date,
+        identity: object,
+        trading_day: str | date | None = None,
         *,
         as_of: datetime | None = None,
     ) -> HistoricalQuoteResult:
+        if trading_day is None:
+            identity_fields = _identity_fields(identity)
+            if identity_fields is None:
+                return HistoricalQuoteResult(
+                    status=HistoricalDataStatus.INVALID_INPUT,
+                    diagnostics=(
+                        STATIC_HISTORICAL_FIXTURE_WARNING,
+                        "identity must provide symbol and trading_day",
+                    ),
+                )
+            symbol, trading_day = identity_fields
+        else:
+            symbol = str(identity)
         ticks_result = self.get_ticks(symbol, trading_day, as_of=as_of)
         if ticks_result.status is not HistoricalDataStatus.OK:
             return HistoricalQuoteResult(
@@ -218,6 +286,50 @@ def _fixture_status_from_resolver_status(
     if status is InstrumentResolveStatus.INVALID_INPUT:
         return HistoricalDataStatus.INVALID_INPUT
     return HistoricalDataStatus.NOT_FOUND
+
+
+def _identity_args(
+    identity: object,
+    trading_day_or_timeframe: str | date | BarTimeframe,
+    timeframe: str | BarTimeframe | None,
+) -> tuple[str, str | date, str | BarTimeframe] | None:
+    if timeframe is not None:
+        return str(identity), trading_day_or_timeframe, timeframe
+    identity_fields = _identity_fields(identity)
+    if identity_fields is None:
+        return None
+    if isinstance(trading_day_or_timeframe, date):
+        return None
+    symbol, trading_day = identity_fields
+    return symbol, trading_day, trading_day_or_timeframe
+
+
+def _identity_fields(identity: object) -> tuple[str, date] | None:
+    identity_value = getattr(identity, "identity", identity)
+    symbol = getattr(identity_value, "symbol", None)
+    trading_day = getattr(identity_value, "trading_day", None)
+    if isinstance(symbol, str) and isinstance(trading_day, date):
+        return symbol, trading_day
+    return None
+
+
+def _normalize_fixture_day(trading_day: str | date) -> date | None:
+    if isinstance(trading_day, date):
+        return trading_day
+    try:
+        return date.fromisoformat(trading_day.strip())
+    except ValueError:
+        return None
+
+
+def _single_contract(
+    contracts: tuple[InstrumentContract, ...],
+    role: ContractRole,
+) -> InstrumentContract | None:
+    matches = tuple(contract for contract in contracts if contract.role is role)
+    if len(matches) != 1:
+        return None
+    return matches[0]
 
 
 def _bars_for_resolution(

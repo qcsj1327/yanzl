@@ -258,6 +258,51 @@ Historical market data sources must not：
 
 Default decision：no schema.
 
+## Phase L Read-Only Market Data Adapter Framework
+
+Baseline：`phase-rp-v1 / 76ec4cf`。
+
+Phase L implements a read-only market data adapter framework. It is the first
+code path that lets the system name a source beyond static fixtures, but the
+default source remains `static_fixture`.
+
+Frozen source priority：
+
+1. `static_fixture`：the current deterministic static fixture path。
+2. `local_historical_cache_placeholder`：reserved for a future local file /
+   historical cache source。
+3. `read_only_adapter_placeholder`：reserved for a future read-only adapter。
+
+The Phase L adapter protocol is read-only：
+
+- `list_symbols()`。
+- `list_contracts(symbol, trading_day)`。
+- `get_main_contract(symbol, trading_day)`。
+- `get_trade_contract(symbol, trading_day)`。
+- `get_bars(identity, timeframe, start, end, as_of)`。
+- `get_latest_quote(identity, as_of)`。
+
+`StaticHistoricalDataFixtureProvider` adapts this protocol while preserving the
+existing static fixture behavior. `ReadOnlyMarketDataAdapter` is a disabled
+placeholder and returns `BLOCKED` / not configured diagnostics for data reads.
+
+Phase L explicitly does not add：
+
+- broker integration。
+- CTP or SimNow integration。
+- live trading。
+- live order or live account capability。
+- real capital access。
+- DB persistence。
+- schema or Alembic migration。
+- default network enablement。
+- `ExecutionTarget.PAPER`, `ExecutionTarget.SIM` or `ExecutionTarget.LIVE`
+  enablement。
+
+Future providers such as Tushare, Akshare, RQData or CTP market data may only
+be attached behind this read-only boundary in a later accepted stage. Adapter
+raw payloads remain diagnostic-only and must not become identity truth.
+
 Stage U.5 does not add or require a new historical data table, resolver snapshot
 table, fixture table, audit table or Alembic migration.
 

@@ -17,6 +17,7 @@ from futures_mvp.modules.market_data.consumer import (
     ResolverConsumerContext,
     build_resolver_consumer_context,
 )
+from futures_mvp.modules.market_data.contracts import MarketDataSource
 from futures_mvp.modules.market_data.models import (
     InstrumentResolution,
     InstrumentResolveStatus,
@@ -28,6 +29,8 @@ MOCK_TARGET = "MOCK only"
 READ_ONLY_DIRECTION = Direction.BUY
 READ_ONLY_OFFSET = Offset.OPEN
 DEFAULT_HISTORY_LIMIT = 5
+STATIC_FIXTURE_DATA_SOURCE = MarketDataSource.STATIC_FIXTURE.value
+READ_ONLY_ADAPTER_DATA_SOURCE = MarketDataSource.READ_ONLY_ADAPTER.value
 
 
 @dataclass(frozen=True)
@@ -39,6 +42,7 @@ class ConsoleDryRunConfig:
     symbol: str = ""
     exchange: str = ""
     resolver_resolution: InstrumentResolution | None = None
+    market_data_source: str = STATIC_FIXTURE_DATA_SOURCE
     quantity: str = ""
     price: str = ""
     max_order_size: str = ""
@@ -65,6 +69,7 @@ class CommandPreview:
     target: str
     dry_run: str
     db_write: str
+    market_data_source: str
 
 
 @dataclass(frozen=True)
@@ -167,6 +172,18 @@ def validate_config(config: ConsoleDryRunConfig) -> ConfigValidationResult:
             reason="配置中心只允许 MOCK 目标",
             missing_fields=("target",),
         )
+    if config.market_data_source == READ_ONLY_ADAPTER_DATA_SOURCE:
+        return ConfigValidationResult(
+            blocked=True,
+            reason="只读行情 Adapter 尚未配置",
+            missing_fields=("market_data_source",),
+        )
+    if config.market_data_source != STATIC_FIXTURE_DATA_SOURCE:
+        return ConfigValidationResult(
+            blocked=True,
+            reason="未知行情数据源",
+            missing_fields=("market_data_source",),
+        )
     quantity = _decimal_or_none(config.quantity)
     if quantity is None or quantity <= 0:
         return ConfigValidationResult(
@@ -222,6 +239,7 @@ def build_command_preview(config: ConsoleDryRunConfig) -> CommandPreview:
         target=MOCK_TARGET,
         dry_run="是",
         db_write="否",
+        market_data_source=config.market_data_source,
     )
 
 
@@ -358,6 +376,7 @@ def _config_with_resolution(
             symbol=config.symbol,
             exchange=config.exchange,
             resolver_resolution=resolution,
+            market_data_source=config.market_data_source,
             quantity=config.quantity,
             price=config.price,
             max_order_size=config.max_order_size,
@@ -376,6 +395,7 @@ def _config_with_resolution(
         symbol=resolution.symbol,
         exchange=resolution.exchange or "",
         resolver_resolution=resolution,
+        market_data_source=config.market_data_source,
         quantity=config.quantity,
         price=config.price,
         max_order_size=config.max_order_size,

@@ -4,6 +4,7 @@ import re
 from collections.abc import Iterable
 from datetime import date
 
+from futures_mvp.modules.market_data.contracts import MarketDataSource
 from futures_mvp.modules.market_data.models import (
     ContractRole,
     InstrumentContract,
@@ -17,8 +18,14 @@ _TRADING_DAY_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 class InstrumentResolver:
-    def __init__(self, registry: InstrumentRegistry | None = None) -> None:
+    def __init__(
+        self,
+        registry: InstrumentRegistry | None = None,
+        *,
+        data_source: str | MarketDataSource = MarketDataSource.STATIC_FIXTURE,
+    ) -> None:
         self._registry = registry or InstrumentRegistry()
+        self._data_source = _normalize_data_source(data_source)
 
     def resolve(self, symbol: str, trading_day: str | date) -> InstrumentResolution:
         normalized_symbol = _normalize_symbol(symbol)
@@ -36,6 +43,19 @@ class InstrumentResolver:
                 status=InstrumentResolveStatus.INVALID_INPUT,
                 symbol=normalized_symbol,
                 diagnostics=("trading_day must be an ISO date YYYY-MM-DD",),
+            )
+        if self._data_source is MarketDataSource.READ_ONLY_ADAPTER:
+            return InstrumentResolution(
+                status=InstrumentResolveStatus.NOT_FOUND,
+                symbol=normalized_symbol,
+                trading_day=parsed_day,
+                source=self._data_source.value,
+                diagnostics=(
+                    f"source={self._data_source.value}",
+                    "read-only market data adapter not configured",
+                    "resolver does not use adapter raw payload as identity truth",
+                    "no network, broker, CTP, SimNow, live feed, or live trading",
+                ),
             )
 
         contracts = self._registry.list_contracts(normalized_symbol)
@@ -149,6 +169,15 @@ class InstrumentResolver:
 
 def resolve(symbol: str, trading_day: str | date) -> InstrumentResolution:
     return InstrumentResolver().resolve(symbol, trading_day)
+
+
+def _normalize_data_source(data_source: str | MarketDataSource) -> MarketDataSource:
+    if isinstance(data_source, MarketDataSource):
+        return data_source
+    try:
+        return MarketDataSource(data_source.strip())
+    except ValueError:
+        return MarketDataSource.STATIC_FIXTURE
 
 
 def _normalize_symbol(symbol: str) -> str | None:
