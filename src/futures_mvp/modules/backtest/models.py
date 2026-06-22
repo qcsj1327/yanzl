@@ -178,6 +178,7 @@ class SimulatedTrade:
     resolver_confidence: str
     resolver_lineage: ResolverConsumerContext
     diagnostics: tuple[str, ...] = ()
+    intent: SimulatedOrderIntent = SimulatedOrderIntent.ENTRY
     source: str = "backtest_research_only_simulated_trade"
 
 

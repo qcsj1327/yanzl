@@ -1361,3 +1361,19 @@ C.2 does not implement exit fill, exit trade, realized PnL or cash return.
 Translator output must contain no `SimulatedTrade`; default Backtest execution
 keeps exit orders at `NO_FILL`, with no equity, cash, research position or PnL
 mutation.
+
+## Stage C.3 Exit Fill Skeleton Status
+
+基线：`stage-c2-exit-order-skeleton / b130d8e`。
+
+Stage C.3 extends `NextBarOpenFillModel` so `SimulatedOrder(intent=EXIT,
+side=CLOSE, status=CREATED)` can generate a research-only EXIT
+`SimulatedTrade`. Existing ENTRY order fill behavior remains unchanged.
+
+EXIT fill uses the first same-identity bar after `created_bar_ts`, sets
+`fill_price` to `next_bar.open`, and sets `fill_qty` to `order.quantity`.
+Same-bar fill is forbidden; no next bar and identity mismatch return no trade.
+
+ENTRY and EXIT trade diagnostics must be distinct and research-only. C.3 does
+not implement realized PnL, cash return, position close, equity update, schema,
+DB writes, broker/live/network integration or execution target enablement.

@@ -8,6 +8,7 @@ from futures_mvp.modules.backtest.models import (
     FillModelResult,
     FillModelStatus,
     SimulatedOrder,
+    SimulatedOrderIntent,
     SimulatedOrderStatus,
     SimulatedTrade,
 )
@@ -45,10 +46,22 @@ class NextBarOpenFillModel:
                 status=FillModelStatus.BLOCKED,
                 diagnostics=("order status must be CREATED",),
             )
-        if order.side != self.supported_side:
+        expected_side = _expected_side_for_intent(
+            order.intent,
+            entry_side=self.supported_side,
+        )
+        if expected_side is None:
             return FillModelResult(
                 status=FillModelStatus.REJECTED,
-                diagnostics=(f"unsupported order side: {order.side}",),
+                diagnostics=(f"unsupported order intent: {order.intent.value}",),
+            )
+        if order.side != expected_side:
+            return FillModelResult(
+                status=FillModelStatus.REJECTED,
+                diagnostics=(
+                    f"order side {order.side} does not match "
+                    f"{order.intent.value} intent",
+                ),
             )
         if order.quantity <= Decimal("0"):
             return FillModelResult(
@@ -88,15 +101,19 @@ class NextBarOpenFillModel:
             resolver_confidence=order.resolver_confidence,
             resolver_lineage=order.resolver_lineage,
             diagnostics=(
-                "research-only next-bar-open simulated trade",
+                f"research-only {order.intent.value} next-bar-open simulated trade",
                 "not Trade ledger, Accounting fact, OMS truth, broker execution, "
                 "or exchange execution",
             ),
+            intent=order.intent,
         )
         return FillModelResult(
             status=FillModelStatus.FILLED,
             simulated_trade=trade,
-            diagnostics=("next-bar-open fill generated research-only simulated trade",),
+            diagnostics=(
+                f"next-bar-open fill generated research-only "
+                f"{order.intent.value} simulated trade",
+            ),
         )
 
 
@@ -120,6 +137,18 @@ def _bar_matches_order_identity(order: SimulatedOrder, bar: HistoricalBar) -> bo
         and bar.exchange == order.exchange
         and bar.trading_day == order.trading_day
     )
+
+
+def _expected_side_for_intent(
+    intent: SimulatedOrderIntent,
+    *,
+    entry_side: str,
+) -> str | None:
+    if intent is SimulatedOrderIntent.ENTRY:
+        return entry_side
+    if intent is SimulatedOrderIntent.EXIT:
+        return "CLOSE"
+    return None
 
 
 def _trade_id(

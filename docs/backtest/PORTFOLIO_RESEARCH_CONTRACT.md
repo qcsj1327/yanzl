@@ -340,3 +340,27 @@ CLOSE -> SimulatedOrder(intent=EXIT, side=CLOSE, status=CREATED)
 `DecisionTranslator` 不生成 `SimulatedTrade`。默认 `NoFillModel` 继续返回
 `NO_FILL`，因此 C.2 不修改 equity、cash、research position 或 PnL curve。
 `SELL` 仍不属于 long-only research skeleton，必须拒绝。
+
+## Stage C.3 Exit Fill Skeleton Status
+
+基线：`stage-c2-exit-order-skeleton / b130d8e`。
+
+Stage C.3 让 `NextBarOpenFillModel` 支持 `SimulatedOrder(intent=EXIT,
+side=CLOSE)`，并生成 research-only EXIT `SimulatedTrade`。该阶段保持
+ENTRY order 的 next-bar-open fill 行为不变。
+
+EXIT fill rules：
+
+- 只使用 `created_bar_ts` 之后第一根同 resolver identity 的 bar。
+- `fill_price = next_bar.open`。
+- `fill_qty = order.quantity`。
+- same bar 禁止成交。
+- no next bar 返回 `DATA_GAP`，不生成 trade。
+- identity mismatch 不成交。
+
+ENTRY trade diagnostics 必须标记 `ENTRY`，EXIT trade diagnostics 必须标记
+`EXIT`。两者都仍是 Backtest research / observability output，不是 Trade
+ledger、OMS truth、Accounting fact、broker execution 或 exchange execution。
+
+C.3 不实现 realized PnL、cash return、position close、equity curve update、
+schema、DB write、broker/live/network 或 execution target enablement。
