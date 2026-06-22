@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any, cast
 
 from futures_mvp.domain.enums import (
     Direction,
@@ -24,9 +25,11 @@ from futures_mvp.modules.execution_reports import (
     build_order_event_candidate,
     canonical_normalized_execution_report_payload,
 )
-from futures_mvp.modules.paper_trading import (
+from futures_mvp.modules.paper_trading.harness import (
     PaperExecutionHarness,
     PaperExecutionStatus,
+)
+from futures_mvp.modules.paper_trading.policy import (
     PaperFillPolicy,
 )
 from futures_mvp.modules.paper_trading.reports import (
@@ -142,7 +145,7 @@ def _command(
 
 def _normalizer(repository: InMemoryExecutionReportRepository) -> ExecutionReportNormalizer:
     return ExecutionReportNormalizer(
-        lambda: FakeExecutionReportUnitOfWork(repository),
+        cast(Any, lambda: FakeExecutionReportUnitOfWork(repository)),
         clock=lambda: NOW,
     )
 

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
+from decimal import Decimal
 from enum import StrEnum
+from typing import cast
 
 from futures_mvp.modules.operator_console.config_assembly import (
     CommandPreview,
@@ -172,6 +175,20 @@ class LiveLockedViewModel:
 
 
 @dataclass(frozen=True)
+class PaperRuntimeConsoleViewModel:
+    status: str
+    reason: str | None
+    equity: str
+    portfolio: tuple[tuple[str, str], ...]
+    orders: tuple[tuple[str, str], ...]
+    fills: tuple[tuple[str, str], ...]
+    positions: tuple[tuple[str, str], ...]
+    allocation: tuple[tuple[str, str], ...]
+    consistency: tuple[tuple[str, str], ...]
+    source: str = "operator_console_paper_runtime_view"
+
+
+@dataclass(frozen=True)
 class OperatorConsoleViewModel:
     pages: tuple[OperatorPage, ...]
     dashboard: DashboardViewModel
@@ -182,6 +199,28 @@ class OperatorConsoleViewModel:
     results: ResultHistoryViewModel
     diagnostics: DiagnosticViewModel
     live_locked: LiveLockedViewModel
+
+
+def paper_runtime_console_view(result: object) -> PaperRuntimeConsoleViewModel:
+    status = str(getattr(result, "status", "UNKNOWN"))
+    reason = getattr(result, "reason", None)
+    portfolio = getattr(result, "portfolio", None)
+    consistency = getattr(result, "consistency", None)
+    return PaperRuntimeConsoleViewModel(
+        status=status,
+        reason=reason if isinstance(reason, str) else None,
+        equity=_decimal_text(getattr(portfolio, "equity", Decimal("0"))),
+        portfolio=_paper_portfolio_rows(portfolio),
+        orders=_paper_order_rows(cast(Iterable[object], getattr(result, "orders", ()))),
+        fills=_paper_fill_rows(cast(Iterable[object], getattr(result, "fills", ()))),
+        positions=_paper_position_rows(
+            cast(Iterable[object], getattr(result, "positions", ()))
+        ),
+        allocation=_paper_allocation_rows(
+            cast(Iterable[object], getattr(portfolio, "allocation", ()))
+        ),
+        consistency=_paper_consistency_rows(consistency),
+    )
 
 
 def default_console_view_model() -> OperatorConsoleViewModel:
@@ -306,3 +345,92 @@ def default_console_view_model() -> OperatorConsoleViewModel:
             forbidden_actions=forbidden,
         ),
     )
+
+
+def _paper_portfolio_rows(portfolio: object | None) -> tuple[tuple[str, str], ...]:
+    if portfolio is None:
+        return ()
+    return (
+        ("cash", _decimal_text(getattr(portfolio, "cash", Decimal("0")))),
+        ("equity", _decimal_text(getattr(portfolio, "equity", Decimal("0")))),
+        ("position_count", str(len(getattr(portfolio, "positions", ())))),
+    )
+
+
+def _paper_order_rows(orders: Iterable[object]) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (
+            str(getattr(order, "order_id", "")),
+            "|".join(
+                (
+                    str(getattr(order, "symbol", "")),
+                    str(getattr(order, "trade_instrument_id", "")),
+                    _decimal_text(getattr(order, "quantity", Decimal("0"))),
+                    str(getattr(order, "status", "")),
+                )
+            ),
+        )
+        for order in orders
+    )
+
+
+def _paper_fill_rows(fills: Iterable[object]) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (
+            str(getattr(fill, "fill_id", "")),
+            "|".join(
+                (
+                    str(getattr(fill, "symbol", "")),
+                    str(getattr(fill, "trade_instrument_id", "")),
+                    _decimal_text(getattr(fill, "fill_price", Decimal("0"))),
+                    _decimal_text(getattr(fill, "fill_qty", Decimal("0"))),
+                )
+            ),
+        )
+        for fill in fills
+    )
+
+
+def _paper_position_rows(positions: Iterable[object]) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (
+            str(getattr(position, "symbol", "")),
+            "|".join(
+                (
+                    str(getattr(position, "trade_instrument_id", "")),
+                    _decimal_text(getattr(position, "quantity", Decimal("0"))),
+                    _decimal_text(getattr(position, "market_value", Decimal("0"))),
+                )
+            ),
+        )
+        for position in positions
+    )
+
+
+def _paper_allocation_rows(allocation: Iterable[object]) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (
+            str(getattr(item, "symbol", "")),
+            _decimal_text(getattr(item, "allocation", Decimal("0"))),
+        )
+        for item in allocation
+    )
+
+
+def _paper_consistency_rows(consistency: object | None) -> tuple[tuple[str, str], ...]:
+    if consistency is None:
+        return ()
+    return (
+        ("all_match", str(getattr(consistency, "all_match", False))),
+        ("cash_matches", str(getattr(consistency, "cash_matches", False))),
+        ("equity_matches", str(getattr(consistency, "equity_matches", False))),
+        ("positions_match", str(getattr(consistency, "positions_match", False))),
+        ("orders_match", str(getattr(consistency, "orders_match", False))),
+        ("fills_match", str(getattr(consistency, "fills_match", False))),
+    )
+
+
+def _decimal_text(value: object) -> str:
+    if isinstance(value, Decimal):
+        return format(value, "f")
+    return str(value)

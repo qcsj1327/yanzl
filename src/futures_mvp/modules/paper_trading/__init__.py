@@ -1,53 +1,49 @@
-from futures_mvp.modules.paper_trading.coordinator import (
-    PaperAccountingContext,
-    PaperRunContext,
-    PaperRunResult,
-    PaperRunStatus,
-    PaperTradingCoordinator,
-)
-from futures_mvp.modules.paper_trading.harness import (
-    PaperExecutionHarness,
-    PaperExecutionResult,
-    PaperExecutionStatus,
-)
-from futures_mvp.modules.paper_trading.job import (
-    PaperJobConfig,
-    PaperJobResult,
-    PaperJobStatus,
-    PaperRuntimeJob,
-)
-from futures_mvp.modules.paper_trading.policy import PaperFillPolicy
-from futures_mvp.modules.paper_trading.reports import (
-    build_paper_broker_callback_evidence,
-    build_paper_broker_callback_evidences,
-)
-from futures_mvp.modules.paper_trading.session import (
-    PaperLocalSession,
-    PaperSessionConfig,
+from futures_mvp.modules.paper_trading.research_mvp import (
+    MOCK_ONLY_TARGET,
+    PaperAllocation,
+    PaperConsistencyReport,
+    PaperFill,
+    PaperOrder,
+    PaperPnL,
+    PaperPortfolio,
+    PaperPosition,
+    PaperReport,
+    PaperResearchRuntime,
+    PaperResearchSession,
+    PaperRuntimeResult,
+    PaperRuntimeStatus,
+    PaperSessionLifecycle,
     PaperSessionResult,
-    PaperSessionStatus,
-    run_paper_local_session,
 )
 
+_LEGACY_INTERNAL_NAMES = {
+    "PaperJobConfig": ("futures_mvp.modules.paper_trading.job", "PaperJobConfig"),
+}
+
 __all__ = [
-    "PaperAccountingContext",
-    "PaperExecutionHarness",
-    "PaperExecutionResult",
-    "PaperExecutionStatus",
-    "PaperFillPolicy",
-    "PaperJobConfig",
-    "PaperJobResult",
-    "PaperJobStatus",
-    "PaperRuntimeJob",
-    "PaperRunContext",
-    "PaperRunResult",
-    "PaperRunStatus",
-    "PaperLocalSession",
-    "PaperSessionConfig",
+    "MOCK_ONLY_TARGET",
+    "PaperAllocation",
+    "PaperConsistencyReport",
+    "PaperFill",
+    "PaperOrder",
+    "PaperPnL",
+    "PaperPortfolio",
+    "PaperPosition",
+    "PaperReport",
+    "PaperResearchRuntime",
+    "PaperResearchSession",
+    "PaperRuntimeResult",
+    "PaperRuntimeStatus",
+    "PaperSessionLifecycle",
     "PaperSessionResult",
-    "PaperSessionStatus",
-    "PaperTradingCoordinator",
-    "build_paper_broker_callback_evidence",
-    "build_paper_broker_callback_evidences",
-    "run_paper_local_session",
 ]
+
+
+def __getattr__(name: str) -> object:
+    legacy = _LEGACY_INTERNAL_NAMES.get(name)
+    if legacy is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module_name, attribute = legacy
+    from importlib import import_module
+
+    return getattr(import_module(module_name), attribute)

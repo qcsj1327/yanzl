@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from typing import Any, cast
 
 from futures_mvp.domain.enums import (
     Direction,
@@ -13,6 +14,7 @@ from futures_mvp.domain.enums import (
     ExecutionReportNormalizeResultStatus,
     ExecutionReportStatus,
     ExecutionTarget,
+    MarginPriceBasis,
     MarginResultStatus,
     Offset,
     OMSEventApplyResultStatus,
@@ -70,15 +72,17 @@ from futures_mvp.modules.ops_safety import (
     RolloutMode,
     SafetyConfig,
 )
-from futures_mvp.modules.paper_trading import (
+from futures_mvp.modules.paper_trading.coordinator import (
     PaperAccountingContext,
-    PaperExecutionHarness,
-    PaperExecutionResult,
-    PaperFillPolicy,
     PaperRunContext,
     PaperRunStatus,
     PaperTradingCoordinator,
 )
+from futures_mvp.modules.paper_trading.harness import (
+    PaperExecutionHarness,
+    PaperExecutionResult,
+)
+from futures_mvp.modules.paper_trading.policy import PaperFillPolicy
 
 NOW = datetime(2026, 6, 10, 9, tzinfo=UTC)
 TRADING_DAY = date(2026, 6, 10)
@@ -677,7 +681,7 @@ def _accounting_context() -> PaperAccountingContext:
             short_initial_margin_rate=Decimal("0.1"),
             long_maintenance_margin_rate=Decimal("0.08"),
             short_maintenance_margin_rate=Decimal("0.08"),
-            price_basis="LAST_PRICE",
+            price_basis=MarginPriceBasis.LAST_PRICE,
             rule_version="v1",
         ),
         latest_price=Decimal("3500"),
@@ -784,7 +788,7 @@ def _context(
 
 def _normalizer(repository: InMemoryExecutionReportRepository) -> ExecutionReportNormalizer:
     return ExecutionReportNormalizer(
-        lambda: FakeExecutionReportUnitOfWork(repository),
+        cast(Any, lambda: FakeExecutionReportUnitOfWork(repository)),
         clock=lambda: NOW,
     )
 
@@ -811,7 +815,7 @@ def _coordinator(
     positions = position_manager or FakePositionManager()
     return (
         PaperTradingCoordinator(
-            harness=harness
+            harness=cast(Any, harness)
             or PaperExecutionHarness(fill_policy=fill_policy),
             normalizer=_normalizer(report_repository),
             oms_event_application=OMSEventApplicationService(
@@ -821,8 +825,8 @@ def _coordinator(
             oms_to_trade=OMSToTradeBridgeService(trades),
             position_manager=positions,
             margin_engine=FakeMarginEngine(),
-            pnl_engine=FakePnLEngine(),
-            settlement_engine=settlement_engine or FakeSettlementEngine(),
+            pnl_engine=cast(Any, FakePnLEngine()),
+            settlement_engine=cast(Any, settlement_engine or FakeSettlementEngine()),
         ),
         positions,
         trades,
@@ -1019,7 +1023,7 @@ def test_duplicate_oms_event_noops_without_trade_or_downstream() -> None:
         oms_to_trade=trade_bridge,
         position_manager=position_manager,
         margin_engine=FakeMarginEngine(),
-        pnl_engine=FakePnLEngine(),
+        pnl_engine=cast(Any, FakePnLEngine()),
         settlement_engine=FakeSettlementEngine(),
     )
 
@@ -1052,7 +1056,7 @@ def test_duplicate_trade_noops_without_position_or_accounting() -> None:
         oms_to_trade=trade_bridge,
         position_manager=position_manager,
         margin_engine=FakeMarginEngine(),
-        pnl_engine=FakePnLEngine(),
+        pnl_engine=cast(Any, FakePnLEngine()),
         settlement_engine=FakeSettlementEngine(),
     )
 
@@ -1115,7 +1119,7 @@ def test_position_conflict_or_error_stops_accounting() -> None:
             oms_to_trade=OMSToTradeBridgeService(FakeTradeRepository()),
             position_manager=position_manager,
             margin_engine=margin,
-            pnl_engine=pnl,
+            pnl_engine=cast(Any, pnl),
             settlement_engine=settlement,
         )
 
@@ -1138,7 +1142,7 @@ def test_accounting_conflict_or_error_stops_later_accounting() -> None:
         oms_to_trade=OMSToTradeBridgeService(FakeTradeRepository()),
         position_manager=FakePositionManager(),
         margin_engine=margin,
-        pnl_engine=pnl,
+        pnl_engine=cast(Any, pnl),
         settlement_engine=settlement,
     )
 
@@ -1156,7 +1160,7 @@ def test_accounting_conflict_or_error_stops_later_accounting() -> None:
         oms_event_application=_oms_event_application(),
         oms_to_trade=OMSToTradeBridgeService(FakeTradeRepository()),
         position_manager=FakePositionManager(),
-        pnl_engine=pnl_conflict,
+        pnl_engine=cast(Any, pnl_conflict),
         settlement_engine=settlement_after_pnl,
     )
 

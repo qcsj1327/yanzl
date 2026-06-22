@@ -27,13 +27,17 @@ from futures_mvp.modules.ops_safety import (
     RolloutMode,
     SafetyConfig,
 )
-from futures_mvp.modules.paper_trading import (
-    PaperJobConfig,
-    PaperLocalSession,
+from futures_mvp.modules.paper_trading.coordinator import (
     PaperRunContext,
     PaperRunResult,
     PaperRunStatus,
+)
+from futures_mvp.modules.paper_trading.job import (
+    PaperJobConfig,
     PaperRuntimeJob,
+)
+from futures_mvp.modules.paper_trading.session import (
+    PaperLocalSession,
     PaperSessionConfig,
     PaperSessionStatus,
 )

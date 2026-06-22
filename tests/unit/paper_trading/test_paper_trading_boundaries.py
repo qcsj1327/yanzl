@@ -1,8 +1,13 @@
 import ast
+import importlib
+import sys
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 PAPER_TRADING_DIR = ROOT / "src" / "futures_mvp" / "modules" / "paper_trading"
+RESEARCH_MVP = PAPER_TRADING_DIR / "research_mvp.py"
 EXECUTION_GATEWAY_SERVICE = (
     ROOT / "src" / "futures_mvp" / "modules" / "execution_gateway" / "service.py"
 )
@@ -20,58 +25,97 @@ def _imports(path: Path) -> set[str]:
     return imports
 
 
-def _paper_sources() -> str:
-    return "\n".join(path.read_text() for path in PAPER_TRADING_DIR.glob("*.py"))
+def _research_mvp_source() -> str:
+    return RESEARCH_MVP.read_text()
 
 
-def test_paper_trading_has_no_business_mutation_imports() -> None:
+def test_paper_trading_root_import_does_not_load_legacy_boundaries() -> None:
     forbidden = {
+        "futures_mvp.modules.broker_adapter",
         "futures_mvp.modules.oms",
-        "futures_mvp.modules.oms.service",
         "futures_mvp.modules.oms_to_trade",
         "futures_mvp.modules.position",
         "futures_mvp.modules.margin",
         "futures_mvp.modules.pnl",
         "futures_mvp.modules.settlement",
-        "futures_mvp.interfaces.repositories",
+        "futures_mvp.modules.accounting",
         "futures_mvp.db",
     }
-    imported: set[str] = set()
-    for path in PAPER_TRADING_DIR.glob("*.py"):
-        imported.update(_imports(path))
+    for name in list(sys.modules):
+        if name == "futures_mvp.modules.paper_trading" or name.startswith(
+            "futures_mvp.modules.paper_trading."
+        ):
+            sys.modules.pop(name)
 
-    assert forbidden.isdisjoint(imported)
-
-
-def test_paper_trading_does_not_call_business_mutation_boundaries() -> None:
-    source = _paper_sources()
-
-    forbidden_calls = [
-        "append_trade",
-        "create_or_get_trade",
-        "append_margin_snapshot",
-        "append_pnl_snapshot",
-        "Trade(",
-    ]
-    for call in forbidden_calls:
-        assert call not in source
-
-    assert "apply_candidate(" in source
-    assert "create_trade(" in source
-    assert ".apply_trade(" in source
-    assert ".settle(" in source
-
-
-def test_paper_trading_has_no_live_network_or_broker_dependencies() -> None:
-    forbidden_fragments = ("ctp", "simnow", "brokerapi", "socket", "requests", "httpx", "grpc")
-    imported: set[str] = set()
-    for path in PAPER_TRADING_DIR.glob("*.py"):
-        imported.update(name.lower() for name in _imports(path))
+    before = set(sys.modules)
+    importlib.import_module("futures_mvp.modules.paper_trading")
+    loaded_by_root_import = set(sys.modules) - before
 
     assert all(
-        not any(fragment in imported_name for fragment in forbidden_fragments)
-        for imported_name in imported
+        not (
+            module in loaded_by_root_import
+            or any(name.startswith(module + ".") for name in loaded_by_root_import)
+        )
+        for module in forbidden
     )
+
+
+def test_paper_trading_root_exports_research_mvp_only() -> None:
+    module = importlib.import_module("futures_mvp.modules.paper_trading")
+
+    assert "PaperResearchRuntime" in module.__all__
+    assert "PaperResearchSession" in module.__all__
+    assert "PaperExecutionHarness" not in module.__all__
+    assert "PaperTradingCoordinator" not in module.__all__
+    assert "BrokerCallbackEvidence" not in module.__all__
+    assert "PaperExecutionHarness" not in vars(module)
+    assert "PaperTradingCoordinator" not in vars(module)
+
+
+def test_paper_trading_root_rejects_legacy_coordinator_access() -> None:
+    module = importlib.import_module("futures_mvp.modules.paper_trading")
+
+    with pytest.raises(ImportError):
+        exec(
+            "from futures_mvp.modules.paper_trading import PaperTradingCoordinator",
+            {},
+        )
+    assert not hasattr(module, "PaperTradingCoordinator")
+
+
+def test_research_mvp_has_no_legacy_or_live_dependencies() -> None:
+    forbidden = {
+        "futures_mvp.modules.broker_adapter",
+        "futures_mvp.modules.paper_trading.coordinator",
+        "futures_mvp.modules.paper_trading.harness",
+        "futures_mvp.modules.paper_trading.reports",
+        "futures_mvp.modules.oms",
+        "futures_mvp.modules.oms_to_trade",
+        "futures_mvp.modules.position",
+        "futures_mvp.modules.margin",
+        "futures_mvp.modules.pnl",
+        "futures_mvp.modules.settlement",
+        "futures_mvp.modules.accounting",
+        "futures_mvp.db",
+        "socket",
+        "requests",
+        "httpx",
+        "urllib",
+    }
+    imported = _imports(RESEARCH_MVP)
+
+    assert forbidden.isdisjoint(imported)
+    source = _research_mvp_source()
+    forbidden_fragments = (
+        "ExecutionTarget.PAPER",
+        "ExecutionTarget.SIM",
+        "ExecutionTarget.LIVE",
+        "apply_candidate(",
+        "create_trade(",
+        ".apply_trade(",
+        ".settle(",
+    )
+    assert all(fragment not in source for fragment in forbidden_fragments)
 
 
 def test_paper_trading_does_not_add_schema_or_alembic_revision() -> None:

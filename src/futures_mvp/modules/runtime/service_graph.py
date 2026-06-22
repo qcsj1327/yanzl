@@ -31,10 +31,8 @@ from futures_mvp.modules.oms.service import OMSService
 from futures_mvp.modules.oms_bridge.service import OMSBridgeService
 from futures_mvp.modules.oms_event_application.service import OMSEventApplicationService
 from futures_mvp.modules.oms_to_trade.service import OMSToTradeBridgeService
-from futures_mvp.modules.paper_trading import (
-    PaperJobConfig,
-    PaperTradingCoordinator,
-)
+from futures_mvp.modules.paper_trading.coordinator import PaperTradingCoordinator
+from futures_mvp.modules.paper_trading.job import PaperJobConfig
 from futures_mvp.modules.pnl.engine import PnLEngine
 from futures_mvp.modules.position.manager import PositionManager
 from futures_mvp.modules.runtime.config import RuntimeConfig
