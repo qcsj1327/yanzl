@@ -13,15 +13,15 @@ def test_read_only_diagnostics_provider_returns_unknown_values() -> None:
     diagnostics = read_only_diagnostics_placeholder()
 
     assert dict(diagnostics.items) == {
-        "pytest status": "unknown/not run",
-        "ruff status": "unknown/not run",
-        "mypy status": "unknown/not run",
-        "alembic current": "unknown/not checked",
         "git commit/tag": "unknown/not checked",
         "worktree": "unknown/not checked",
-        "DB health": "unknown/not checked",
-        "Redis health": "unknown/not checked",
         "last error": "none",
+    }
+    assert dict(diagnostics.safety) == {
+        "ExecutionTarget": "MOCK only",
+        "DB write": "disabled",
+        "live trading": "disabled",
+        "broker/CTP/SimNow": "disabled",
     }
 
 

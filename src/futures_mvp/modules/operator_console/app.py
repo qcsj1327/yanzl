@@ -11,9 +11,10 @@ from futures_mvp.modules.operator_console.actions import (
     DryRunActionResult,
     DryRunProvider,
     run_paper_dry_run,
-    run_sim_dry_run,
 )
 from futures_mvp.modules.operator_console.config_assembly import (
+    READ_ONLY_ADAPTER_DATA_SOURCE,
+    STATIC_FIXTURE_DATA_SOURCE,
     CommandPreview,
     ConsoleDryRunConfig,
     append_history,
@@ -23,7 +24,6 @@ from futures_mvp.modules.operator_console.config_assembly import (
 )
 from futures_mvp.modules.operator_console.dry_run_wiring import (
     create_paper_config_dry_run_provider,
-    create_sim_config_dry_run_provider,
 )
 from futures_mvp.modules.operator_console.view_models import (
     ButtonViewModel,
@@ -157,7 +157,6 @@ def render_console(
     view_model: OperatorConsoleViewModel | None = None,
     *,
     paper_dry_run: DryRunProvider | None = None,
-    sim_dry_run: DryRunProvider | None = None,
 ) -> None:
     model = _model_with_session_state(ui, view_model or default_console_view_model())
     ui.title(labels.section_label("Operator Console"))
@@ -168,9 +167,8 @@ def render_console(
         model,
         selected_page,
         paper_dry_run=paper_dry_run,
-        sim_dry_run=sim_dry_run,
     )
-    if selected_page is not OperatorPage.RESULTS_HISTORY and _has_result(rendered_model.results):
+    if _has_result(rendered_model.results):
         ui.divider()
         _render_dry_run_result_summary(ui, rendered_model.results)
 
@@ -262,127 +260,160 @@ def _render_page(
     page: OperatorPage,
     *,
     paper_dry_run: DryRunProvider | None,
-    sim_dry_run: DryRunProvider | None,
 ) -> OperatorConsoleViewModel:
     if page is OperatorPage.DASHBOARD:
         _render_dashboard(ui, model)
-    elif page is OperatorPage.PAPER_SESSION:
+    elif page is OperatorPage.RESEARCH:
+        _render_research(ui, model)
+    elif page is OperatorPage.PORTFOLIO:
+        _render_portfolio(ui, model)
+    elif page is OperatorPage.PAPER:
+        _render_paper(ui, model)
         provider = paper_dry_run or create_paper_config_dry_run_provider(
             model.configuration.dry_run_config
         )
-        result = _render_session(ui, model.paper, dry_run_provider=provider)
+        result = _render_session_actions(ui, model.paper, provider)
         if result is not None:
             return _with_result(ui, model, "PAPER", result)
-    elif page is OperatorPage.SIM_SESSION:
-        provider = sim_dry_run or create_sim_config_dry_run_provider(
-            model.configuration.dry_run_config
-        )
-        result = _render_session(ui, model.sim, dry_run_provider=provider)
-        if result is not None:
-            return _with_result(ui, model, "SIM", result)
-    elif page is OperatorPage.SAFETY_CONTROLS:
-        _render_safety(ui, model)
-    elif page is OperatorPage.CONFIGURATION:
-        configuration = _render_configuration(ui, model)
+    elif page is OperatorPage.MARKET_DATA:
+        configuration = _render_market_data(ui, model)
         return _with_configuration(model, configuration)
-    elif page is OperatorPage.RESULTS_HISTORY:
-        _render_results(ui, model)
     elif page is OperatorPage.DIAGNOSTICS:
         _render_diagnostics(ui, model)
-    elif page is OperatorPage.LIVE_LOCKED_PAGE:
-        _render_live_locked(ui, model)
     return model
 
 
 def _render_dashboard(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> None:
-    first_row = ui.columns(2)
+    _render_card(
+        ui,
+        labels.section_label("safety_banner"),
+        (
+            "MOCK only",
+            "research only",
+            "no live trading",
+            "不写数据库",
+        ),
+    )
+    first_row = ui.columns(3)
     _render_card(
         first_row[0],
         labels.section_label("system_status_card"),
         (
-            labels.dashboard_text("system_ready"),
-            labels.dashboard_text("current_mode"),
-            labels.dashboard_text("current_target"),
-            labels.dashboard_text("migration_ready"),
+            f"{labels.field_label('Research Platform')}: "
+            f"{labels.status_label(model.dashboard.research_status)}",
+            f"{labels.field_label('Paper Runtime')}: "
+            f"{labels.status_label(model.dashboard.paper_runtime_status)}",
+            f"{labels.field_label('Portfolio')}: "
+            f"{labels.status_label(model.dashboard.portfolio_status)}",
         ),
     )
     _render_card(
         first_row[1],
+        labels.section_label("market_data_status"),
+        (
+            f"{labels.field_label('Market Data')}: "
+            f"{labels.status_label(model.dashboard.market_data_status)}",
+            f"{labels.field_label('current_source')}: "
+            f"{model.dashboard.current_source}",
+            f"{labels.field_label('Diagnostics')}: "
+            f"{labels.status_label(model.dashboard.diagnostics_status)}",
+        ),
+    )
+    _render_card(
+        first_row[2],
         labels.section_label("safety_lock_card"),
         (
-            "🔒 LIVE 禁用",
-            "🔒 Broker 禁用",
-            "🔒 CTP 禁用",
-            "🔒 SimNow 禁用",
-            "🔒 真实资金禁用",
+            "LIVE 禁用",
+            "Broker 禁用",
+            "CTP / SimNow 禁用",
+            "真实资金禁用",
+            labels.safety_label(model.dashboard.execution_target_status),
         ),
     )
-    second_row = ui.columns(2)
+    second_row = ui.columns(1)
     _render_card(
         second_row[0],
-        labels.section_label("next_step_card"),
+        labels.section_label("latest_result_card"),
         (
-            labels.dashboard_text("recommended_actions"),
-            labels.dashboard_text("paper_dry_run_first"),
-            labels.dashboard_text("view_result_second"),
-            labels.dashboard_text("sim_after_safety"),
+            f"{labels.field_label('latest dry-run')}: "
+            f"{model.dashboard.latest_dry_run_summary}",
+            labels.dashboard_text("db_delta_zero"),
+            "命令来源：static_fixture 时可预演，read_only_adapter_placeholder 时阻断",
+        ),
+    )
+
+
+def _render_research(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> None:
+    research = model.research
+    top = ui.columns(3)
+    _render_card(
+        top[0],
+        labels.section_label("research_status"),
+        (
+            f"{labels.field_label('backtest_status')}: "
+            f"{labels.status_label(research.backtest_status)}",
+            f"{labels.field_label('strategy')}: {research.strategy}",
+            f"{labels.field_label('symbols')}: {', '.join(research.symbols)}",
         ),
     )
     _render_card(
-        second_row[1],
-        labels.section_label("latest_result_card"),
+        top[1],
+        labels.section_label("pnl_summary"),
         (
-            labels.dashboard_text("not_run_yet"),
-            labels.dashboard_text("db_delta_zero"),
-            labels.dashboard_text("latest_status_none"),
+            f"{labels.field_label('realized_pnl')}: {research.realized_pnl}",
+            f"{labels.field_label('unrealized_pnl')}: {research.unrealized_pnl}",
         ),
+    )
+    _render_card(top[2], labels.section_label("metrics"), research.metrics)
+    bottom = ui.columns(4)
+    _render_card(bottom[0], labels.section_label("orders"), research.orders)
+    _render_card(bottom[1], labels.section_label("trades"), research.trades)
+    _render_card(bottom[2], labels.section_label("positions"), research.positions)
+    _render_card(
+        bottom[3],
+        labels.section_label("equity_curve"),
+        research.equity_curve_summary,
     )
 
 
-def _render_session(
-    ui: OperatorConsoleUI,
-    session: SessionPageViewModel,
-    *,
-    dry_run_provider: DryRunProvider | None,
-) -> DryRunActionResult | None:
-    if session.page is OperatorPage.PAPER_SESSION:
-        _render_paper_session(ui, session)
-    elif session.page is OperatorPage.SIM_SESSION:
-        _render_sim_session(ui, session)
-    else:
-        ui.write(f"{labels.field_label('mode')}: {session.mode_name}")
-        ui.write(f"{labels.field_label('target')}: {labels.safety_label(session.target)}")
-    result = _render_session_actions(ui, session, dry_run_provider)
+def _render_portfolio(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> None:
+    portfolio = model.portfolio
+    top = ui.columns(4)
+    _render_card(top[0], labels.section_label("cash"), (portfolio.cash,))
+    _render_card(top[1], labels.section_label("equity"), (portfolio.equity,))
+    _render_card(top[2], labels.section_label("market_value"), (portfolio.market_value,))
+    _render_card(top[3], labels.section_label("cash_weight"), (portfolio.cash_weight,))
+    bottom = ui.columns(4)
+    _render_card(bottom[0], labels.section_label("positions"), portfolio.positions)
+    _render_card(
+        bottom[1],
+        labels.section_label("symbol_contributions"),
+        portfolio.symbol_contributions,
+    )
+    _render_card(
+        bottom[2],
+        labels.section_label("position_weights"),
+        portfolio.position_weights,
+    )
+    _render_card(bottom[3], labels.section_label("allocation"), portfolio.allocation)
+
+
+def _render_paper(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> None:
+    paper = model.paper_page
+    top = ui.columns(3)
+    _render_card(
+        top[0],
+        labels.section_label("paper_runtime"),
+        (f"PaperResearchRuntime: {labels.status_label(paper.runtime_status)}",),
+    )
+    _render_card(top[1], labels.section_label("paper_lifecycle"), paper.lifecycle)
+    _render_card(top[2], labels.section_label("paper_consistency"), paper.consistency)
+    bottom = ui.columns(4)
+    _render_card(bottom[0], labels.section_label("paper_orders"), paper.orders)
+    _render_card(bottom[1], labels.section_label("paper_fills"), paper.fills)
+    _render_card(bottom[2], labels.section_label("paper_positions"), paper.positions)
+    _render_card(bottom[3], labels.section_label("paper_portfolio"), paper.portfolio)
     ui.markdown(labels.section_label("placeholder"))
-    return result
-
-
-def _render_paper_session(ui: OperatorConsoleUI, session: SessionPageViewModel) -> None:
-    info_col, flow_col, state_col = ui.columns(3)
-    info_col.subheader(f"🧪 {labels.section_label('what_is_this')}")
-    for key in ("purpose_ledger", "not_exchange", "no_capital", "mock_only"):
-        info_col.markdown(f"- {labels.paper_text(key)}")
-    flow_col.subheader(f"🧭 {labels.section_label('operation_flow')}")
-    for key in ("step_dry_run", "step_view_result", "step_future_apply"):
-        flow_col.markdown(labels.paper_text(key))
-    state_col.subheader(f"📄 {labels.section_label('current_buttons')}")
-    state_col.markdown(f"⚠️ {labels.paper_text('dry_run_hint')}")
-    state_col.markdown(f"⚠️ {labels.paper_text('apply_disabled_hint')}")
-    state_col.write(f"{labels.field_label('target')}: {labels.safety_label(session.target)}")
-
-
-def _render_sim_session(ui: OperatorConsoleUI, session: SessionPageViewModel) -> None:
-    info_col, compare_col, state_col = ui.columns(3)
-    info_col.subheader(f"🧪 {labels.section_label('what_is_this')}")
-    for key in ("local_sim", "not_simnow", "not_ctp", "not_live", "mock_only"):
-        info_col.markdown(f"- {labels.sim_text(key)}")
-    compare_col.subheader(f"🧭 {labels.section_label('paper_vs_sim')}")
-    for key in ("paper_difference", "sim_difference", "future_behaviors"):
-        compare_col.markdown(f"- {labels.sim_text(key)}")
-    state_col.subheader(f"📄 {labels.section_label('current_buttons')}")
-    state_col.markdown(f"⚠️ {labels.paper_text('dry_run_hint')}")
-    state_col.markdown(f"⚠️ {labels.paper_text('apply_disabled_hint')}")
-    state_col.write(f"{labels.field_label('target')}: {labels.safety_label(session.target)}")
 
 
 def _render_safety(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> None:
@@ -468,6 +499,96 @@ def _render_configuration(
     )
 
 
+def _render_market_data(
+    ui: OperatorConsoleUI,
+    model: OperatorConsoleViewModel,
+) -> ConfigurationViewModel:
+    current = model.configuration.dry_run_config
+    source_options = (STATIC_FIXTURE_DATA_SOURCE, READ_ONLY_ADAPTER_DATA_SOURCE)
+    source = ui.selectbox(
+        labels.field_label("market_data_source"),
+        source_options,
+        index=source_options.index(current.market_data_source)
+        if current.market_data_source in source_options
+        else 0,
+        key="operator_console_market_data_source",
+    )
+    config = ConsoleDryRunConfig(
+        account_id=current.account_id,
+        trading_day=current.trading_day,
+        instrument_id=current.instrument_id,
+        trade_instrument_id=current.trade_instrument_id,
+        symbol=current.symbol,
+        exchange=current.exchange,
+        resolver_resolution=current.resolver_resolution,
+        market_data_source=source,
+        quantity=current.quantity,
+        price=current.price,
+        max_order_size=current.max_order_size,
+        max_position_size=current.max_position_size,
+        max_daily_loss=current.max_daily_loss,
+        allowed_instruments=current.allowed_instruments,
+        is_example=current.is_example,
+        target="MOCK only",
+        apply_requested=False,
+    )
+    assembly = assemble_config(config)
+    ui.set_session_value("operator_console_dry_run_config", assembly.config)
+    market_data = model.market_data
+    top = ui.columns(4)
+    _render_card(
+        top[0],
+        labels.section_label("selected_data_source"),
+        (source,),
+    )
+    _render_card(
+        top[1],
+        labels.section_label("static_fixture_status"),
+        (labels.status_label(market_data.static_fixture_status),),
+    )
+    _render_card(
+        top[2],
+        labels.section_label("read_only_adapter_status"),
+        (labels.status_label(market_data.read_only_adapter_status),),
+    )
+    _render_card(top[3], labels.section_label("resolver_source"), (market_data.resolver_source,))
+    bottom = ui.columns(3)
+    blocked_reason = assembly.validation.reason if assembly.validation.blocked else "无"
+    _render_card(
+        bottom[0],
+        labels.section_label("blocked_reason"),
+        (labels.reason_label(blocked_reason),),
+    )
+    _render_card(
+        bottom[1],
+        labels.section_label("supported_symbols"),
+        (", ".join(market_data.supported_symbols),),
+    )
+    _render_card(bottom[2], labels.section_label("source_diagnostics"), market_data.diagnostics)
+    preview_col = ui.columns(1)[0]
+    preview_col.subheader(labels.section_label("typed_command_preview"))
+    if assembly.preview is None:
+        preview_col.markdown(labels.config_text("preview_blocked"))
+        if assembly.validation.reason:
+            preview_col.markdown(
+                f"{labels.result_label('reason')}: "
+                f"{labels.reason_label(assembly.validation.reason)}"
+            )
+    else:
+        preview_col.markdown(labels.config_text("preview_ready"))
+        _render_command_preview(preview_col, assembly.preview)
+    return ConfigurationViewModel(
+        normal=model.configuration.normal,
+        advanced=model.configuration.advanced,
+        sources=model.configuration.sources,
+        dry_run_config=assembly.config,
+        preview=assembly.preview,
+        validation=assembly.validation,
+        market_data_sources=model.configuration.market_data_sources,
+        dry_run_required=model.configuration.dry_run_required,
+    )
+
+
 def _render_results(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> None:
     if _has_result(model.results):
         _render_dry_run_result_summary(ui, model.results)
@@ -488,11 +609,18 @@ def _render_results(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> N
 
 
 def _render_diagnostics(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> None:
+    row = ui.columns(5)
+    _render_card(row[0], labels.section_label("resolver_diagnostics"), model.diagnostics.resolver)
+    _render_card(
+        row[1],
+        labels.section_label("market_data_diagnostics"),
+        model.diagnostics.market_data,
+    )
+    _render_card(row[2], labels.section_label("research_diagnostics"), model.diagnostics.research)
+    _render_card(row[3], labels.section_label("paper_diagnostics"), model.diagnostics.paper)
+    _render_card(row[4], labels.section_label("safety_checks"), model.diagnostics.safety)
     ui.subheader(labels.section_label("diagnostic_items"))
-    for key, value in model.diagnostics.items:
-        ui.write(
-            f"{labels.diagnostic_label(key)}: {labels.diagnostic_value_label(value)}"
-        )
+    _render_card(ui, labels.section_label("local_checks"), model.diagnostics.items)
 
 
 def _render_live_locked(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> None:
@@ -531,12 +659,7 @@ def _render_dry_run_button(
     )
     if not clicked:
         return None
-    if session.page is OperatorPage.PAPER_SESSION:
-        action_result = run_paper_dry_run(provider)
-    elif session.page is OperatorPage.SIM_SESSION:
-        action_result = run_sim_dry_run(provider)
-    else:
-        action_result = run_paper_dry_run(None)
+    action_result = run_paper_dry_run(provider)
     if action_result.dry_run_result is not None:
         return action_result.dry_run_result
     return DryRunActionResult(
@@ -572,8 +695,11 @@ def _with_result(
     return OperatorConsoleViewModel(
         pages=model.pages,
         dashboard=model.dashboard,
+        research=model.research,
+        portfolio=model.portfolio,
+        paper_page=model.paper_page,
+        market_data=model.market_data,
         paper=model.paper,
-        sim=model.sim,
         safety=model.safety,
         configuration=model.configuration,
         results=ResultHistoryViewModel(
@@ -599,8 +725,11 @@ def _with_configuration(
     return OperatorConsoleViewModel(
         pages=model.pages,
         dashboard=model.dashboard,
+        research=model.research,
+        portfolio=model.portfolio,
+        paper_page=model.paper_page,
+        market_data=model.market_data,
         paper=model.paper,
-        sim=model.sim,
         safety=model.safety,
         configuration=configuration,
         results=model.results,
@@ -748,11 +877,18 @@ def _render_forbidden_actions(
         ui.markdown(labels.forbidden_action_label(action.label_key))
 
 
-def _render_card(ui: OperatorConsoleUI, title: str, lines: tuple[str, ...]) -> None:
+def _render_card(ui: OperatorConsoleUI, title: str, lines: tuple[object, ...]) -> None:
     container = ui.container()
     container.markdown(f"### {title}")
     for line in lines:
-        container.markdown(line)
+        container.markdown(_card_line(line))
+
+
+def _card_line(line: object) -> str:
+    if isinstance(line, tuple) and len(line) == 2:
+        key, value = line
+        return f"- **{labels.field_label(str(key))}:** {value}"
+    return str(line)
 
 
 def _render_key_values(
@@ -975,8 +1111,11 @@ def _model_with_session_state(
     return OperatorConsoleViewModel(
         pages=model.pages,
         dashboard=model.dashboard,
+        research=model.research,
+        portfolio=model.portfolio,
+        paper_page=model.paper_page,
+        market_data=model.market_data,
         paper=model.paper,
-        sim=model.sim,
         safety=model.safety,
         configuration=ConfigurationViewModel(
             normal=model.configuration.normal,

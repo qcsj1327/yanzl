@@ -18,13 +18,11 @@ from futures_mvp.modules.operator_console.config_assembly import (
 
 class OperatorPage(StrEnum):
     DASHBOARD = "Dashboard"
-    PAPER_SESSION = "Paper Session"
-    SIM_SESSION = "SIM Session"
-    SAFETY_CONTROLS = "Safety Controls"
-    CONFIGURATION = "Configuration"
-    RESULTS_HISTORY = "Results / History"
+    RESEARCH = "Research"
+    PORTFOLIO = "Portfolio"
+    PAPER = "Paper"
+    MARKET_DATA = "Market Data"
     DIAGNOSTICS = "Diagnostics"
-    LIVE_LOCKED_PAGE = "Live Locked Page"
 
 
 class ConsoleActionStatus(StrEnum):
@@ -42,22 +40,70 @@ class ButtonViewModel:
 
 @dataclass(frozen=True)
 class DashboardViewModel:
-    runtime_status: str = "READY"
-    rollout_mode: str = "PAPER"
+    research_status: str = "READY"
+    paper_runtime_status: str = "READY"
+    portfolio_status: str = "READY"
+    market_data_status: str = "READY"
+    diagnostics_status: str = "READY"
+    current_source: str = STATIC_FIXTURE_DATA_SOURCE
     execution_target_status: str = "MOCK only"
-    migration_status: str = "READY"
-    kill_switch_status: str = "DISABLED"
-    scheduler_pause_status: str = "READY"
-    replay_pause_status: str = "READY"
-    latest_paper_result: str = "DISABLED"
-    latest_sim_result: str = "DISABLED"
+    latest_dry_run_summary: str = "尚未运行"
     notices: tuple[str, ...] = (
         "mock only target",
+        "research only",
         "no real capital",
         "no real exchange",
         "no ctp simnow",
         "targets disabled",
     )
+
+
+@dataclass(frozen=True)
+class ResearchViewModel:
+    backtest_status: str
+    strategy: str
+    symbols: tuple[str, ...]
+    orders: tuple[tuple[str, str], ...]
+    trades: tuple[tuple[str, str], ...]
+    positions: tuple[tuple[str, str], ...]
+    realized_pnl: str
+    unrealized_pnl: str
+    equity_curve_summary: tuple[tuple[str, str], ...]
+    metrics: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
+class PortfolioViewModel:
+    cash: str
+    equity: str
+    market_value: str
+    positions: tuple[tuple[str, str], ...]
+    symbol_contributions: tuple[tuple[str, str], ...]
+    position_weights: tuple[tuple[str, str], ...]
+    cash_weight: str
+    allocation: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
+class PaperConsolePageViewModel:
+    runtime_status: str
+    lifecycle: tuple[tuple[str, str], ...]
+    orders: tuple[tuple[str, str], ...]
+    fills: tuple[tuple[str, str], ...]
+    positions: tuple[tuple[str, str], ...]
+    portfolio: tuple[tuple[str, str], ...]
+    consistency: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
+class MarketDataViewModel:
+    selected_source: str
+    static_fixture_status: str
+    read_only_adapter_status: str
+    resolver_source: str
+    blocked_reason: str | None
+    supported_symbols: tuple[str, ...]
+    diagnostics: tuple[tuple[str, str], ...]
 
 
 @dataclass(frozen=True)
@@ -173,6 +219,11 @@ class ResultHistoryViewModel:
 @dataclass(frozen=True)
 class DiagnosticViewModel:
     items: tuple[tuple[str, str], ...]
+    resolver: tuple[tuple[str, str], ...] = ()
+    market_data: tuple[tuple[str, str], ...] = ()
+    research: tuple[tuple[str, str], ...] = ()
+    paper: tuple[tuple[str, str], ...] = ()
+    safety: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -199,8 +250,11 @@ class PaperRuntimeConsoleViewModel:
 class OperatorConsoleViewModel:
     pages: tuple[OperatorPage, ...]
     dashboard: DashboardViewModel
+    research: ResearchViewModel
+    portfolio: PortfolioViewModel
+    paper_page: PaperConsolePageViewModel
+    market_data: MarketDataViewModel
     paper: SessionPageViewModel
-    sim: SessionPageViewModel
     safety: SafetyPageViewModel
     configuration: ConfigurationViewModel
     results: ResultHistoryViewModel
@@ -255,8 +309,107 @@ def default_console_view_model() -> OperatorConsoleViewModel:
     return OperatorConsoleViewModel(
         pages=tuple(OperatorPage),
         dashboard=DashboardViewModel(),
+        research=ResearchViewModel(
+            backtest_status="COMPLETED",
+            strategy="sample_breakout_research",
+            symbols=("ao", "rb", "ag", "cu"),
+            orders=(
+                ("o-ao-1", "ao / ao2609 / BUY / FILLED / 1"),
+                ("o-rb-1", "rb / rb2601 / BUY / FILLED / 1"),
+            ),
+            trades=(
+                ("t-ao-1", "ao / ao2609 / 500 / 1"),
+                ("t-rb-1", "rb / rb2601 / 3200 / 1"),
+            ),
+            positions=(
+                ("ao", "ao2609 / LONG / 1 / 市值 500"),
+                ("rb", "rb2601 / LONG / 1 / 市值 3200"),
+            ),
+            realized_pnl="0",
+            unrealized_pnl="120",
+            equity_curve_summary=(
+                ("points", "3"),
+                ("first_equity", "100000"),
+                ("last_equity", "100120"),
+            ),
+            metrics=(
+                ("total_return", "0.0012"),
+                ("max_equity", "100120"),
+                ("min_equity", "100000"),
+            ),
+        ),
+        portfolio=PortfolioViewModel(
+            cash="96420",
+            equity="100120",
+            market_value="3700",
+            positions=(
+                ("ao", "ao2609 / 数量 1 / 市值 500"),
+                ("rb", "rb2601 / 数量 1 / 市值 3200"),
+            ),
+            symbol_contributions=(
+                ("ao", "市值 500 / PnL 20"),
+                ("rb", "市值 3200 / PnL 100"),
+            ),
+            position_weights=(
+                ("ao", "0.0050"),
+                ("rb", "0.0320"),
+            ),
+            cash_weight="0.9630",
+            allocation=(
+                ("cash", "96.30%"),
+                ("ao", "0.50%"),
+                ("rb", "3.20%"),
+            ),
+        ),
+        paper_page=PaperConsolePageViewModel(
+            runtime_status="READY",
+            lifecycle=(
+                ("run", "dry-run only"),
+                ("pause", "展示占位"),
+                ("stop", "展示占位"),
+            ),
+            orders=(
+                ("po-ao-1", "ao / ao2609 / CREATED"),
+                ("po-rb-1", "rb / rb2601 / CREATED"),
+            ),
+            fills=(
+                ("pf-ao-1", "ao / 500 / 1"),
+                ("pf-rb-1", "rb / 3200 / 1"),
+            ),
+            positions=(
+                ("ao", "ao2609 / 1 / 市值 500"),
+                ("rb", "rb2601 / 1 / 市值 3200"),
+            ),
+            portfolio=(
+                ("cash", "96420"),
+                ("equity", "100120"),
+                ("market_value", "3700"),
+            ),
+            consistency=(
+                ("all_match", "True"),
+                ("cash_matches", "True"),
+                ("equity_matches", "True"),
+                ("positions_match", "True"),
+                ("orders_match", "True"),
+                ("fills_match", "True"),
+            ),
+        ),
+        market_data=MarketDataViewModel(
+            selected_source=STATIC_FIXTURE_DATA_SOURCE,
+            static_fixture_status="READY",
+            read_only_adapter_status="BLOCKED",
+            resolver_source="static_fixture",
+            blocked_reason="只读行情 Adapter 尚未配置",
+            supported_symbols=("ao", "rb", "ag", "cu"),
+            diagnostics=(
+                ("source", "static_fixture"),
+                ("network", "disabled"),
+                ("broker", "disabled"),
+                ("resolver", "static fixture only"),
+            ),
+        ),
         paper=SessionPageViewModel(
-            page=OperatorPage.PAPER_SESSION,
+            page=OperatorPage.PAPER,
             mode_name="PAPER",
             dry_run_button=ButtonViewModel(
                 action_key="Run Paper Dry-run",
@@ -269,22 +422,6 @@ def default_console_view_model() -> OperatorConsoleViewModel:
                 disabled=True,
                 status=ConsoleActionStatus.DISABLED_PLACEHOLDER,
                 reason="Paper apply is disabled in Stage R.2",
-            ),
-        ),
-        sim=SessionPageViewModel(
-            page=OperatorPage.SIM_SESSION,
-            mode_name="SIM",
-            dry_run_button=ButtonViewModel(
-                action_key="Run SIM Dry-run",
-                disabled=False,
-                status=ConsoleActionStatus.ENABLED_PLACEHOLDER,
-                reason="SIM dry-run placeholder only",
-            ),
-            apply_button=ButtonViewModel(
-                action_key="Run SIM Apply",
-                disabled=True,
-                status=ConsoleActionStatus.DISABLED_PLACEHOLDER,
-                reason="SIM apply is disabled in Stage R.2",
             ),
         ),
         safety=SafetyPageViewModel(
@@ -339,16 +476,34 @@ def default_console_view_model() -> OperatorConsoleViewModel:
         ),
         diagnostics=DiagnosticViewModel(
             items=(
-                ("pytest status", "unknown/not run"),
-                ("ruff status", "unknown/not run"),
-                ("mypy status", "unknown/not run"),
-                ("alembic current", "unknown/not checked"),
                 ("git commit/tag", "unknown/not checked"),
                 ("worktree", "unknown/not checked"),
-                ("DB health", "unknown/not checked"),
-                ("Redis health", "unknown/not checked"),
                 ("last error", "none"),
-            )
+            ),
+            resolver=(
+                ("resolver_status", "READY"),
+                ("resolver_source", "static_fixture"),
+                ("supported_symbols", "ao, rb, ag, cu"),
+            ),
+            market_data=(
+                ("selected_source", STATIC_FIXTURE_DATA_SOURCE),
+                ("read_only_adapter_placeholder", "BLOCKED"),
+                ("network", "disabled"),
+            ),
+            research=(
+                ("backtest_status", "COMPLETED"),
+                ("source_of_truth", "research only"),
+            ),
+            paper=(
+                ("PaperResearchRuntime", "READY"),
+                ("PaperConsistencyReport", "all_match=True"),
+            ),
+            safety=(
+                ("ExecutionTarget", "MOCK only"),
+                ("DB write", "disabled"),
+                ("live trading", "disabled"),
+                ("broker/CTP/SimNow", "disabled"),
+            ),
         ),
         live_locked=LiveLockedViewModel(
             disabled_states=disabled_states,

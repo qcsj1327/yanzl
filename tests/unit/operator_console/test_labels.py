@@ -4,13 +4,11 @@ from futures_mvp.modules.operator_console import labels
 def test_all_page_titles_have_chinese_mapping() -> None:
     expected = {
         "Dashboard": "总览",
-        "Paper Session": "Paper 纸面交易",
-        "SIM Session": "SIM 本地仿真",
-        "Safety Controls": "安全控制",
-        "Configuration": "配置中心",
-        "Results / History": "运行结果",
+        "Research": "Research 研究",
+        "Portfolio": "Portfolio 组合",
+        "Paper": "Paper 纸面",
+        "Market Data": "Market Data 行情",
         "Diagnostics": "系统诊断",
-        "Live Locked Page": "LIVE 锁定",
     }
 
     for key, value in expected.items():
@@ -72,7 +70,7 @@ def test_required_safety_action_risk_and_result_labels_exist() -> None:
         "当前不涉及真实资金",
         "当前不会连接真实交易所",
         "当前不会连接 CTP / SimNow",
-        "当前 ExecutionTarget.PAPER / SIM / LIVE 仍未启用",
+        "当前 PAPER / SIM / LIVE 目标仍未启用",
         "当前仅允许 MOCK target",
         "危险操作需要二次确认",
     ):
@@ -145,11 +143,8 @@ def test_ui_polish_field_and_diagnostic_labels_exist() -> None:
         "pytest status": "pytest 状态",
         "ruff status": "ruff 状态",
         "mypy status": "mypy 状态",
-        "alembic current": "Alembic 当前版本",
         "git commit/tag": "Git commit/tag",
         "worktree": "工作区状态",
-        "DB health": "DB 健康状态",
-        "Redis health": "Redis 健康状态",
         "last error": "最近错误",
     }
     for key, value in expected_diagnostics.items():

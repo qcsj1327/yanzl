@@ -10,7 +10,7 @@ def test_default_view_model_has_all_pages() -> None:
     model = default_console_view_model()
 
     assert model.pages == tuple(OperatorPage)
-    assert len(model.pages) == 8
+    assert len(model.pages) == 6
 
 
 def test_default_view_model_is_mock_only_and_live_locked() -> None:
@@ -33,23 +33,34 @@ def test_apply_buttons_are_disabled_placeholders() -> None:
 
     assert model.paper.apply_button.disabled is True
     assert model.paper.apply_button.status is ConsoleActionStatus.DISABLED_PLACEHOLDER
-    assert model.sim.apply_button.disabled is True
-    assert model.sim.apply_button.status is ConsoleActionStatus.DISABLED_PLACEHOLDER
+
+
+def test_default_view_model_renders_research_portfolio_and_market_data() -> None:
+    model = default_console_view_model()
+
+    assert model.research.backtest_status == "COMPLETED"
+    assert dict(model.research.metrics)["total_return"] == "0.0012"
+    assert model.portfolio.cash == "96420"
+    assert dict(model.portfolio.position_weights)["ao"] == "0.0050"
+    assert model.market_data.selected_source == "static_fixture"
+    assert model.market_data.read_only_adapter_status == "BLOCKED"
+    assert model.market_data.supported_symbols == ("ao", "rb", "ag", "cu")
+    assert dict(model.paper_page.consistency)["all_match"] == "True"
 
 
 def test_default_diagnostics_are_unknown_read_only_values() -> None:
     model = default_console_view_model()
 
     assert dict(model.diagnostics.items) == {
-        "pytest status": "unknown/not run",
-        "ruff status": "unknown/not run",
-        "mypy status": "unknown/not run",
-        "alembic current": "unknown/not checked",
         "git commit/tag": "unknown/not checked",
         "worktree": "unknown/not checked",
-        "DB health": "unknown/not checked",
-        "Redis health": "unknown/not checked",
         "last error": "none",
+    }
+    assert dict(model.diagnostics.safety) == {
+        "ExecutionTarget": "MOCK only",
+        "DB write": "disabled",
+        "live trading": "disabled",
+        "broker/CTP/SimNow": "disabled",
     }
 
 

@@ -5,24 +5,20 @@ from enum import StrEnum
 
 class LabelKey(StrEnum):
     DASHBOARD = "Dashboard"
-    PAPER_SESSION = "Paper Session"
-    SIM_SESSION = "SIM Session"
-    SAFETY_CONTROLS = "Safety Controls"
-    CONFIGURATION = "Configuration"
-    RESULTS_HISTORY = "Results / History"
+    RESEARCH = "Research"
+    PORTFOLIO = "Portfolio"
+    PAPER = "Paper"
+    MARKET_DATA = "Market Data"
     DIAGNOSTICS = "Diagnostics"
-    LIVE_LOCKED_PAGE = "Live Locked Page"
 
 
 PAGE_TITLES: dict[str, str] = {
     "Dashboard": "总览",
-    "Paper Session": "Paper 纸面交易",
-    "SIM Session": "SIM 本地仿真",
-    "Safety Controls": "安全控制",
-    "Configuration": "配置中心",
-    "Results / History": "运行结果",
+    "Research": "Research 研究",
+    "Portfolio": "Portfolio 组合",
+    "Paper": "Paper 纸面",
+    "Market Data": "Market Data 行情",
     "Diagnostics": "系统诊断",
-    "Live Locked Page": "LIVE 锁定",
 }
 
 STATUS_LABELS: dict[str, str] = {
@@ -45,6 +41,8 @@ STATUS_LABELS: dict[str, str] = {
     "FILLED": "已成交",
     "REJECTED": "已拒绝",
     "NOT_RUN": "尚未运行",
+    "True": "匹配",
+    "False": "不匹配",
 }
 
 SAFETY_LABELS: dict[str, str] = {
@@ -80,8 +78,9 @@ RISK_NOTICES: dict[str, str] = {
     "no real capital": "当前不涉及真实资金",
     "no real exchange": "当前不会连接真实交易所",
     "no ctp simnow": "当前不会连接 CTP / SimNow",
-    "targets disabled": "当前 ExecutionTarget.PAPER / SIM / LIVE 仍未启用",
+    "targets disabled": "当前 PAPER / SIM / LIVE 目标仍未启用",
     "mock only target": "当前仅允许 MOCK target",
+    "research only": "当前只展示 research-only 结果",
     "danger requires confirmation": "危险操作需要二次确认",
 }
 
@@ -138,6 +137,42 @@ SECTION_LABELS: dict[str, str] = {
     "advanced_config": "高级配置",
     "resolver_preview": "resolver 预览",
     "diagnostic_items": "诊断项目",
+    "safety_banner": "安全边界",
+    "market_data_status": "行情状态",
+    "research_status": "研究状态",
+    "pnl_summary": "PnL 摘要",
+    "metrics": "指标",
+    "orders": "订单",
+    "trades": "成交",
+    "positions": "持仓",
+    "equity_curve": "权益曲线",
+    "cash": "现金",
+    "equity": "权益",
+    "market_value": "市值",
+    "cash_weight": "现金权重",
+    "symbol_contributions": "品种贡献",
+    "position_weights": "持仓权重",
+    "allocation": "配置",
+    "paper_runtime": "Paper Runtime",
+    "paper_lifecycle": "Session 生命周期",
+    "paper_consistency": "一致性报告",
+    "paper_orders": "Paper 订单",
+    "paper_fills": "Paper 成交",
+    "paper_positions": "Paper 持仓",
+    "paper_portfolio": "Paper 组合",
+    "selected_data_source": "当前数据源",
+    "static_fixture_status": "静态样例状态",
+    "read_only_adapter_status": "只读 Adapter 状态",
+    "resolver_source": "resolver 来源",
+    "blocked_reason": "阻断原因",
+    "supported_symbols": "支持品种",
+    "source_diagnostics": "数据源诊断",
+    "resolver_diagnostics": "resolver 诊断",
+    "market_data_diagnostics": "行情诊断",
+    "research_diagnostics": "研究诊断",
+    "paper_diagnostics": "Paper 诊断",
+    "safety_checks": "安全检查",
+    "local_checks": "本地检查",
     "dry_run_required_config": "预演所需配置",
     "typed_command_preview": "typed 命令预览",
     "command_sources": "命令来源",
@@ -157,6 +192,39 @@ FIELD_LABELS: dict[str, str] = {
     "target": "目标类型",
     "health": "健康状态",
     "latest result": "最近结果",
+    "Research Platform": "研究平台",
+    "Paper Runtime": "Paper Runtime",
+    "Portfolio": "组合",
+    "Market Data": "行情源",
+    "Diagnostics": "诊断",
+    "current_source": "当前来源",
+    "latest dry-run": "最近预演",
+    "backtest_status": "Backtest 状态",
+    "strategy": "策略",
+    "symbols": "品种",
+    "realized_pnl": "已实现 PnL",
+    "unrealized_pnl": "未实现 PnL",
+    "total_return": "总收益",
+    "max_equity": "最高权益",
+    "min_equity": "最低权益",
+    "points": "点数",
+    "first_equity": "初始权益",
+    "last_equity": "最新权益",
+    "position_count": "持仓数",
+    "all_match": "全部一致",
+    "cash_matches": "现金一致",
+    "equity_matches": "权益一致",
+    "positions_match": "持仓一致",
+    "orders_match": "订单一致",
+    "fills_match": "成交一致",
+    "selected_source": "选择数据源",
+    "market_data_source": "行情数据源",
+    "supported_symbols": "支持品种",
+    "read_only_adapter_placeholder": "只读 Adapter 占位",
+    "source_of_truth": "事实边界",
+    "DB write": "写库",
+    "live trading": "真实交易",
+    "broker/CTP/SimNow": "Broker/CTP/SimNow",
     "diagnostics": "诊断",
     "history": "历史记录",
     "page": "页面",
@@ -207,11 +275,8 @@ DIAGNOSTIC_LABELS: dict[str, str] = {
     "pytest status": "pytest 状态",
     "ruff status": "ruff 状态",
     "mypy status": "mypy 状态",
-    "alembic current": "Alembic 当前版本",
     "git commit/tag": "Git commit/tag",
     "worktree": "工作区状态",
-    "DB health": "DB 健康状态",
-    "Redis health": "Redis 健康状态",
     "last error": "最近错误",
 }
 
@@ -301,6 +366,8 @@ REASON_LABELS: dict[str, str] = {
     "resolver 输入无效": "resolver 输入无效，已阻断",
     "resolver metadata 无效": "resolver 静态元数据缺失或无效，已阻断",
     "resolver 未解析合约": "resolver 未解析出合约，已阻断",
+    "只读行情 Adapter 尚未配置": "只读行情 Adapter 尚未配置，已阻断",
+    "无": "无",
     "missing provider": "当前没有可用的预演执行器",
     "dry-run returned non-MOCK target": "当前目标不是 MOCK，已阻止执行",
     "paper console dry-run supports MOCK target only": "当前目标不是 MOCK，已阻止执行",
