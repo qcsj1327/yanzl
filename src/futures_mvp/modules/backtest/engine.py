@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from decimal import Decimal
 from inspect import signature
 from typing import Any, cast
 
+from futures_mvp.modules.backtest.costs import FixedCommissionModel
 from futures_mvp.modules.backtest.fill_model import NoFillModel
 from futures_mvp.modules.backtest.models import (
     BacktestDataSummary,
@@ -25,7 +26,8 @@ from futures_mvp.modules.backtest.models import (
     SimulatedOrderIntent,
     SimulatedTrade,
 )
-from futures_mvp.modules.backtest.portfolio import PortfolioAggregator
+from futures_mvp.modules.backtest.portfolio import FixedCashAllocation, PortfolioAggregator
+from futures_mvp.modules.backtest.sizing import FixedCashSizing, FixedQuantitySizing
 from futures_mvp.modules.backtest.translator import DecisionTranslator
 from futures_mvp.modules.market_data.consumer import (
     ResolverConsumerContext,
@@ -50,11 +52,7 @@ from futures_mvp.modules.strategy_runtime.strategies import StrategyEvaluator
 _STATIC_FIXTURE_SOURCE = "static_historical_fixture"
 _NOOP_STRATEGY_NAME = "noop"
 _STRATEGY_CONFIG_PLACEHOLDER = {"strategy_runtime_stage": "V.5", "strategy": "noop"}
-_PORTFOLIO_SNAPSHOT_PLACEHOLDER = {
-    "source": "backtest_research_placeholder",
-    "positions": (),
-    "cash_mode": "flat_initial_cash",
-}
+_PORTFOLIO_SNAPSHOT_SOURCE = "backtest_research_placeholder"
 
 
 @dataclass(frozen=True)
@@ -65,6 +63,14 @@ class _ResearchAccountingResult:
     diagnostics: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class _SymbolBars:
+    symbol: str
+    trading_day: date
+    resolver_context: ResolverConsumerContext
+    bars: tuple[HistoricalBar, ...]
+
+
 class LocalBacktestEngine:
     def __init__(
         self,
@@ -72,11 +78,15 @@ class LocalBacktestEngine:
         strategy: StrategyEvaluator | None = None,
         decision_translator: Any | None = None,
         fill_model: Any | None = None,
+        commission_model: Any | None = None,
+        slippage_model: Any | None = None,
     ) -> None:
         self._strategy = strategy or NoOpStrategy()
         self._strategy_runtime = strategy_runtime or StrategyRuntime(self._strategy)
         self._decision_translator = decision_translator or DecisionTranslator()
         self._fill_model: Any = fill_model or NoFillModel()
+        self._commission_model = commission_model
+        self._slippage_model = slippage_model
 
     def run(self, request: BacktestRequest) -> BacktestResult:
         validation_error = _validate_request(request)
@@ -95,106 +105,146 @@ class LocalBacktestEngine:
 
         try:
             timeframe = BarTimeframe(request.timeframe.strip().lower())
+            symbols = _request_symbols(request)
+            allocation = FixedCashAllocation(
+                initial_cash=request.initial_cash,
+                symbols=symbols,
+                allocation_per_symbol_override=request.allocation_per_symbol,
+            )
             contexts: list[ResolverConsumerContext] = []
-            bars_by_day: list[tuple[date, tuple[HistoricalBar, ...]]] = []
+            symbol_bars: list[_SymbolBars] = []
             strategy_runtime_results: list[StrategyRuntimeResult] = []
             strategy_decisions: list[StrategyDecision] = []
             decision_translation_results: list[DecisionTranslationResult] = []
             fill_model_results: list[FillModelResult] = []
             simulated_orders: list[SimulatedOrder] = []
             simulated_trades: list[SimulatedTrade] = []
-            lifecycle_closed = False
+            lifecycle_closed_by_symbol = {symbol: False for symbol in symbols}
             resolver_statuses: list[str] = []
             data_statuses: list[str] = []
             gap_report: list[str] = []
             data_diagnostics: list[str] = []
 
-            for trading_day in _trading_days(
-                request.start_trading_day,
-                request.end_trading_day,
-            ):
-                resolution = resolver.resolve(request.symbol, trading_day)
-                resolver_statuses.append(f"{trading_day}:{resolution.status.value}")
-                if resolution.status is not InstrumentResolveStatus.RESOLVED:
-                    return _result(
-                        BacktestStatus.BLOCKED,
-                        messages=(
-                            "resolver did not return RESOLVED",
-                            f"trading_day={trading_day}",
-                            f"resolver_status={resolution.status.value}",
-                            *_as_tuple(resolution.diagnostics),
-                        ),
-                        resolver_statuses=tuple(resolver_statuses),
+            for symbol in symbols:
+                for trading_day in _trading_days(
+                    request.start_trading_day,
+                    request.end_trading_day,
+                ):
+                    resolution = resolver.resolve(symbol, trading_day)
+                    resolver_statuses.append(
+                        f"{symbol}:{trading_day}:{resolution.status.value}"
+                    )
+                    if resolution.status is not InstrumentResolveStatus.RESOLVED:
+                        return _result(
+                            BacktestStatus.BLOCKED,
+                            messages=(
+                                "resolver did not return RESOLVED",
+                                f"symbol={symbol}",
+                                f"trading_day={trading_day}",
+                                f"resolver_status={resolution.status.value}",
+                                *_as_tuple(resolution.diagnostics),
+                            ),
+                            resolver_statuses=tuple(resolver_statuses),
+                        )
+
+                    context_result = build_resolver_consumer_context(resolution)
+                    if context_result.blocked or context_result.context is None:
+                        return _result(
+                            BacktestStatus.BLOCKED,
+                            messages=(
+                                context_result.reason
+                                or "resolver consumer context blocked",
+                                f"symbol={symbol}",
+                                f"trading_day={trading_day}",
+                            ),
+                            resolver_statuses=tuple(resolver_statuses),
+                        )
+                    contexts.append(context_result.context)
+
+                    bars_result = data_provider.get_bars(
+                        symbol,
+                        trading_day,
+                        timeframe,
+                    )
+                    data_statuses.append(f"{symbol}:{trading_day}:{bars_result.status.value}")
+                    data_diagnostics.extend(bars_result.diagnostics)
+                    if bars_result.status is HistoricalDataStatus.INVALID_INPUT:
+                        return _result(
+                            BacktestStatus.INVALID_INPUT,
+                            messages=(
+                                "historical data provider rejected request",
+                                f"symbol={symbol}",
+                                f"trading_day={trading_day}",
+                                *bars_result.diagnostics,
+                            ),
+                            resolver_statuses=tuple(resolver_statuses),
+                            data_statuses=tuple(data_statuses),
+                            resolver_lineage=tuple(contexts),
+                        )
+                    if bars_result.status is not HistoricalDataStatus.OK:
+                        gap_report.append(
+                            _symbol_day_message(
+                                symbol=symbol,
+                                trading_day=trading_day,
+                                message=(
+                                    "bars unavailable, "
+                                    f"status={bars_result.status.value}"
+                                ),
+                                include_symbol=len(symbols) > 1,
+                            )
+                        )
+                        return _data_gap_result(
+                            request,
+                            contexts=tuple(contexts),
+                            resolver_statuses=tuple(resolver_statuses),
+                            data_statuses=tuple(data_statuses),
+                            gap_report=tuple(gap_report),
+                            data_diagnostics=tuple(data_diagnostics),
+                        )
+                    if not bars_result.bars:
+                        gap_report.append(
+                            _symbol_day_message(
+                                symbol=symbol,
+                                trading_day=trading_day,
+                                message="bars empty",
+                                include_symbol=len(symbols) > 1,
+                            )
+                        )
+                        return _data_gap_result(
+                            request,
+                            contexts=tuple(contexts),
+                            resolver_statuses=tuple(resolver_statuses),
+                            data_statuses=tuple(data_statuses),
+                            gap_report=tuple(gap_report),
+                            data_diagnostics=tuple(data_diagnostics),
+                        )
+                    symbol_bars.append(
+                        _SymbolBars(
+                            symbol=symbol,
+                            trading_day=trading_day,
+                            resolver_context=context_result.context,
+                            bars=bars_result.bars,
+                        )
                     )
 
-                context_result = build_resolver_consumer_context(resolution)
-                if context_result.blocked or context_result.context is None:
-                    return _result(
-                        BacktestStatus.BLOCKED,
-                        messages=(
-                            context_result.reason or "resolver consumer context blocked",
-                            f"trading_day={trading_day}",
-                        ),
-                        resolver_statuses=tuple(resolver_statuses),
-                    )
-                contexts.append(context_result.context)
-
-                bars_result = data_provider.get_bars(
-                    request.symbol,
-                    trading_day,
-                    timeframe,
-                )
-                data_statuses.append(f"{trading_day}:{bars_result.status.value}")
-                data_diagnostics.extend(bars_result.diagnostics)
-                if bars_result.status is HistoricalDataStatus.INVALID_INPUT:
-                    return _result(
-                        BacktestStatus.INVALID_INPUT,
-                        messages=(
-                            "historical data provider rejected request",
-                            f"trading_day={trading_day}",
-                            *bars_result.diagnostics,
-                        ),
-                        resolver_statuses=tuple(resolver_statuses),
-                        data_statuses=tuple(data_statuses),
-                        resolver_lineage=tuple(contexts),
-                    )
-                if bars_result.status is not HistoricalDataStatus.OK:
-                    gap_report.append(
-                        f"{trading_day}: bars unavailable, status={bars_result.status.value}"
-                    )
-                    return _data_gap_result(
-                        request,
-                        contexts=tuple(contexts),
-                        resolver_statuses=tuple(resolver_statuses),
-                        data_statuses=tuple(data_statuses),
-                        gap_report=tuple(gap_report),
-                        data_diagnostics=tuple(data_diagnostics),
-                    )
-                if not bars_result.bars:
-                    gap_report.append(f"{trading_day}: bars empty")
-                    return _data_gap_result(
-                        request,
-                        contexts=tuple(contexts),
-                        resolver_statuses=tuple(resolver_statuses),
-                        data_statuses=tuple(data_statuses),
-                        gap_report=tuple(gap_report),
-                        data_diagnostics=tuple(data_diagnostics),
-                    )
-                bars_by_day.append((trading_day, bars_result.bars))
-
-            all_bars = tuple(bar for _, bars in bars_by_day for bar in bars)
+            all_bars = tuple(bar for item in symbol_bars for bar in item.bars)
             data_summary = _data_summary(
                 request,
                 bars_consumed_count=len(all_bars),
-                trading_days_consumed=tuple(day for day, _ in bars_by_day),
+                trading_days_consumed=tuple(
+                    dict.fromkeys(item.trading_day for item in symbol_bars)
+                ),
                 diagnostics=tuple(data_diagnostics),
             )
-            for context, (_, bars) in zip(contexts, bars_by_day, strict=True):
+            for item in symbol_bars:
+                context = item.resolver_context
+                bars = item.bars
                 for index, bar in enumerate(bars):
-                    if lifecycle_closed:
+                    if lifecycle_closed_by_symbol[item.symbol]:
                         break
                     runtime_result = self._run_strategy(
                         request=request,
+                        allocation=allocation,
                         resolver_context=context,
                         data_summary=data_summary,
                         current_bar=bar,
@@ -273,6 +323,7 @@ class LocalBacktestEngine:
                         decision=runtime_result.decision,
                         resolver_context=context,
                         current_bar=bar,
+                        allocation=allocation,
                     )
                     decision_translation_results.append(translation_result)
                     if translation_result.status is DecisionTranslationStatus.BLOCKED:
@@ -403,12 +454,46 @@ class LocalBacktestEngine:
                                     simulated_orders=tuple(simulated_orders),
                                     simulated_trades=tuple(simulated_trades),
                                 )
-                            simulated_trades.append(fill_result.simulated_trade)
+                            trade = self._apply_commission(
+                                request=request,
+                                trade=fill_result.simulated_trade,
+                            )
+                            if isinstance(trade, FillModelResult):
+                                fill_model_results[-1] = trade
+                                return BacktestResult(
+                                    status=BacktestStatus.BLOCKED,
+                                    diagnostics=BacktestDiagnostics(
+                                        messages=(
+                                            "commission model blocked",
+                                            *trade.diagnostics,
+                                        ),
+                                        resolver_statuses=tuple(resolver_statuses),
+                                        data_statuses=tuple(data_statuses),
+                                    ),
+                                    resolver_lineage=tuple(contexts),
+                                    data_source_summary=data_summary,
+                                    bars_consumed_count=len(all_bars),
+                                    strategy_runtime_results=tuple(
+                                        strategy_runtime_results
+                                    ),
+                                    strategy_decisions=tuple(strategy_decisions),
+                                    decision_translation_results=tuple(
+                                        decision_translation_results
+                                    ),
+                                    fill_model_results=tuple(fill_model_results),
+                                    simulated_orders=tuple(simulated_orders),
+                                    simulated_trades=tuple(simulated_trades),
+                                )
+                            fill_model_results[-1] = replace(
+                                fill_result,
+                                simulated_trade=trade,
+                            )
+                            simulated_trades.append(trade)
                             if (
-                                fill_result.simulated_trade.intent
+                                trade.intent
                                 is SimulatedOrderIntent.EXIT
                             ):
-                                lifecycle_closed = True
+                                lifecycle_closed_by_symbol[item.symbol] = True
                             continue
                         if fill_result.simulated_trade is not None:
                             return BacktestResult(
@@ -574,6 +659,7 @@ class LocalBacktestEngine:
                 request=request,
                 positions=research_positions,
                 pnl_points=research_pnl_curve,
+                equity_curve=equity_curve,
             )
             return BacktestResult(
                 status=BacktestStatus.COMPLETED,
@@ -611,6 +697,7 @@ class LocalBacktestEngine:
         self,
         *,
         request: BacktestRequest,
+        allocation: FixedCashAllocation,
         resolver_context: ResolverConsumerContext,
         data_summary: BacktestDataSummary,
         current_bar: HistoricalBar,
@@ -635,7 +722,7 @@ class LocalBacktestEngine:
                 "bars_consumed_count": data_summary.bars_consumed_count,
                 "diagnostics_summary": data_summary.diagnostics_summary,
             },
-            portfolio_snapshot=_PORTFOLIO_SNAPSHOT_PLACEHOLDER,
+            portfolio_snapshot=_portfolio_snapshot(allocation),
             config=_STRATEGY_CONFIG_PLACEHOLDER,
         )
         if hasattr(runtime, "run_with_strategy"):
@@ -651,8 +738,32 @@ class LocalBacktestEngine:
         decision: StrategyDecision,
         resolver_context: ResolverConsumerContext,
         current_bar: HistoricalBar,
+        allocation: FixedCashAllocation,
     ) -> DecisionTranslationResult:
         translator = request.decision_translator or self._decision_translator
+        quantity_result = _order_quantity(
+            request=request,
+            allocation=allocation,
+            expected_price=(
+                decision.expected_price
+                if decision.expected_price is not None
+                else current_bar.close
+            ),
+        )
+        if isinstance(quantity_result, str):
+            return DecisionTranslationResult(
+                status=DecisionTranslationStatus.BLOCKED,
+                diagnostics=(quantity_result,),
+            )
+        quantity = quantity_result
+        if isinstance(translator, DecisionTranslator):
+            return translator.translate(
+                strategy_name=request.strategy_name,
+                decision=decision,
+                resolver_lineage=resolver_context,
+                current_bar=current_bar,
+                quantity=quantity,
+            )
         return cast(
             DecisionTranslationResult,
             translator.translate(
@@ -660,6 +771,7 @@ class LocalBacktestEngine:
                 decision=decision,
                 resolver_lineage=resolver_context,
                 current_bar=current_bar,
+                quantity=quantity,
             ),
         )
 
@@ -671,10 +783,54 @@ class LocalBacktestEngine:
         bars: tuple[HistoricalBar, ...],
     ) -> FillModelResult:
         fill_model = request.fill_model or self._fill_model
+        slippage_model = request.slippage_model or self._slippage_model
         fill = fill_model.fill
+        if len(signature(fill).parameters) >= 3:
+            return cast(FillModelResult, fill(order, bars, slippage_model))
         if len(signature(fill).parameters) >= 2:
             return cast(FillModelResult, fill(order, bars))
         return cast(FillModelResult, fill(order))
+
+    def _apply_commission(
+        self,
+        *,
+        request: BacktestRequest,
+        trade: SimulatedTrade,
+    ) -> SimulatedTrade | FillModelResult:
+        commission_model = request.commission_model or self._commission_model
+        if commission_model is None:
+            return trade
+        if isinstance(commission_model, FixedCommissionModel):
+            if commission_model.commission_rate < Decimal("0"):
+                return FillModelResult(
+                    status=FillModelStatus.BLOCKED,
+                    diagnostics=("commission_rate must be non-negative",),
+                )
+            commission = commission_model.commission(
+                fill_price=trade.fill_price,
+                fill_qty=trade.fill_qty,
+            )
+        else:
+            commission = cast(
+                Decimal,
+                commission_model.commission(
+                    fill_price=trade.fill_price,
+                    fill_qty=trade.fill_qty,
+                ),
+            )
+            if commission < Decimal("0"):
+                return FillModelResult(
+                    status=FillModelStatus.BLOCKED,
+                    diagnostics=("commission must be non-negative",),
+                )
+        return replace(
+            trade,
+            commission=commission,
+            diagnostics=(
+                *trade.diagnostics,
+                f"commission={commission}",
+            ),
+        )
 
 
 def run_backtest(request: BacktestRequest) -> BacktestResult:
@@ -686,8 +842,24 @@ def _validate_request(request: BacktestRequest) -> str | None:
         return "strategy_name is required"
     if request.strategy_name != _NOOP_STRATEGY_NAME:
         return "only deterministic noop strategy is supported in Stage V.2"
-    if not request.symbol.strip():
+    symbols = _request_symbols(request)
+    if not symbols:
         return "symbol is required"
+    if any(not symbol.strip() for symbol in symbols):
+        return "symbols must be non-empty"
+    if len(set(symbols)) != len(symbols):
+        return "symbols must be unique"
+    if request.quantity_mode not in ("fixed_quantity", "fixed_cash"):
+        return "unknown sizing mode"
+    if request.fixed_quantity <= Decimal("0"):
+        return "fixed_quantity must be greater than 0"
+    if request.allocation_mode not in ("equal_weight", "fixed_cash"):
+        return "unknown allocation mode"
+    if (
+        request.allocation_per_symbol is not None
+        and request.allocation_per_symbol <= Decimal("0")
+    ):
+        return "allocation_per_symbol must be greater than 0"
     if not isinstance(request.start_trading_day, date):
         return "start_trading_day is required"
     if not isinstance(request.end_trading_day, date):
@@ -711,6 +883,59 @@ def _validate_request(request: BacktestRequest) -> str | None:
     if not hasattr(request.data_provider, "get_bars"):
         return "data provider must provide get_bars(symbol, trading_day, timeframe)"
     return None
+
+
+def _order_quantity(
+    *,
+    request: BacktestRequest,
+    allocation: FixedCashAllocation,
+    expected_price: Decimal,
+) -> Decimal | str:
+    if expected_price <= Decimal("0"):
+        return "sizing expected price must be greater than 0"
+    if request.quantity_mode == "fixed_quantity":
+        quantity = FixedQuantitySizing(request.fixed_quantity).quantity_for_price(
+            expected_price
+        )
+    elif request.quantity_mode == "fixed_cash":
+        quantity = FixedCashSizing(
+            allocation.allocation_per_symbol()
+        ).quantity_for_price(expected_price)
+    else:
+        return "unknown sizing mode"
+    if quantity <= Decimal("0"):
+        return "sized quantity must be greater than 0"
+    return quantity
+
+
+def _request_symbols(request: BacktestRequest) -> tuple[str, ...]:
+    if request.symbols:
+        return tuple(symbol.strip().lower() for symbol in request.symbols)
+    return (request.symbol.strip().lower(),)
+
+
+def _portfolio_snapshot(allocation: FixedCashAllocation) -> dict[str, object]:
+    allocations = allocation.allocations()
+    return {
+        "source": _PORTFOLIO_SNAPSHOT_SOURCE,
+        "positions": (),
+        "cash_mode": "fixed_cash_allocation",
+        "symbols": allocation.symbols,
+        "allocation_per_symbol": allocation.allocation_per_symbol(),
+        "allocations": allocations,
+    }
+
+
+def _symbol_day_message(
+    *,
+    symbol: str,
+    trading_day: date,
+    message: str,
+    include_symbol: bool,
+) -> str:
+    if include_symbol:
+        return f"{symbol}:{trading_day}: {message}"
+    return f"{trading_day}: {message}"
 
 
 def _trading_days(start: date, end: date) -> tuple[date, ...]:
@@ -747,78 +972,125 @@ def _research_position_pnl_and_equity(
         return _ResearchAccountingResult(_flat_equity_curve(bars, initial_cash), (), ())
 
     ordered_trades = tuple(sorted(trades, key=lambda trade: trade.fill_bar_ts))
-    pairing_error = _validate_long_only_trade_pair(ordered_trades)
-    if pairing_error is not None:
-        return _ResearchAccountingResult(
-            _flat_equity_curve(bars, initial_cash),
-            (),
-            (),
-            diagnostics=(pairing_error,),
-        )
+    trades_by_identity: dict[tuple[str, str, str, str, date], list[SimulatedTrade]] = {}
+    for trade in ordered_trades:
+        trades_by_identity.setdefault(_research_trade_identity(trade), []).append(trade)
+    for identity_trades in trades_by_identity.values():
+        pairing_error = _validate_long_only_trade_pair(tuple(identity_trades))
+        if pairing_error is not None:
+            return _ResearchAccountingResult(
+                _flat_equity_curve(bars, initial_cash),
+                (),
+                (),
+                diagnostics=(pairing_error,),
+            )
 
     cash = initial_cash
-    quantity = Decimal("0")
-    cost_basis = Decimal("0")
-    realized_pnl = Decimal("0")
-    position: ResearchPosition | None = None
+    quantities: dict[tuple[str, str, str, str, date], Decimal] = {}
+    cost_basis_by_identity: dict[tuple[str, str, str, str, date], Decimal] = {}
+    commission_by_identity: dict[tuple[str, str, str, str, date], Decimal] = {}
+    realized_pnl_by_identity: dict[tuple[str, str, str, str, date], Decimal] = {}
+    positions_by_identity: dict[tuple[str, str, str, str, date], ResearchPosition] = {}
     pnl_points: list[ResearchPnLPoint] = []
     equity_points: list[BacktestEquityPoint] = []
 
     for bar in sorted(bars, key=lambda item: item.bar_ts):
         for trade in ordered_trades:
-            if trade.fill_bar_ts == bar.bar_ts:
-                notional = trade.fill_price * trade.fill_qty
-                if trade.intent is SimulatedOrderIntent.ENTRY:
-                    cash -= notional
-                    quantity += trade.fill_qty
-                    cost_basis += notional
-                    avg_price = cost_basis / quantity
-                    position = ResearchPosition(
-                        symbol=trade.symbol,
-                        instrument_id=trade.instrument_id,
-                        trade_instrument_id=trade.trade_instrument_id,
-                        exchange=trade.exchange,
-                        trading_day=trade.trading_day,
-                        side="LONG",
-                        quantity=quantity,
-                        avg_price=avg_price,
-                        resolver_lineage=trade.resolver_lineage,
+            if trade.fill_bar_ts != bar.bar_ts or not _bar_matches_trade(bar, trade):
+                continue
+            identity = _research_trade_identity(trade)
+            notional = trade.fill_price * trade.fill_qty
+            quantity = quantities.get(identity, Decimal("0"))
+            cost_basis = cost_basis_by_identity.get(identity, Decimal("0"))
+            commission = commission_by_identity.get(identity, Decimal("0"))
+            if trade.intent is SimulatedOrderIntent.ENTRY:
+                cash -= notional + trade.commission
+                if cash < Decimal("0"):
+                    return _ResearchAccountingResult(
+                        _flat_equity_curve(bars, initial_cash),
+                        (),
+                        (),
+                        diagnostics=("negative cash after entry",),
                     )
-                else:
-                    entry_price = cost_basis / quantity
-                    cash += notional
-                    realized_pnl = (trade.fill_price - entry_price) * trade.fill_qty
-                    quantity -= trade.fill_qty
-                    cost_basis = Decimal("0")
-                    position = ResearchPosition(
-                        symbol=trade.symbol,
-                        instrument_id=trade.instrument_id,
-                        trade_instrument_id=trade.trade_instrument_id,
-                        exchange=trade.exchange,
-                        trading_day=trade.trading_day,
-                        side="FLAT",
-                        quantity=Decimal("0"),
-                        avg_price=Decimal("0"),
-                        resolver_lineage=trade.resolver_lineage,
+                quantity += trade.fill_qty
+                cost_basis += notional
+                commission += trade.commission
+                avg_price = cost_basis / quantity
+                position = ResearchPosition(
+                    symbol=trade.symbol,
+                    instrument_id=trade.instrument_id,
+                    trade_instrument_id=trade.trade_instrument_id,
+                    exchange=trade.exchange,
+                    trading_day=trade.trading_day,
+                    side="LONG",
+                    quantity=quantity,
+                    avg_price=avg_price,
+                    resolver_lineage=trade.resolver_lineage,
+                )
+            else:
+                entry_price = cost_basis / quantity
+                cash += notional - trade.commission
+                if cash < Decimal("0"):
+                    return _ResearchAccountingResult(
+                        _flat_equity_curve(bars, initial_cash),
+                        (),
+                        (),
+                        diagnostics=("negative cash after exit",),
                     )
+                commission += trade.commission
+                realized_pnl_by_identity[identity] = (
+                    trade.fill_price - entry_price
+                ) * trade.fill_qty - commission
+                quantity -= trade.fill_qty
+                cost_basis = Decimal("0")
+                position = ResearchPosition(
+                    symbol=trade.symbol,
+                    instrument_id=trade.instrument_id,
+                    trade_instrument_id=trade.trade_instrument_id,
+                    exchange=trade.exchange,
+                    trading_day=trade.trading_day,
+                    side="FLAT",
+                    quantity=Decimal("0"),
+                    avg_price=Decimal("0"),
+                    resolver_lineage=trade.resolver_lineage,
+                )
+            quantities[identity] = quantity
+            cost_basis_by_identity[identity] = cost_basis
+            commission_by_identity[identity] = commission
+            positions_by_identity[identity] = position
 
-        avg_price = position.avg_price if position is not None else Decimal("0")
-        market_value = quantity * bar.close
-        if position is not None:
-            position = ResearchPosition(
-                symbol=position.symbol,
-                instrument_id=position.instrument_id,
-                trade_instrument_id=position.trade_instrument_id,
-                exchange=position.exchange,
-                trading_day=position.trading_day,
-                side=position.side,
-                quantity=quantity,
-                avg_price=position.avg_price,
-                resolver_lineage=position.resolver_lineage,
-                market_value=market_value,
+        current_identity = _bar_identity(bar)
+        current_position = positions_by_identity.get(current_identity)
+        current_quantity = quantities.get(current_identity, Decimal("0"))
+        avg_price = (
+            current_position.avg_price
+            if current_position is not None
+            else Decimal("0")
+        )
+        current_market_value = current_quantity * bar.close
+        if current_position is not None:
+            positions_by_identity[current_identity] = ResearchPosition(
+                symbol=current_position.symbol,
+                instrument_id=current_position.instrument_id,
+                trade_instrument_id=current_position.trade_instrument_id,
+                exchange=current_position.exchange,
+                trading_day=current_position.trading_day,
+                side=current_position.side,
+                quantity=current_quantity,
+                avg_price=current_position.avg_price,
+                resolver_lineage=current_position.resolver_lineage,
+                market_value=current_market_value,
             )
-        unrealized_pnl = (bar.close - avg_price) * quantity if quantity else Decimal("0")
-        equity = cash + market_value
+        unrealized_pnl = (
+            (bar.close - avg_price) * current_quantity
+            if current_quantity
+            else Decimal("0")
+        )
+        total_market_value = sum(
+            (position.market_value for position in positions_by_identity.values()),
+            Decimal("0"),
+        )
+        equity = cash + total_market_value
         equity_points.append(
             BacktestEquityPoint(
                 trading_day=bar.trading_day,
@@ -832,17 +1104,27 @@ def _research_position_pnl_and_equity(
                 trading_day=bar.trading_day,
                 ts=bar.bar_ts,
                 cash=cash,
-                position_quantity=quantity,
+                position_quantity=current_quantity,
                 avg_price=avg_price,
                 mark_price=bar.close,
-                market_value=market_value,
-                realized_pnl=realized_pnl,
+                market_value=current_market_value,
+                realized_pnl=realized_pnl_by_identity.get(
+                    current_identity,
+                    Decimal("0"),
+                ),
                 unrealized_pnl=unrealized_pnl,
                 equity=equity,
+                symbol=bar.symbol,
+                commission=commission_by_identity.get(
+                    current_identity,
+                    Decimal("0"),
+                ),
             )
         )
 
-    positions = (position,) if position is not None else ()
+    positions = tuple(
+        positions_by_identity[key] for key in sorted(positions_by_identity)
+    )
     return _ResearchAccountingResult(tuple(equity_points), positions, tuple(pnl_points))
 
 
@@ -893,11 +1175,38 @@ def _same_research_trade_identity(
     )
 
 
+def _research_trade_identity(
+    trade: SimulatedTrade,
+) -> tuple[str, str, str, str, date]:
+    return (
+        trade.symbol,
+        trade.instrument_id,
+        trade.trade_instrument_id,
+        trade.exchange,
+        trade.trading_day,
+    )
+
+
+def _bar_identity(bar: HistoricalBar) -> tuple[str, str, str, str, date]:
+    return (
+        bar.symbol,
+        bar.instrument_id,
+        bar.trade_instrument_id,
+        bar.exchange,
+        bar.trading_day,
+    )
+
+
+def _bar_matches_trade(bar: HistoricalBar, trade: SimulatedTrade) -> bool:
+    return _bar_identity(bar) == _research_trade_identity(trade)
+
+
 def _research_portfolio(
     *,
     request: BacktestRequest,
     positions: tuple[ResearchPosition, ...],
     pnl_points: tuple[ResearchPnLPoint, ...],
+    equity_curve: tuple[BacktestEquityPoint, ...],
 ) -> ResearchPortfolio | None:
     if not positions:
         return None
@@ -909,6 +1218,7 @@ def _research_portfolio(
         positions=positions,
         pnl_points=pnl_points,
         cash=cash,
+        portfolio_equity_curve=equity_curve,
         diagnostics=("aggregated from LocalBacktestEngine research outputs",),
     )
 

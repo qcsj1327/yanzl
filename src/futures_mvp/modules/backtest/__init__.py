@@ -1,3 +1,4 @@
+from futures_mvp.modules.backtest.costs import FixedCommissionModel, FixedSlippageModel
 from futures_mvp.modules.backtest.engine import LocalBacktestEngine, run_backtest
 from futures_mvp.modules.backtest.fill_model import NextBarOpenFillModel, NoFillModel
 from futures_mvp.modules.backtest.models import (
@@ -15,13 +16,18 @@ from futures_mvp.modules.backtest.models import (
     FillModelStatus,
     ResearchPnLPoint,
     ResearchPortfolio,
+    ResearchPortfolioEquityPoint,
+    ResearchPortfolioMetrics,
     ResearchPosition,
+    ResearchPositionWeight,
+    ResearchSymbolContribution,
     SimulatedOrder,
     SimulatedOrderIntent,
     SimulatedOrderStatus,
     SimulatedTrade,
 )
-from futures_mvp.modules.backtest.portfolio import PortfolioAggregator
+from futures_mvp.modules.backtest.portfolio import FixedCashAllocation, PortfolioAggregator
+from futures_mvp.modules.backtest.sizing import FixedCashSizing, FixedQuantitySizing
 from futures_mvp.modules.backtest.translator import DecisionTranslator
 
 __all__ = [
@@ -38,13 +44,22 @@ __all__ = [
     "DecisionTranslator",
     "FillModelResult",
     "FillModelStatus",
+    "FixedCashSizing",
+    "FixedCashAllocation",
+    "FixedCommissionModel",
+    "FixedQuantitySizing",
+    "FixedSlippageModel",
     "LocalBacktestEngine",
     "NextBarOpenFillModel",
     "NoFillModel",
     "PortfolioAggregator",
     "ResearchPnLPoint",
     "ResearchPortfolio",
+    "ResearchPortfolioEquityPoint",
+    "ResearchPortfolioMetrics",
     "ResearchPosition",
+    "ResearchPositionWeight",
+    "ResearchSymbolContribution",
     "SimulatedOrder",
     "SimulatedOrderIntent",
     "SimulatedOrderStatus",

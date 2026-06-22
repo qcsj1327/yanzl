@@ -14,6 +14,8 @@ from futures_mvp.modules.backtest import (
     DecisionTranslationStatus,
     FillModelResult,
     FillModelStatus,
+    FixedCommissionModel,
+    FixedSlippageModel,
     LocalBacktestEngine,
     NextBarOpenFillModel,
     SimulatedOrder,
@@ -22,6 +24,7 @@ from futures_mvp.modules.backtest import (
     SimulatedTrade,
 )
 from futures_mvp.modules.backtest import engine as engine_module
+from futures_mvp.modules.market_data.consumer import build_resolver_consumer_context
 from futures_mvp.modules.market_data.contracts import (
     BarTimeframe,
     HistoricalBarsResult,
@@ -49,9 +52,16 @@ from futures_mvp.modules.strategy_runtime import (
 def _request(
     *,
     symbol: str = "ao",
+    symbols: list[str] | tuple[str, ...] = (),
     timeframe: str = "1m",
     resolver: object | None = None,
     data_provider: object | None = None,
+    quantity_mode: str = "fixed_quantity",
+    fixed_quantity: Decimal = Decimal("1"),
+    allocation_mode: str = "equal_weight",
+    allocation_per_symbol: Decimal | None = None,
+    commission_model: object | None = None,
+    slippage_model: object | None = None,
 ) -> BacktestRequest:
     actual_resolver = resolver if resolver is not None else InstrumentResolver()
     actual_provider = (
@@ -68,6 +78,13 @@ def _request(
         initial_cash=Decimal("100000"),
         resolver=actual_resolver,
         data_provider=actual_provider,
+        symbols=symbols,
+        quantity_mode=quantity_mode,
+        fixed_quantity=fixed_quantity,
+        allocation_mode=allocation_mode,
+        allocation_per_symbol=allocation_per_symbol,
+        commission_model=commission_model,
+        slippage_model=slippage_model,
     )
 
 
@@ -83,7 +100,7 @@ def _trade(
     resolver = InstrumentResolver()
     trading_day = date(2026, 6, 12)
     context_result = resolver.resolve(symbol, trading_day)
-    lineage_result = engine_module.build_resolver_consumer_context(context_result)
+    lineage_result = build_resolver_consumer_context(context_result)
     assert lineage_result.context is not None
     return SimulatedTrade(
         trade_id=f"{intent.value}-{fill_price}-{trade_instrument_id}",
@@ -110,15 +127,19 @@ def _down_close_provider(
         def get_bars(
             self,
             symbol: str,
-            trading_day: date,
-            timeframe: object,
+            trading_day: str | date,
+            timeframe: str | BarTimeframe,
+            *,
+            as_of: datetime | None = None,
         ) -> HistoricalBarsResult:
-            result = super().get_bars(symbol, trading_day, timeframe)
+            result = super().get_bars(symbol, trading_day, timeframe, as_of=as_of)
+            assert len(result.bars) == 3
+            first, second, third = result.bars
             bars = (
-                result.bars[0],
-                result.bars[1],
+                first,
+                second,
                 replace(
-                    result.bars[2],
+                    third,
                     open=Decimal("3199"),
                     high=Decimal("3200"),
                     low=Decimal("3198"),
@@ -446,6 +467,255 @@ def test_buy_and_hold_with_next_bar_open_fill_marks_research_equity_to_close() -
     )
     assert result.research_portfolio.total_equity == result.equity_curve[-1].equity
     assert "research/observability only" in result.research_portfolio.diagnostics[-1]
+
+
+def test_multi_symbol_ao_rb_buy_and_hold_aggregates_portfolio() -> None:
+    resolver = InstrumentResolver()
+    data_provider = StaticHistoricalDataFixtureProvider(resolver)
+    result = LocalBacktestEngine(
+        strategy=BuyAndHoldStrategy(),
+        fill_model=NextBarOpenFillModel(),
+    ).run(
+        _request(
+            resolver=resolver,
+            data_provider=data_provider,
+            symbols=["ao", "rb"],
+        )
+    )
+
+    assert result.status is BacktestStatus.COMPLETED
+    assert result.bars_consumed_count == 6
+    assert len(result.resolver_lineage) == 2
+    assert tuple(context.identity.symbol for context in result.resolver_lineage) == (
+        "ao",
+        "rb",
+    )
+    assert len(result.strategy_decisions) == 6
+    assert len(result.simulated_orders) == 2
+    assert len(result.fill_model_results) == 2
+    assert len(result.simulated_trades) == 2
+    assert tuple(order.symbol for order in result.simulated_orders) == ("ao", "rb")
+    assert tuple(trade.symbol for trade in result.simulated_trades) == ("ao", "rb")
+
+    assert len(result.research_positions) == 2
+    assert tuple(position.symbol for position in result.research_positions) == (
+        "ao",
+        "rb",
+    )
+    assert tuple(position.quantity for position in result.research_positions) == (
+        Decimal("1"),
+        Decimal("1"),
+    )
+    assert tuple(position.market_value for position in result.research_positions) == (
+        Decimal("3203"),
+        Decimal("3503"),
+    )
+    assert result.research_portfolio is not None
+    assert result.research_portfolio.positions == result.research_positions
+    assert result.research_portfolio.pnl_points == result.research_pnl_curve
+    assert result.research_portfolio.cash == Decimal("93298")
+    assert result.research_portfolio.total_market_value == Decimal("6706")
+    assert result.research_portfolio.total_equity == Decimal("100004")
+    assert result.research_portfolio.total_equity == result.equity_curve[-1].equity
+    assert result.research_portfolio.portfolio_equity_curve
+    assert result.research_portfolio.portfolio_equity_curve[-1].equity == Decimal(
+        "100004"
+    )
+    assert tuple(
+        contribution.symbol
+        for contribution in result.research_portfolio.symbol_contributions
+    ) == ("ao", "rb")
+    assert tuple(
+        contribution.market_value
+        for contribution in result.research_portfolio.symbol_contributions
+    ) == (Decimal("3203"), Decimal("3503"))
+    assert tuple(
+        contribution.pnl_contribution
+        for contribution in result.research_portfolio.symbol_contributions
+    ) == (Decimal("2"), Decimal("2"))
+    assert tuple(weight.symbol for weight in result.research_portfolio.position_weights) == (
+        "ao",
+        "rb",
+    )
+    assert result.research_portfolio.cash_weight == (
+        result.research_portfolio.cash / result.research_portfolio.total_equity
+    )
+    assert result.research_portfolio.metrics is not None
+    assert result.research_portfolio.metrics.total_return == Decimal("0.00004")
+    assert result.research_portfolio.metrics.max_equity == Decimal("100004")
+    assert result.research_portfolio.metrics.min_equity == Decimal("100000")
+
+
+def test_multi_symbol_ao_rb_ag_cu_uses_fixed_cash_allocation_snapshot() -> None:
+    class RecordingStrategy:
+        def __init__(self) -> None:
+            self.contexts: list[StrategyContext] = []
+            self._entered_symbols: set[str] = set()
+
+        def evaluate(self, context: StrategyContext) -> StrategyDecision:
+            self.contexts.append(context)
+            if context.symbol not in self._entered_symbols:
+                self._entered_symbols.add(context.symbol)
+                return StrategyDecision(
+                    decision=StrategyDecisionType.BUY,
+                    side="BUY",
+                    confidence=Decimal("1"),
+                    reason="first eligible symbol buy",
+                    expected_price=(
+                        context.current_bar.close
+                        if context.current_bar is not None
+                        else None
+                    ),
+                )
+            return StrategyDecision(
+                decision=StrategyDecisionType.HOLD,
+                side="NONE",
+                confidence=Decimal("1"),
+                reason="symbol already entered",
+            )
+
+    resolver = InstrumentResolver()
+    data_provider = StaticHistoricalDataFixtureProvider(resolver)
+    strategy = RecordingStrategy()
+    result = LocalBacktestEngine(
+        strategy=strategy,
+        fill_model=NextBarOpenFillModel(),
+    ).run(
+        _request(
+            resolver=resolver,
+            data_provider=data_provider,
+            symbols=["ao", "rb", "ag", "cu"],
+        )
+    )
+
+    assert result.status is BacktestStatus.COMPLETED
+    assert result.bars_consumed_count == 12
+    assert len(result.simulated_orders) == 4
+    assert len(result.simulated_trades) == 4
+    assert tuple(position.symbol for position in result.research_positions) == (
+        "ag",
+        "ao",
+        "cu",
+        "rb",
+    )
+    assert tuple(position.market_value for position in result.research_positions) == (
+        Decimal("8203"),
+        Decimal("3203"),
+        Decimal("78003"),
+        Decimal("3503"),
+    )
+    assert result.research_portfolio is not None
+    assert result.research_portfolio.cash == Decimal("7096")
+    assert result.research_portfolio.total_market_value == Decimal("92912")
+    assert result.research_portfolio.total_equity == Decimal("100008")
+
+    assert strategy.contexts
+    first_snapshot = strategy.contexts[0].portfolio_snapshot
+    assert first_snapshot is not None
+    assert first_snapshot["cash_mode"] == "fixed_cash_allocation"
+    assert first_snapshot["symbols"] == ("ao", "rb", "ag", "cu")
+    assert first_snapshot["allocation_per_symbol"] == Decimal("25000")
+    assert first_snapshot["allocations"] == {
+        "ao": Decimal("25000"),
+        "rb": Decimal("25000"),
+        "ag": Decimal("25000"),
+        "cu": Decimal("25000"),
+    }
+
+
+def test_fixed_commission_model_deducts_entry_and_exit_commission_from_realized_pnl() -> None:
+    resolver = InstrumentResolver()
+    data_provider = StaticHistoricalDataFixtureProvider(resolver)
+    result = LocalBacktestEngine(
+        strategy=ExitReferenceStrategy(),
+        fill_model=NextBarOpenFillModel(),
+        commission_model=FixedCommissionModel(),
+    ).run(_request(resolver=resolver, data_provider=data_provider))
+
+    assert result.status is BacktestStatus.COMPLETED
+    entry_trade, exit_trade = result.simulated_trades
+    assert entry_trade.commission == Decimal("0.3201")
+    assert exit_trade.commission == Decimal("0.3202")
+    assert result.research_pnl_curve[-1].realized_pnl == Decimal("0.3597")
+    assert result.research_pnl_curve[-1].commission == Decimal("0.6403")
+    assert result.research_pnl_curve[-1].cash == Decimal("100000.3597")
+    assert result.research_portfolio is not None
+    assert result.research_portfolio.total_equity == Decimal("100000.3597")
+
+
+def test_fixed_slippage_model_adjusts_entry_up_and_exit_down_for_long_only() -> None:
+    resolver = InstrumentResolver()
+    data_provider = StaticHistoricalDataFixtureProvider(resolver)
+    result = LocalBacktestEngine(
+        strategy=ExitReferenceStrategy(),
+        fill_model=NextBarOpenFillModel(),
+        slippage_model=FixedSlippageModel(),
+    ).run(_request(resolver=resolver, data_provider=data_provider))
+
+    assert result.status is BacktestStatus.COMPLETED
+    entry_trade, exit_trade = result.simulated_trades
+    assert entry_trade.fill_price == Decimal("3202")
+    assert entry_trade.slippage == Decimal("1")
+    assert exit_trade.fill_price == Decimal("3201")
+    assert exit_trade.slippage == Decimal("1")
+    assert result.research_pnl_curve[-1].realized_pnl == Decimal("-1")
+    assert result.research_pnl_curve[-1].cash == Decimal("99999")
+
+
+def test_fixed_cash_sizing_uses_allocation_per_symbol_for_quantity() -> None:
+    resolver = InstrumentResolver()
+    data_provider = StaticHistoricalDataFixtureProvider(resolver)
+    result = LocalBacktestEngine(
+        strategy=BuyAndHoldStrategy(),
+        fill_model=NextBarOpenFillModel(),
+    ).run(
+        _request(
+            resolver=resolver,
+            data_provider=data_provider,
+            quantity_mode="fixed_cash",
+            allocation_per_symbol=Decimal("6402"),
+        )
+    )
+
+    assert result.status is BacktestStatus.COMPLETED
+    assert result.simulated_orders[0].quantity == Decimal("2")
+    assert result.simulated_trades[0].fill_qty == Decimal("2")
+    assert result.research_positions[0].quantity == Decimal("2")
+    assert result.research_positions[0].market_value == Decimal("6406")
+    assert result.research_portfolio is not None
+    assert result.research_portfolio.total_equity == Decimal("100004")
+
+
+def test_unknown_sizing_and_allocation_modes_fail_closed() -> None:
+    sizing_result = LocalBacktestEngine().run(_request(quantity_mode="kelly"))
+    allocation_result = LocalBacktestEngine().run(_request(allocation_mode="risk_parity"))
+
+    assert sizing_result.status is BacktestStatus.INVALID_INPUT
+    assert sizing_result.diagnostics.messages == ("unknown sizing mode",)
+    assert allocation_result.status is BacktestStatus.INVALID_INPUT
+    assert allocation_result.diagnostics.messages == ("unknown allocation mode",)
+
+
+def test_negative_quantity_and_negative_cash_fail_closed() -> None:
+    negative_quantity_result = LocalBacktestEngine().run(
+        _request(fixed_quantity=Decimal("-1"))
+    )
+    negative_cash_result = LocalBacktestEngine(
+        strategy=BuyAndHoldStrategy(),
+        fill_model=NextBarOpenFillModel(),
+    ).run(_request(fixed_quantity=Decimal("100000")))
+
+    assert negative_quantity_result.status is BacktestStatus.INVALID_INPUT
+    assert negative_quantity_result.diagnostics.messages == (
+        "fixed_quantity must be greater than 0",
+    )
+    assert negative_cash_result.status is BacktestStatus.BLOCKED
+    assert negative_cash_result.diagnostics.messages[:2] == (
+        "research trade pairing failed closed",
+        "negative cash after entry",
+    )
+    assert negative_cash_result.research_positions == ()
+    assert negative_cash_result.research_portfolio is None
 
 
 def test_exit_reference_with_next_bar_open_fill_records_profitable_close() -> None:
@@ -876,6 +1146,34 @@ def test_unknown_symbol_blocks_before_market_data_consumption() -> None:
     assert result.equity_curve == ()
     assert result.resolver_lineage == ()
     assert any("resolver_status=NOT_FOUND" == message for message in result.diagnostics.messages)
+
+
+def test_multi_symbol_resolver_failure_blocks_entire_backtest() -> None:
+    resolver = InstrumentResolver()
+    data_provider = StaticHistoricalDataFixtureProvider(resolver)
+
+    result = LocalBacktestEngine(
+        strategy=BuyAndHoldStrategy(),
+        fill_model=NextBarOpenFillModel(),
+    ).run(
+        _request(
+            resolver=resolver,
+            data_provider=data_provider,
+            symbols=["ao", "zz", "rb"],
+        )
+    )
+
+    assert result.status is BacktestStatus.BLOCKED
+    assert result.bars_consumed_count == 0
+    assert result.equity_curve == ()
+    assert result.simulated_orders == ()
+    assert result.simulated_trades == ()
+    assert result.research_positions == ()
+    assert any("symbol=zz" == message for message in result.diagnostics.messages)
+    assert any(
+        "resolver_status=NOT_FOUND" == message
+        for message in result.diagnostics.messages
+    )
 
 
 def test_metadata_invalid_blocks_before_market_data_consumption() -> None:

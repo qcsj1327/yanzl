@@ -31,10 +31,17 @@ class BacktestRequest:
     initial_cash: Decimal
     resolver: Any | None
     data_provider: Any | None
+    symbols: list[str] | tuple[str, ...] = ()
+    quantity_mode: str = "fixed_quantity"
+    fixed_quantity: Decimal = Decimal("1")
+    allocation_mode: str = "equal_weight"
+    allocation_per_symbol: Decimal | None = None
     strategy_runtime: Any | None = None
     strategy: Any | None = None
     decision_translator: Any | None = None
     fill_model: Any | None = None
+    commission_model: Any | None = None
+    slippage_model: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -94,7 +101,44 @@ class ResearchPnLPoint:
     realized_pnl: Decimal
     unrealized_pnl: Decimal
     equity: Decimal
+    symbol: str = ""
+    commission: Decimal = Decimal("0")
     source: str = "backtest_research_only_pnl"
+
+
+@dataclass(frozen=True)
+class ResearchPortfolioEquityPoint:
+    trading_day: date
+    ts: datetime
+    cash: Decimal
+    total_market_value: Decimal
+    equity: Decimal
+    source: str = "backtest_research_only_portfolio_equity"
+
+
+@dataclass(frozen=True)
+class ResearchSymbolContribution:
+    symbol: str
+    market_value: Decimal
+    equity_contribution: Decimal
+    pnl_contribution: Decimal
+    source: str = "backtest_research_only_symbol_contribution"
+
+
+@dataclass(frozen=True)
+class ResearchPositionWeight:
+    symbol: str
+    market_value: Decimal
+    weight: Decimal
+    source: str = "backtest_research_only_position_weight"
+
+
+@dataclass(frozen=True)
+class ResearchPortfolioMetrics:
+    total_return: Decimal
+    max_equity: Decimal
+    min_equity: Decimal
+    source: str = "backtest_research_only_portfolio_metrics"
 
 
 @dataclass(frozen=True)
@@ -108,6 +152,11 @@ class ResearchPortfolio:
     positions: tuple[ResearchPosition, ...]
     pnl_points: tuple[ResearchPnLPoint, ...]
     diagnostics: tuple[str, ...]
+    portfolio_equity_curve: tuple[ResearchPortfolioEquityPoint, ...] = ()
+    symbol_contributions: tuple[ResearchSymbolContribution, ...] = ()
+    position_weights: tuple[ResearchPositionWeight, ...] = ()
+    cash_weight: Decimal = Decimal("1")
+    metrics: ResearchPortfolioMetrics | None = None
 
 
 class SimulatedOrderStatus(StrEnum):
@@ -179,6 +228,8 @@ class SimulatedTrade:
     resolver_lineage: ResolverConsumerContext
     diagnostics: tuple[str, ...] = ()
     intent: SimulatedOrderIntent = SimulatedOrderIntent.ENTRY
+    commission: Decimal = Decimal("0")
+    slippage: Decimal = Decimal("0")
     source: str = "backtest_research_only_simulated_trade"
 
 

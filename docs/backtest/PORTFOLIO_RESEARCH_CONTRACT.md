@@ -424,3 +424,100 @@ Stage C.4 不得 write DB、schema、Alembic、OMS、Trade ledger、production
 Position、Accounting、Margin、Settlement 或 broker state；不得 connect
 broker、CTP、SimNow、live feed 或 network；不得 enable
 `ExecutionTarget.PAPER`、`ExecutionTarget.SIM` 或 `ExecutionTarget.LIVE`。
+
+## Phase X Multi-Symbol Research Portfolio Status
+
+基线：`stage-c4-realized-pnl-cash-return / 0a11b38`。
+
+Phase X makes `ResearchPortfolio` aggregate real multi-symbol research output
+from `LocalBacktestEngine`. A multi-symbol run may produce:
+
+- multiple `ResearchPosition` objects, one per resolver identity with a filled
+  research position lifecycle.
+- multiple `ResearchPnLPoint` objects across symbols and bars.
+- one `ResearchPortfolio` with aggregate cash, aggregate market value and
+  aggregate equity.
+
+The only accepted allocation model in Phase X is `FixedCashAllocation`:
+
+```text
+allocation_per_symbol = initial_cash / N
+```
+
+where `N` is the requested symbol count. Allocation is deterministic,
+research-only context. It is not dynamic position sizing, margin, leverage,
+risk management, account cash, broker cash or accounting truth.
+
+Portfolio equity remains:
+
+```text
+portfolio_equity = cash + sum(position market value)
+```
+
+The portfolio must preserve resolver-derived identity for each position:
+`symbol`, `instrument_id`, `trade_instrument_id`, exchange, `trading_day` and
+resolver lineage. If any symbol is `NOT_FOUND`, `METADATA_INVALID` or otherwise
+fails resolver context construction, the whole run must fail closed as
+`BLOCKED`; no partial portfolio is accepted.
+
+Phase X remains local fixture Backtest research only. It does not write DB,
+schema, Alembic, OMS, Trade ledger, production Position, Accounting, Margin,
+Settlement or broker state; does not use broker/live/network; and does not
+enable PAPER, SIM or LIVE execution targets.
+
+## Phase Y Research Realism + Portfolio Analytics Status
+
+基线：`stage-w3-backtest-research-portfolio-integration` +
+`stage-c4-realized-pnl-cash-return`。
+
+Phase Y extends `ResearchPortfolio` with in-memory research analytics:
+
+- `portfolio_equity_curve`
+- `symbol_contributions`
+- `position_weights`
+- `cash_weight`
+- `metrics.total_return`
+- `metrics.max_equity`
+- `metrics.min_equity`
+
+`symbol_contributions` are research-only views with:
+
+```text
+symbol
+market_value
+equity_contribution
+pnl_contribution
+```
+
+`position_weights` are computed against final portfolio equity. `cash_weight`
+is final cash divided by final portfolio equity. These are not risk limits,
+production weights, margin facts or broker account facts.
+
+Phase Y adds research-only cost and realism models:
+
+- `FixedCommissionModel(commission_rate=0.0001)`
+- `FixedSlippageModel(ticks=1, tick_size=1)`
+- `FixedQuantitySizing(quantity=1)`
+- `FixedCashSizing(cash_per_symbol)`
+
+Commission is deducted from research cash and from long-only realized PnL.
+Slippage adjusts ENTRY fill up and EXIT fill down. Sizing remains deterministic
+and long-only.
+
+Multi-symbol allocation remains deterministic. Default allocation is equal
+weight:
+
+```text
+allocation_per_symbol = initial_cash / len(symbols)
+```
+
+An explicit positive `allocation_per_symbol` may be supplied for fixed-cash
+sizing. Unknown sizing mode, unknown allocation mode, negative quantity,
+non-positive allocation, negative commission, invalid slippage and negative
+research cash all fail closed.
+
+Phase Y remains Backtest research / observability only. It does not implement
+short, margin or leverage. It does not write DB, schema, Alembic, OMS, Trade
+ledger, production Position, Accounting, Margin, Settlement or broker state;
+does not use broker/live/network; and does not enable PAPER, SIM or LIVE
+execution targets.

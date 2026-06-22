@@ -34,6 +34,7 @@ class DecisionTranslator:
         decision: StrategyDecision,
         resolver_lineage: ResolverConsumerContext | None,
         current_bar: HistoricalBar | None,
+        quantity: Decimal | None = None,
     ) -> DecisionTranslationResult:
         if resolver_lineage is None:
             return DecisionTranslationResult(
@@ -45,7 +46,8 @@ class DecisionTranslator:
                 status=DecisionTranslationStatus.BLOCKED,
                 diagnostics=("current bar is required",),
             )
-        if self.quantity <= Decimal("0"):
+        order_quantity = quantity if quantity is not None else self.quantity
+        if order_quantity <= Decimal("0"):
             return DecisionTranslationResult(
                 status=DecisionTranslationStatus.BLOCKED,
                 diagnostics=("simulated order quantity must be greater than 0",),
@@ -108,7 +110,7 @@ class DecisionTranslator:
             exchange=identity.exchange,
             trading_day=identity.trading_day,
             side=decision.side,
-            quantity=self.quantity,
+            quantity=order_quantity,
             expected_price=expected_price,
             order_type=self.order_type,
             created_bar_ts=current_bar.bar_ts,

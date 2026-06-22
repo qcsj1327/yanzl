@@ -9,11 +9,14 @@ from futures_mvp.modules.backtest import PortfolioAggregator, ResearchPosition
 from futures_mvp.modules.backtest import engine as engine_module
 from futures_mvp.modules.backtest import portfolio as portfolio_module
 from futures_mvp.modules.backtest.models import ResearchPnLPoint
-from futures_mvp.modules.market_data.consumer import build_resolver_consumer_context
+from futures_mvp.modules.market_data.consumer import (
+    ResolverConsumerContext,
+    build_resolver_consumer_context,
+)
 from futures_mvp.modules.market_data.resolver import InstrumentResolver
 
 
-def _resolver_context(symbol: str = "ao"):
+def _resolver_context(symbol: str = "ao") -> ResolverConsumerContext:
     trading_day = date(2026, 6, 12)
     result = build_resolver_consumer_context(
         InstrumentResolver().resolve(symbol, trading_day)

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from hashlib import sha256
 
+from futures_mvp.modules.backtest.costs import FixedSlippageModel
 from futures_mvp.modules.backtest.models import (
     FillModelResult,
     FillModelStatus,
@@ -35,11 +36,13 @@ class NoFillModel:
 @dataclass(frozen=True)
 class NextBarOpenFillModel:
     supported_side: str = "BUY"
+    slippage_model: FixedSlippageModel | None = None
 
     def fill(
         self,
         order: SimulatedOrder,
         bars: tuple[HistoricalBar, ...],
+        slippage_model: FixedSlippageModel | None = None,
     ) -> FillModelResult:
         if order.status is not SimulatedOrderStatus.CREATED:
             return FillModelResult(
@@ -75,21 +78,51 @@ class NextBarOpenFillModel:
                 status=FillModelStatus.DATA_GAP,
                 diagnostics=("next available bar not found",),
             )
-        if next_bar.open <= Decimal("0"):
+        active_slippage_model = (
+            slippage_model
+            if slippage_model is not None
+            else self.slippage_model
+        )
+        if active_slippage_model is not None and active_slippage_model.ticks < Decimal("0"):
+            return FillModelResult(
+                status=FillModelStatus.BLOCKED,
+                diagnostics=("slippage ticks must be non-negative",),
+            )
+        if active_slippage_model is not None and active_slippage_model.tick_size <= Decimal("0"):
+            return FillModelResult(
+                status=FillModelStatus.BLOCKED,
+                diagnostics=("slippage tick_size must be greater than 0",),
+            )
+        if active_slippage_model is None and next_bar.open <= Decimal("0"):
             return FillModelResult(
                 status=FillModelStatus.DATA_GAP,
                 diagnostics=("next bar open must be greater than 0",),
+            )
+        fill_price = (
+            active_slippage_model.apply(order=order, base_price=next_bar.open)
+            if active_slippage_model is not None
+            else next_bar.open
+        )
+        slippage = (
+            active_slippage_model.slippage()
+            if active_slippage_model is not None
+            else Decimal("0")
+        )
+        if fill_price <= Decimal("0"):
+            return FillModelResult(
+                status=FillModelStatus.DATA_GAP,
+                diagnostics=("slippage-adjusted fill price must be greater than 0",),
             )
 
         trade = SimulatedTrade(
             trade_id=_trade_id(
                 order=order,
                 fill_bar=next_bar,
-                fill_price=next_bar.open,
+                fill_price=fill_price,
                 fill_qty=order.quantity,
             ),
             order_id=order.order_id,
-            fill_price=next_bar.open,
+            fill_price=fill_price,
             fill_qty=order.quantity,
             fill_bar_ts=next_bar.bar_ts,
             symbol=order.symbol,
@@ -104,8 +137,10 @@ class NextBarOpenFillModel:
                 f"research-only {order.intent.value} next-bar-open simulated trade",
                 "not Trade ledger, Accounting fact, OMS truth, broker execution, "
                 "or exchange execution",
+                f"slippage={slippage}",
             ),
             intent=order.intent,
+            slippage=slippage,
         )
         return FillModelResult(
             status=FillModelStatus.FILLED,
