@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 from inspect import signature
@@ -21,6 +22,7 @@ from futures_mvp.modules.backtest.models import (
     ResearchPortfolio,
     ResearchPosition,
     SimulatedOrder,
+    SimulatedOrderIntent,
     SimulatedTrade,
 )
 from futures_mvp.modules.backtest.portfolio import PortfolioAggregator
@@ -53,6 +55,14 @@ _PORTFOLIO_SNAPSHOT_PLACEHOLDER = {
     "positions": (),
     "cash_mode": "flat_initial_cash",
 }
+
+
+@dataclass(frozen=True)
+class _ResearchAccountingResult:
+    equity_curve: tuple[BacktestEquityPoint, ...]
+    positions: tuple[ResearchPosition, ...]
+    pnl_curve: tuple[ResearchPnLPoint, ...]
+    diagnostics: tuple[str, ...] = ()
 
 
 class LocalBacktestEngine:
@@ -93,6 +103,7 @@ class LocalBacktestEngine:
             fill_model_results: list[FillModelResult] = []
             simulated_orders: list[SimulatedOrder] = []
             simulated_trades: list[SimulatedTrade] = []
+            lifecycle_closed = False
             resolver_statuses: list[str] = []
             data_statuses: list[str] = []
             gap_report: list[str] = []
@@ -180,6 +191,8 @@ class LocalBacktestEngine:
             )
             for context, (_, bars) in zip(contexts, bars_by_day, strict=True):
                 for index, bar in enumerate(bars):
+                    if lifecycle_closed:
+                        break
                     runtime_result = self._run_strategy(
                         request=request,
                         resolver_context=context,
@@ -391,6 +404,11 @@ class LocalBacktestEngine:
                                     simulated_trades=tuple(simulated_trades),
                                 )
                             simulated_trades.append(fill_result.simulated_trade)
+                            if (
+                                fill_result.simulated_trade.intent
+                                is SimulatedOrderIntent.EXIT
+                            ):
+                                lifecycle_closed = True
                             continue
                         if fill_result.simulated_trade is not None:
                             return BacktestResult(
@@ -519,13 +537,39 @@ class LocalBacktestEngine:
                                 simulated_orders=tuple(simulated_orders),
                                 simulated_trades=tuple(simulated_trades),
                             )
-            equity_curve, research_positions, research_pnl_curve = (
-                _research_position_pnl_and_equity(
-                    bars=all_bars,
-                    trades=tuple(simulated_trades),
-                    initial_cash=request.initial_cash,
-                )
+            accounting_result = _research_position_pnl_and_equity(
+                bars=all_bars,
+                trades=tuple(simulated_trades),
+                initial_cash=request.initial_cash,
             )
+            if accounting_result.diagnostics:
+                return BacktestResult(
+                    status=BacktestStatus.BLOCKED,
+                    diagnostics=BacktestDiagnostics(
+                        messages=(
+                            "research trade pairing failed closed",
+                            *accounting_result.diagnostics,
+                        ),
+                        resolver_statuses=tuple(resolver_statuses),
+                        data_statuses=tuple(data_statuses),
+                    ),
+                    resolver_lineage=tuple(contexts),
+                    data_source_summary=data_summary,
+                    bars_consumed_count=len(all_bars),
+                    equity_curve=accounting_result.equity_curve,
+                    strategy_runtime_results=tuple(strategy_runtime_results),
+                    strategy_decisions=tuple(strategy_decisions),
+                    decision_translation_results=tuple(decision_translation_results),
+                    fill_model_results=tuple(fill_model_results),
+                    simulated_orders=tuple(simulated_orders),
+                    simulated_trades=tuple(simulated_trades),
+                    research_positions=(),
+                    research_pnl_curve=(),
+                    research_portfolio=None,
+                )
+            equity_curve = accounting_result.equity_curve
+            research_positions = accounting_result.positions
+            research_pnl_curve = accounting_result.pnl_curve
             research_portfolio = _research_portfolio(
                 request=request,
                 positions=research_positions,
@@ -698,18 +742,24 @@ def _research_position_pnl_and_equity(
     bars: tuple[HistoricalBar, ...],
     trades: tuple[SimulatedTrade, ...],
     initial_cash: Decimal,
-) -> tuple[
-    tuple[BacktestEquityPoint, ...],
-    tuple[ResearchPosition, ...],
-    tuple[ResearchPnLPoint, ...],
-]:
+) -> _ResearchAccountingResult:
     if not trades:
-        return _flat_equity_curve(bars, initial_cash), (), ()
+        return _ResearchAccountingResult(_flat_equity_curve(bars, initial_cash), (), ())
 
     ordered_trades = tuple(sorted(trades, key=lambda trade: trade.fill_bar_ts))
+    pairing_error = _validate_long_only_trade_pair(ordered_trades)
+    if pairing_error is not None:
+        return _ResearchAccountingResult(
+            _flat_equity_curve(bars, initial_cash),
+            (),
+            (),
+            diagnostics=(pairing_error,),
+        )
+
     cash = initial_cash
     quantity = Decimal("0")
     cost_basis = Decimal("0")
+    realized_pnl = Decimal("0")
     position: ResearchPosition | None = None
     pnl_points: list[ResearchPnLPoint] = []
     equity_points: list[BacktestEquityPoint] = []
@@ -718,21 +768,39 @@ def _research_position_pnl_and_equity(
         for trade in ordered_trades:
             if trade.fill_bar_ts == bar.bar_ts:
                 notional = trade.fill_price * trade.fill_qty
-                cash -= notional
-                quantity += trade.fill_qty
-                cost_basis += notional
-                avg_price = cost_basis / quantity
-                position = ResearchPosition(
-                    symbol=trade.symbol,
-                    instrument_id=trade.instrument_id,
-                    trade_instrument_id=trade.trade_instrument_id,
-                    exchange=trade.exchange,
-                    trading_day=trade.trading_day,
-                    side="LONG",
-                    quantity=quantity,
-                    avg_price=avg_price,
-                    resolver_lineage=trade.resolver_lineage,
-                )
+                if trade.intent is SimulatedOrderIntent.ENTRY:
+                    cash -= notional
+                    quantity += trade.fill_qty
+                    cost_basis += notional
+                    avg_price = cost_basis / quantity
+                    position = ResearchPosition(
+                        symbol=trade.symbol,
+                        instrument_id=trade.instrument_id,
+                        trade_instrument_id=trade.trade_instrument_id,
+                        exchange=trade.exchange,
+                        trading_day=trade.trading_day,
+                        side="LONG",
+                        quantity=quantity,
+                        avg_price=avg_price,
+                        resolver_lineage=trade.resolver_lineage,
+                    )
+                else:
+                    entry_price = cost_basis / quantity
+                    cash += notional
+                    realized_pnl = (trade.fill_price - entry_price) * trade.fill_qty
+                    quantity -= trade.fill_qty
+                    cost_basis = Decimal("0")
+                    position = ResearchPosition(
+                        symbol=trade.symbol,
+                        instrument_id=trade.instrument_id,
+                        trade_instrument_id=trade.trade_instrument_id,
+                        exchange=trade.exchange,
+                        trading_day=trade.trading_day,
+                        side="FLAT",
+                        quantity=Decimal("0"),
+                        avg_price=Decimal("0"),
+                        resolver_lineage=trade.resolver_lineage,
+                    )
 
         avg_price = position.avg_price if position is not None else Decimal("0")
         market_value = quantity * bar.close
@@ -744,13 +812,12 @@ def _research_position_pnl_and_equity(
                 exchange=position.exchange,
                 trading_day=position.trading_day,
                 side=position.side,
-                quantity=position.quantity,
+                quantity=quantity,
                 avg_price=position.avg_price,
                 resolver_lineage=position.resolver_lineage,
                 market_value=market_value,
             )
         unrealized_pnl = (bar.close - avg_price) * quantity if quantity else Decimal("0")
-        realized_pnl = Decimal("0")
         equity = cash + market_value
         equity_points.append(
             BacktestEquityPoint(
@@ -776,7 +843,54 @@ def _research_position_pnl_and_equity(
         )
 
     positions = (position,) if position is not None else ()
-    return tuple(equity_points), positions, tuple(pnl_points)
+    return _ResearchAccountingResult(tuple(equity_points), positions, tuple(pnl_points))
+
+
+def _validate_long_only_trade_pair(trades: tuple[SimulatedTrade, ...]) -> str | None:
+    entries = tuple(
+        trade for trade in trades if trade.intent is SimulatedOrderIntent.ENTRY
+    )
+    exits = tuple(trade for trade in trades if trade.intent is SimulatedOrderIntent.EXIT)
+    unsupported = tuple(
+        trade
+        for trade in trades
+        if trade.intent
+        not in (SimulatedOrderIntent.ENTRY, SimulatedOrderIntent.EXIT)
+    )
+    if unsupported:
+        return "unsupported trade intent"
+    if not entries:
+        return "missing entry trade"
+    if len(entries) > 1:
+        return "duplicate entry trade"
+    if len(exits) > 1:
+        return "duplicate exit trade"
+    if not exits:
+        return None
+
+    entry = entries[0]
+    exit_trade = exits[0]
+    if exit_trade.fill_bar_ts < entry.fill_bar_ts:
+        return "exit before entry"
+    if not _same_research_trade_identity(entry, exit_trade):
+        return "mismatched identity"
+    if exit_trade.fill_qty != entry.fill_qty:
+        return "mismatched quantity"
+    return None
+
+
+def _same_research_trade_identity(
+    entry: SimulatedTrade,
+    exit_trade: SimulatedTrade,
+) -> bool:
+    return (
+        entry.symbol == exit_trade.symbol
+        and entry.instrument_id == exit_trade.instrument_id
+        and entry.trade_instrument_id == exit_trade.trade_instrument_id
+        and entry.exchange == exit_trade.exchange
+        and entry.trading_day == exit_trade.trading_day
+        and entry.resolver_lineage == exit_trade.resolver_lineage
+    )
 
 
 def _research_portfolio(

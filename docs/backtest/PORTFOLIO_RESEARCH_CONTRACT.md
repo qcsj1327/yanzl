@@ -364,3 +364,63 @@ ledger、OMS truth、Accounting fact、broker execution 或 exchange execution�
 
 C.3 不实现 realized PnL、cash return、position close、equity curve update、
 schema、DB write、broker/live/network 或 execution target enablement。
+
+## Stage C.4 Realized PnL + Cash Return Skeleton Status
+
+基线：`stage-c3-exit-fill-skeleton / 81b6f00`。
+
+Stage C.4 在 research-only Backtest 内实现单 ENTRY trade + 单 EXIT trade
+的 long-only close lifecycle。该阶段只支持一笔 long entry 和一笔 matching
+exit；不支持 short、partial close、commission、slippage、margin、leverage
+或多 position 配对。
+
+Trade pairing rules：
+
+- 必须有且只有一笔 `SimulatedTrade(intent=ENTRY)`。
+- close lifecycle 必须有且只有一笔 `SimulatedTrade(intent=EXIT)`。
+- ENTRY 与 EXIT 必须匹配 `symbol`、`instrument_id`、
+  `trade_instrument_id`、exchange、`trading_day` 和 resolver lineage。
+- ENTRY 与 EXIT quantity 必须相同。
+- EXIT 不得早于 ENTRY。
+- duplicate entry、duplicate exit、identity mismatch、quantity mismatch 和
+  exit-before-entry 必须 fail closed。
+
+Long-only realized PnL：
+
+```text
+realized_pnl = (exit_price - entry_price) * quantity
+```
+
+Research cash flow：
+
+```text
+entry: cash -= entry_price * quantity
+exit:  cash += exit_price * quantity
+
+final_cash = initial_cash - entry_notional + exit_notional
+```
+
+EXIT 后的研究持仓必须变为 `FLAT`、quantity 为 `0`、market value 为 `0`。
+close 后的最后 PnL point 必须记录 realized PnL，unrealized PnL 为 `0`，
+equity 等于 final cash。
+
+`ExitReferenceStrategy + NextBarOpenFillModel` 的 C.4 验收行为：
+
+- bar 1 产生 `BUY` decision。
+- BUY 在 bar 2 open 生成 ENTRY trade。
+- bar 2 产生 `CLOSE` decision。
+- CLOSE 在 bar 3 open 生成 EXIT trade。
+- EXIT 后不再处理额外 close lifecycle。
+- 最终 cash 反映 entry notional 扣减和 exit notional 返还。
+- 最终 equity 等于最终 cash。
+
+Stage C.4 输出的 `ResearchPosition`、`ResearchPnLPoint`、
+`ResearchPortfolio`、simulated orders 和 simulated trades 仍然只是 Backtest
+research / observability output。realized PnL 不是 production accounting
+truth；cash return 不是 broker balance、account balance、settlement、
+margin 或 accounting ledger fact。
+
+Stage C.4 不得 write DB、schema、Alembic、OMS、Trade ledger、production
+Position、Accounting、Margin、Settlement 或 broker state；不得 connect
+broker、CTP、SimNow、live feed 或 network；不得 enable
+`ExecutionTarget.PAPER`、`ExecutionTarget.SIM` 或 `ExecutionTarget.LIVE`。

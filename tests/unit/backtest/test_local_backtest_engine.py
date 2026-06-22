@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import date
+from dataclasses import replace
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import cast
 
@@ -20,6 +21,7 @@ from futures_mvp.modules.backtest import (
     SimulatedOrderStatus,
     SimulatedTrade,
 )
+from futures_mvp.modules.backtest import engine as engine_module
 from futures_mvp.modules.market_data.contracts import (
     BarTimeframe,
     HistoricalBarsResult,
@@ -67,6 +69,69 @@ def _request(
         resolver=actual_resolver,
         data_provider=actual_provider,
     )
+
+
+def _trade(
+    *,
+    intent: SimulatedOrderIntent,
+    fill_price: Decimal = Decimal("3201"),
+    fill_qty: Decimal = Decimal("1"),
+    symbol: str = "ao",
+    trade_instrument_id: str = "ao2609",
+    minute: int = 1,
+) -> SimulatedTrade:
+    resolver = InstrumentResolver()
+    trading_day = date(2026, 6, 12)
+    context_result = resolver.resolve(symbol, trading_day)
+    lineage_result = engine_module.build_resolver_consumer_context(context_result)
+    assert lineage_result.context is not None
+    return SimulatedTrade(
+        trade_id=f"{intent.value}-{fill_price}-{trade_instrument_id}",
+        order_id=f"order-{intent.value}",
+        fill_price=fill_price,
+        fill_qty=fill_qty,
+        fill_bar_ts=datetime(2026, 6, 12, 9, minute, tzinfo=UTC),
+        symbol=symbol,
+        instrument_id=lineage_result.context.identity.instrument_id,
+        trade_instrument_id=trade_instrument_id,
+        exchange=lineage_result.context.identity.exchange,
+        trading_day=lineage_result.context.identity.trading_day,
+        resolver_source=lineage_result.context.lineage.resolver_source,
+        resolver_confidence=lineage_result.context.lineage.resolver_confidence,
+        resolver_lineage=lineage_result.context,
+        intent=intent,
+    )
+
+
+def _down_close_provider(
+    resolver: InstrumentResolver,
+) -> StaticHistoricalDataFixtureProvider:
+    class DownCloseProvider(StaticHistoricalDataFixtureProvider):
+        def get_bars(
+            self,
+            symbol: str,
+            trading_day: date,
+            timeframe: object,
+        ) -> HistoricalBarsResult:
+            result = super().get_bars(symbol, trading_day, timeframe)
+            bars = (
+                result.bars[0],
+                result.bars[1],
+                replace(
+                    result.bars[2],
+                    open=Decimal("3199"),
+                    high=Decimal("3200"),
+                    low=Decimal("3198"),
+                    close=Decimal("3199"),
+                ),
+            )
+            return HistoricalBarsResult(
+                status=result.status,
+                bars=bars,
+                diagnostics=result.diagnostics,
+            )
+
+    return DownCloseProvider(resolver)
 
 
 def test_valid_request_returns_completed_with_flat_noop_outputs() -> None:
@@ -381,6 +446,144 @@ def test_buy_and_hold_with_next_bar_open_fill_marks_research_equity_to_close() -
     )
     assert result.research_portfolio.total_equity == result.equity_curve[-1].equity
     assert "research/observability only" in result.research_portfolio.diagnostics[-1]
+
+
+def test_exit_reference_with_next_bar_open_fill_records_profitable_close() -> None:
+    resolver = InstrumentResolver()
+    data_provider = StaticHistoricalDataFixtureProvider(resolver)
+    result = LocalBacktestEngine(
+        strategy=ExitReferenceStrategy(),
+        fill_model=NextBarOpenFillModel(),
+    ).run(_request(resolver=resolver, data_provider=data_provider))
+    bars = data_provider.get_bars("ao", date(2026, 6, 12), BarTimeframe.M1).bars
+
+    assert result.status is BacktestStatus.COMPLETED
+    assert tuple(decision.decision for decision in result.strategy_decisions) == (
+        StrategyDecisionType.BUY,
+        StrategyDecisionType.CLOSE,
+    )
+    assert tuple(order.intent for order in result.simulated_orders) == (
+        SimulatedOrderIntent.ENTRY,
+        SimulatedOrderIntent.EXIT,
+    )
+    assert tuple(trade.intent for trade in result.simulated_trades) == (
+        SimulatedOrderIntent.ENTRY,
+        SimulatedOrderIntent.EXIT,
+    )
+    entry_trade, exit_trade = result.simulated_trades
+    assert entry_trade.fill_price == bars[1].open
+    assert exit_trade.fill_price == bars[2].open
+
+    entry_notional = bars[1].open * Decimal("1")
+    exit_notional = bars[2].open * Decimal("1")
+    final_cash = Decimal("100000") - entry_notional + exit_notional
+    realized_pnl = (bars[2].open - bars[1].open) * Decimal("1")
+
+    assert realized_pnl == Decimal("1")
+    assert len(result.research_positions) == 1
+    final_position = result.research_positions[0]
+    assert final_position.side == "FLAT"
+    assert final_position.quantity == Decimal("0")
+    assert final_position.market_value == Decimal("0")
+    assert tuple(point.realized_pnl for point in result.research_pnl_curve) == (
+        Decimal("0"),
+        Decimal("0"),
+        realized_pnl,
+    )
+    assert result.research_pnl_curve[-1].cash == final_cash
+    assert result.research_pnl_curve[-1].unrealized_pnl == Decimal("0")
+    assert result.research_pnl_curve[-1].market_value == Decimal("0")
+    assert result.research_pnl_curve[-1].equity == final_cash
+    assert result.equity_curve[-1].cash == final_cash
+    assert result.equity_curve[-1].equity == final_cash
+    assert result.research_portfolio is not None
+    assert result.research_portfolio.cash == final_cash
+    assert result.research_portfolio.total_market_value == Decimal("0")
+    assert result.research_portfolio.total_equity == final_cash
+
+
+def test_exit_reference_with_next_bar_open_fill_records_losing_close() -> None:
+    resolver = InstrumentResolver()
+    data_provider = _down_close_provider(resolver)
+    result = LocalBacktestEngine(
+        strategy=ExitReferenceStrategy(),
+        fill_model=NextBarOpenFillModel(),
+    ).run(_request(resolver=resolver, data_provider=data_provider))
+
+    assert result.status is BacktestStatus.COMPLETED
+    entry_trade, exit_trade = result.simulated_trades
+    realized_pnl = (exit_trade.fill_price - entry_trade.fill_price) * Decimal("1")
+    final_cash = (
+        Decimal("100000")
+        - entry_trade.fill_price * entry_trade.fill_qty
+        + exit_trade.fill_price * exit_trade.fill_qty
+    )
+
+    assert realized_pnl == Decimal("-2")
+    assert result.research_pnl_curve[-1].realized_pnl == Decimal("-2")
+    assert result.research_pnl_curve[-1].cash == final_cash
+    assert result.research_pnl_curve[-1].equity == final_cash
+    assert result.research_pnl_curve[-1].unrealized_pnl == Decimal("0")
+    assert result.research_positions[0].side == "FLAT"
+    assert result.research_positions[0].quantity == Decimal("0")
+
+
+def test_research_trade_pair_mismatched_identity_fails_closed() -> None:
+    entry = _trade(intent=SimulatedOrderIntent.ENTRY, minute=1)
+    exit_trade = _trade(
+        intent=SimulatedOrderIntent.EXIT,
+        fill_price=Decimal("3202"),
+        trade_instrument_id="ao9998",
+        minute=2,
+    )
+
+    result = engine_module._validate_long_only_trade_pair((entry, exit_trade))
+
+    assert result == "mismatched identity"
+
+
+def test_research_trade_pair_mismatched_quantity_fails_closed() -> None:
+    entry = _trade(intent=SimulatedOrderIntent.ENTRY, minute=1)
+    exit_trade = _trade(
+        intent=SimulatedOrderIntent.EXIT,
+        fill_price=Decimal("3202"),
+        fill_qty=Decimal("2"),
+        minute=2,
+    )
+
+    result = engine_module._validate_long_only_trade_pair((entry, exit_trade))
+
+    assert result == "mismatched quantity"
+
+
+def test_research_trade_pair_duplicate_entry_fails_closed() -> None:
+    first = _trade(intent=SimulatedOrderIntent.ENTRY, minute=1)
+    second = _trade(intent=SimulatedOrderIntent.ENTRY, fill_price=Decimal("3202"), minute=2)
+
+    result = engine_module._validate_long_only_trade_pair((first, second))
+
+    assert result == "duplicate entry trade"
+
+
+def test_research_trade_pair_duplicate_exit_fails_closed() -> None:
+    entry = _trade(intent=SimulatedOrderIntent.ENTRY, minute=1)
+    first_exit = _trade(intent=SimulatedOrderIntent.EXIT, fill_price=Decimal("3202"), minute=2)
+    second_exit = _trade(intent=SimulatedOrderIntent.EXIT, fill_price=Decimal("3203"), minute=3)
+
+    result = engine_module._validate_long_only_trade_pair(
+        (entry, first_exit, second_exit)
+    )
+
+    assert result == "duplicate exit trade"
+
+
+def test_research_trade_pair_exit_before_entry_fails_closed() -> None:
+    entry = _trade(intent=SimulatedOrderIntent.ENTRY, minute=2)
+    exit_trade = _trade(intent=SimulatedOrderIntent.EXIT, fill_price=Decimal("3202"), minute=1)
+
+    result = engine_module._validate_long_only_trade_pair((exit_trade, entry))
+
+    assert result == "exit before entry"
 
 
 def test_research_portfolio_id_is_deterministic_for_filled_backtest() -> None:

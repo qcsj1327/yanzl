@@ -1377,3 +1377,43 @@ Same-bar fill is forbidden; no next bar and identity mismatch return no trade.
 ENTRY and EXIT trade diagnostics must be distinct and research-only. C.3 does
 not implement realized PnL, cash return, position close, equity update, schema,
 DB writes, broker/live/network integration or execution target enablement.
+
+## Stage C.4 Realized PnL + Cash Return Skeleton Status
+
+基线：`stage-c3-exit-fill-skeleton / 81b6f00`。
+
+Stage C.4 implements the research-only long close accounting skeleton described
+in `docs/backtest/PORTFOLIO_RESEARCH_CONTRACT.md`.
+
+Supported lifecycle is deliberately narrow:
+
+```text
+one ENTRY trade -> one matching EXIT trade -> FLAT
+```
+
+Matching requires the same `symbol`, `instrument_id`, `trade_instrument_id`,
+exchange, `trading_day`, resolver lineage and quantity. Duplicate entry,
+duplicate exit, mismatched identity, mismatched quantity and exit-before-entry
+fail closed.
+
+Long-only realized PnL and research cash flow are:
+
+```text
+realized_pnl = (exit_price - entry_price) * quantity
+entry: cash -= entry_price * quantity
+exit:  cash += exit_price * quantity
+```
+
+After close, the final research position is `FLAT` with quantity `0` and market
+value `0`; final unrealized PnL is `0`; final equity equals final cash.
+
+`ExitReferenceStrategy + NextBarOpenFillModel` is accepted for the C.4 reference
+path: bar 1 BUY, bar 2 CLOSE decision, close fills at bar 3 open, producing one
+ENTRY trade and one EXIT trade.
+
+All C.4 outputs remain Backtest research / observability artifacts only.
+Realized PnL is not Accounting truth and cash return is not account balance,
+broker balance, settlement, margin or ledger truth. C.4 does not write schema,
+Alembic, DB, OMS, Trade, Position or Accounting state; does not connect broker,
+CTP, SimNow, live feed or network; and does not enable PAPER, SIM or LIVE
+execution targets.
