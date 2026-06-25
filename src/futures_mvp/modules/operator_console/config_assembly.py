@@ -43,6 +43,7 @@ class ConsoleDryRunConfig:
     exchange: str = ""
     resolver_resolution: InstrumentResolution | None = None
     market_data_source: str = STATIC_FIXTURE_DATA_SOURCE
+    read_only_adapter_configured: bool = False
     quantity: str = ""
     price: str = ""
     max_order_size: str = ""
@@ -173,12 +174,13 @@ def validate_config(config: ConsoleDryRunConfig) -> ConfigValidationResult:
             missing_fields=("target",),
         )
     if config.market_data_source == READ_ONLY_ADAPTER_DATA_SOURCE:
-        return ConfigValidationResult(
-            blocked=True,
-            reason="只读行情 Adapter 尚未配置",
-            missing_fields=("market_data_source",),
-        )
-    if config.market_data_source != STATIC_FIXTURE_DATA_SOURCE:
+        if not config.read_only_adapter_configured:
+            return ConfigValidationResult(
+                blocked=True,
+                reason="只读行情适配器未配置，不会访问网络",
+                missing_fields=("market_data_source",),
+            )
+    elif config.market_data_source != STATIC_FIXTURE_DATA_SOURCE:
         return ConfigValidationResult(
             blocked=True,
             reason="未知行情数据源",
@@ -377,6 +379,7 @@ def _config_with_resolution(
             exchange=config.exchange,
             resolver_resolution=resolution,
             market_data_source=config.market_data_source,
+            read_only_adapter_configured=config.read_only_adapter_configured,
             quantity=config.quantity,
             price=config.price,
             max_order_size=config.max_order_size,
@@ -396,6 +399,7 @@ def _config_with_resolution(
         exchange=resolution.exchange or "",
         resolver_resolution=resolution,
         market_data_source=config.market_data_source,
+        read_only_adapter_configured=config.read_only_adapter_configured,
         quantity=config.quantity,
         price=config.price,
         max_order_size=config.max_order_size,

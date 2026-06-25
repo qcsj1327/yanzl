@@ -16,7 +16,9 @@ def read_only_diagnostics_placeholder() -> DiagnosticViewModel:
         ),
         market_data=(
             ("selected_source", "static_fixture"),
-            ("read_only_adapter_placeholder", "BLOCKED"),
+            ("read_only_adapter", "已阻断"),
+            ("configuration", "未配置"),
+            ("network", "不会访问网络"),
         ),
         research=(("source_of_truth", "research only"),),
         paper=(("PaperResearchRuntime", "READY"),),

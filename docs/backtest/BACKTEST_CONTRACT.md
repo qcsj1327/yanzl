@@ -218,6 +218,36 @@ V.2 may implement a local deterministic Backtest engine skeleton using only：
 - standardized `HistoricalBar`, `HistoricalTick` and `HistoricalQuote`。
 - in-memory simulated result objects。
 
+## 真实行情回测数据源
+
+当前 `BacktestRequest.data_source` 支持：
+
+- `static_fixture`。
+- `real_market_data`。
+
+默认仍为 `static_fixture`，现有静态样例路径必须保持兼容。
+
+`real_market_data` 规则：
+
+- 必须显式提供已配置的只读行情数据提供者。
+- 必须使用注入了同一只读适配器的 `InstrumentResolver`。
+- 未配置数据提供者时，回测返回 `BacktestStatus.BLOCKED`。
+- 解析器未返回 `RESOLVED` 时，回测返回 `BLOCKED`。
+- 行情状态不是 `OK` 或 K 线为空时，真实行情回测返回 `BLOCKED`。
+- 不自动降级到 `static_fixture`。
+- 不猜测合约，不补 K 线，不绕过解析器身份。
+
+安全边界：
+
+- 回测仍是研究输出。
+- 不写数据库。
+- 不写 OMS、Trade、Position、Accounting、Margin、Settlement。
+- 不提交订单。
+- 不连接 Broker、CTP、SimNow。
+- 不启用 `ExecutionTarget.PAPER`、`ExecutionTarget.SIM`、`ExecutionTarget.LIVE`。
+
+Paper 读取真实行情的路径必须先经过回测和解析器身份。Paper 输出仍是 `MOCK` 目标下的研究/诊断对象，不是真实交易事实源。
+
 Default schema decision：no schema.
 
 V.2 must not add live feed, quote API, CTP, SimNow, broker, network, production

@@ -220,6 +220,51 @@ Future historical market data source priority is frozen as：
 The priority order is a future-facing contract only. Stage U.5 does not
 implement any data source, adapter, network access or persistence.
 
+## 只读真实行情适配器
+
+当前实现新增 `real_market_data` 数据源，对应 `ReadOnlyMarketDataAdapter`。该适配器默认关闭，默认数据源仍为 `static_fixture`。
+
+启用规则：
+
+- 未显式配置时，所有真实行情读取返回 `BLOCKED`。
+- 未配置状态必须说明“只读行情适配器未配置”和“不会访问网络”。
+- 只有显式构造 `ReadOnlyMarketDataAdapterConfig(enabled=True)` 并调用读取方法时，才允许尝试通过 AkShare 读取行情。
+- 不读取 Token，不自动初始化第三方连接，不在启动时访问互联网。
+
+接口范围：
+
+- `list_symbols()`。
+- `list_contracts(symbol, trading_day)`。
+- `get_main_contract(symbol, trading_day)`。
+- `get_trade_contract(symbol, trading_day)`。
+- `get_bars(identity, timeframe, start, end)`。
+- `get_latest_quote(identity)`。
+
+`list_symbols()` 和 `list_contracts()` 在未配置、配置错误、导入失败或接口异常时返回空集合。空集合只表示失败关闭或未配置状态，不代表真实市场没有品种或没有合约。需要可见诊断时，应同时查看读取方法返回的中文诊断、控制台行情诊断和解析器诊断。
+
+失败关闭规则：
+
+- 网络错误、接口错误、配置错误、数据为空、字段缺失、返回异常、超时配置无效，统一返回 `BLOCKED` 或空合约列表。
+- 不自动降级到 `static_fixture`。
+- 不猜测交易合约。
+- 不补数据。
+
+身份边界：
+
+- 适配器只提供标准化合约、行情、K 线。
+- `InstrumentResolver` 仍是下游身份唯一来源。
+- AkShare 原始字段和原始载荷不得成为身份事实源。
+- 下游必须消费解析器输出的 `instrument_id`、`trade_instrument_id`、`exchange` 和来源链路。
+
+安全边界：
+
+- 只读。
+- 不写数据库。
+- 不写 OMS、Trade、Position、Accounting、Margin、Settlement。
+- 不连接 Broker、CTP、SimNow。
+- 不提交订单。
+- 不启用 `ExecutionTarget.PAPER`、`ExecutionTarget.SIM`、`ExecutionTarget.LIVE`。
+
 Source rules：
 
 - local fixture means deterministic repository-local or test-local fixture data。

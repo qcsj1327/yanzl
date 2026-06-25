@@ -14,6 +14,18 @@ Stage M Runtime / Infrastructure contract freeze、Stage O Operations / Safety /
 
 Operations 文档不得绕过该契约定义 runtime 行为。Runtime 只编排应用服务，不拥有或修改 Position、Margin、PnL、Settlement 或 OMS state。
 
+只读真实行情适配器当前运行边界：
+
+- 默认数据源仍为 `static_fixture`。
+- `real_market_data` 默认关闭。
+- 未配置只读适配器时，行情页面、解析器和回测必须显示或返回 `BLOCKED`。
+- 未配置状态必须说明“未配置”和“不会访问网络”。
+- 显式配置后，只允许通过 AkShare 读取行情、合约、最近行情和 K 线。
+- 真实行情数据只能进入解析器、研究回测和 Paper 研究/诊断链路。
+- 不写数据库，不写 OMS / Trade / Position / Accounting / Margin / Settlement。
+- 不启用 `ExecutionTarget.PAPER`、`ExecutionTarget.SIM`、`ExecutionTarget.LIVE`。
+- 不连接 Broker、CTP、SimNow，不提交真实订单。
+
 Stage R.1 Operator Console 是本地 Streamlit-first 操作台契约冻结：
 
 - 面向非代码 / 非 CLI 用户，用于 Paper/SIM 运行、状态查看、安全控制、结果检查和只读诊断。

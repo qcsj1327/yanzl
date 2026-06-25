@@ -100,10 +100,15 @@ class MarketDataViewModel:
     selected_source: str
     static_fixture_status: str
     read_only_adapter_status: str
+    connection_status: str
+    configuration_status: str
     resolver_source: str
     blocked_reason: str | None
     supported_symbols: tuple[str, ...]
     diagnostics: tuple[tuple[str, str], ...]
+    latest_quote: tuple[tuple[str, str], ...] = ()
+    latest_bars: tuple[tuple[str, str], ...] = ()
+    updated_at: str = "未更新"
 
 
 @dataclass(frozen=True)
@@ -183,8 +188,8 @@ class ConfigurationViewModel:
         )
     )
     market_data_sources: tuple[tuple[str, str], ...] = (
-        ("Static Fixture", "enabled"),
-        ("Read-only Adapter Placeholder", "blocked/not configured"),
+        ("静态样例", "可用"),
+        ("只读适配器", "已阻断/未配置"),
     )
     dry_run_required: tuple[tuple[str, str], ...] = (
         ("account_id", "未配置"),
@@ -396,16 +401,21 @@ def default_console_view_model() -> OperatorConsoleViewModel:
         ),
         market_data=MarketDataViewModel(
             selected_source=STATIC_FIXTURE_DATA_SOURCE,
-            static_fixture_status="READY",
-            read_only_adapter_status="BLOCKED",
+            static_fixture_status="可用",
+            read_only_adapter_status="已阻断",
+            connection_status="未连接",
+            configuration_status="未配置",
             resolver_source="static_fixture",
-            blocked_reason="只读行情 Adapter 尚未配置",
+            blocked_reason="只读行情适配器未配置，不会访问网络",
             supported_symbols=("ao", "rb", "ag", "cu"),
+            latest_quote=(("状态", "无真实行情"),),
+            latest_bars=(("状态", "无真实 K 线"),),
+            updated_at="未更新",
             diagnostics=(
-                ("source", "static_fixture"),
-                ("network", "disabled"),
-                ("broker", "disabled"),
-                ("resolver", "static fixture only"),
+                ("数据源", "static_fixture"),
+                ("网络", "不会访问网络"),
+                ("Broker", "禁用"),
+                ("解析器", "静态夹具"),
             ),
         ),
         paper=SessionPageViewModel(
@@ -487,8 +497,8 @@ def default_console_view_model() -> OperatorConsoleViewModel:
             ),
             market_data=(
                 ("selected_source", STATIC_FIXTURE_DATA_SOURCE),
-                ("read_only_adapter_placeholder", "BLOCKED"),
-                ("network", "disabled"),
+                ("read_only_adapter", "已阻断"),
+                ("network", "不会访问网络"),
             ),
             research=(
                 ("backtest_status", "COMPLETED"),

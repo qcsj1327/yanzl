@@ -21,6 +21,14 @@ Console V1 固定边界：
 
 `read_only_adapter_placeholder` 只作为可见但阻断的数据源占位。选择它时 Console 必须显示 `BLOCKED`，不得生成 command，不得访问网络。
 
+真实行情阶段之后，控制台中的真实行情数据源名称为 `real_market_data`。默认仍未配置，页面必须显示：
+
+- 已阻断。
+- 未配置。
+- 不会访问网络。
+- 不会连接 Broker、CTP、SimNow。
+- 不会生成非模拟命令。
+
 ## 页面
 
 ### Dashboard
@@ -82,18 +90,21 @@ Console V1 固定边界：
 
 展示行情源与 resolver 状态：
 
-- selected data source。
-- static fixture status。
-- read-only adapter placeholder status。
-- resolver source。
-- blocked reason。
-- supported symbols：`ao`、`rb`、`ag`、`cu`。
-- source diagnostics。
+- 数据源。
+- 连接状态。
+- 配置状态。
+- 最近行情。
+- 最近 K 线。
+- 更新时间。
+- 解析器来源。
+- 阻断原因。
+- 支持品种：`ao`、`rb`、`ag`、`cu`。
+- 诊断信息。
 
 数据源选择：
 
 - `static_fixture`：允许本地 preview / dry-run。
-- `read_only_adapter_placeholder`：固定 `BLOCKED`，不生成 command，不执行 network。
+- `real_market_data`：未配置时固定 `BLOCKED`，不生成命令，不访问网络；显式配置后只读读取行情，仍不提交订单。
 
 ### Diagnostics
 

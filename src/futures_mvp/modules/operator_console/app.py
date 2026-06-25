@@ -522,6 +522,7 @@ def _render_market_data(
         exchange=current.exchange,
         resolver_resolution=current.resolver_resolution,
         market_data_source=source,
+        read_only_adapter_configured=current.read_only_adapter_configured,
         quantity=current.quantity,
         price=current.price,
         max_order_size=current.max_order_size,
@@ -552,7 +553,28 @@ def _render_market_data(
         (labels.status_label(market_data.read_only_adapter_status),),
     )
     _render_card(top[3], labels.section_label("resolver_source"), (market_data.resolver_source,))
-    bottom = ui.columns(3)
+    middle = ui.columns(4)
+    _render_card(
+        middle[0],
+        labels.section_label("connection_status"),
+        (labels.status_label(market_data.connection_status),),
+    )
+    _render_card(
+        middle[1],
+        labels.section_label("configuration_status"),
+        (labels.status_label(market_data.configuration_status),),
+    )
+    _render_card(
+        middle[2],
+        labels.section_label("latest_quote"),
+        market_data.latest_quote,
+    )
+    _render_card(
+        middle[3],
+        labels.section_label("updated_at"),
+        (market_data.updated_at,),
+    )
+    bottom = ui.columns(4)
     blocked_reason = assembly.validation.reason if assembly.validation.blocked else "无"
     _render_card(
         bottom[0],
@@ -564,7 +586,8 @@ def _render_market_data(
         labels.section_label("supported_symbols"),
         (", ".join(market_data.supported_symbols),),
     )
-    _render_card(bottom[2], labels.section_label("source_diagnostics"), market_data.diagnostics)
+    _render_card(bottom[2], labels.section_label("latest_bars"), market_data.latest_bars)
+    _render_card(bottom[3], labels.section_label("source_diagnostics"), market_data.diagnostics)
     preview_col = ui.columns(1)[0]
     preview_col.subheader(labels.section_label("typed_command_preview"))
     if assembly.preview is None:

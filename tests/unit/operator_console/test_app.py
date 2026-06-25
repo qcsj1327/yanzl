@@ -217,7 +217,7 @@ def test_market_data_placeholder_blocks_without_command() -> None:
     rendered = _rendered(ui)
     assert isinstance(config, ConsoleDryRunConfig)
     assert config.market_data_source == READ_ONLY_ADAPTER_DATA_SOURCE
-    assert "只读行情 Adapter 尚未配置，已阻断" in rendered
+    assert "只读行情适配器未配置，不会访问网络" in rendered
     assert "当前配置还不能生成 typed dry-run command preview。" in rendered
     assert "配置可用于预演。" not in rendered
 

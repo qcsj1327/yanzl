@@ -1,3 +1,4 @@
+from datetime import date
 from decimal import Decimal
 
 from futures_mvp.domain.enums import ExecutionTarget
@@ -53,10 +54,39 @@ def test_read_only_adapter_placeholder_blocks_preview_without_command() -> None:
     )
 
     assert assembly.validation.blocked is True
-    assert assembly.validation.reason == "只读行情 Adapter 尚未配置"
+    assert assembly.validation.reason == "只读行情适配器未配置，不会访问网络"
     assert assembly.validation.missing_fields == ("market_data_source",)
     assert assembly.preview is None
     assert assembly.command is None
+
+
+def test_configured_read_only_adapter_preview_still_uses_mock_command() -> None:
+    resolution = InstrumentResolution(
+        status=InstrumentResolveStatus.RESOLVED,
+        symbol="ao",
+        trading_day=date(2026, 6, 12),
+        instrument_id="ao9999",
+        trade_instrument_id="ao2609",
+        exchange="SHFE",
+        source=READ_ONLY_ADAPTER_DATA_SOURCE,
+        confidence="read_only_adapter",
+        effective_from=date(2026, 6, 12),
+        effective_to=date(2026, 6, 12),
+    )
+
+    assembly = assemble_config(
+        _valid_config(
+            market_data_source=READ_ONLY_ADAPTER_DATA_SOURCE,
+            read_only_adapter_configured=True,
+            resolver_resolution=resolution,
+        )
+    )
+
+    assert assembly.validation.blocked is False
+    assert assembly.command is not None
+    assert assembly.command.execution_target is ExecutionTarget.MOCK
+    assert assembly.preview is not None
+    assert assembly.preview.market_data_source == READ_ONLY_ADAPTER_DATA_SOURCE
 
 
 def test_missing_fields_are_blocked_with_chinese_reason_and_list() -> None:

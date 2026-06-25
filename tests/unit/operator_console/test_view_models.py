@@ -43,7 +43,10 @@ def test_default_view_model_renders_research_portfolio_and_market_data() -> None
     assert model.portfolio.cash == "96420"
     assert dict(model.portfolio.position_weights)["ao"] == "0.0050"
     assert model.market_data.selected_source == "static_fixture"
-    assert model.market_data.read_only_adapter_status == "BLOCKED"
+    assert model.market_data.read_only_adapter_status == "已阻断"
+    assert model.market_data.configuration_status == "未配置"
+    assert model.market_data.connection_status == "未连接"
+    assert model.market_data.blocked_reason == "只读行情适配器未配置，不会访问网络"
     assert model.market_data.supported_symbols == ("ao", "rb", "ag", "cu")
     assert dict(model.paper_page.consistency)["all_match"] == "True"
 
@@ -70,11 +73,8 @@ def test_default_config_view_model_is_unconfigured_and_mock_only() -> None:
     assert model.configuration.dry_run_config.target == "MOCK only"
     assert model.configuration.dry_run_config.apply_requested is False
     assert model.configuration.validation.blocked is True
-    assert ("Static Fixture", "enabled") in model.configuration.market_data_sources
-    assert (
-        "Read-only Adapter Placeholder",
-        "blocked/not configured",
-    ) in model.configuration.market_data_sources
+    assert ("静态样例", "可用") in model.configuration.market_data_sources
+    assert ("只读适配器", "已阻断/未配置") in model.configuration.market_data_sources
     assert "instrument_id" not in dict(model.configuration.dry_run_required)
     assert "trade_instrument_id" not in dict(model.configuration.dry_run_required)
     assert "resolver_status" in dict(model.configuration.dry_run_required)

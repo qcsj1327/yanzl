@@ -106,29 +106,28 @@ class LocalBacktestEngine:
                 BacktestStatus.INVALID_INPUT,
                 messages=("resolver is required",),
             )
-        if data_source == _READ_ONLY_ADAPTER_SOURCE:
-            return BacktestResult(
-                status=BacktestStatus.BLOCKED,
-                diagnostics=BacktestDiagnostics(
-                    messages=(
-                        "read-only market data adapter not configured",
-                        f"data_source={_READ_ONLY_ADAPTER_SOURCE}",
-                        "Phase L placeholder only: no network, broker, CTP, SimNow, "
-                        "live trading, live account, order, or execution target",
-                    ),
-                    data_statuses=(f"data_source:{_READ_ONLY_ADAPTER_SOURCE}:BLOCKED",),
-                ),
-                data_source_summary=BacktestDataSummary(
-                    source=_READ_ONLY_ADAPTER_SOURCE,
-                    timeframe=request.timeframe.strip().lower(),
-                    start_trading_day=request.start_trading_day,
-                    end_trading_day=request.end_trading_day,
-                    bars_consumed_count=0,
-                    trading_days_consumed=(),
-                    diagnostics_summary="read-only adapter placeholder not configured",
-                ),
-            )
         if data_provider is None:
+            if data_source == _READ_ONLY_ADAPTER_SOURCE:
+                return BacktestResult(
+                    status=BacktestStatus.BLOCKED,
+                    diagnostics=BacktestDiagnostics(
+                        messages=(
+                            "只读行情适配器未配置",
+                            f"data_source={_READ_ONLY_ADAPTER_SOURCE}",
+                            "不会访问网络，不连接 Broker、CTP、SimNow，不启用实盘或执行目标",
+                        ),
+                        data_statuses=(f"data_source:{_READ_ONLY_ADAPTER_SOURCE}:BLOCKED",),
+                    ),
+                    data_source_summary=BacktestDataSummary(
+                        source=_READ_ONLY_ADAPTER_SOURCE,
+                        timeframe=request.timeframe.strip().lower(),
+                        start_trading_day=request.start_trading_day,
+                        end_trading_day=request.end_trading_day,
+                        bars_consumed_count=0,
+                        trading_days_consumed=(),
+                        diagnostics_summary="只读行情适配器未配置",
+                    ),
+                )
             return _result(
                 BacktestStatus.INVALID_INPUT,
                 messages=("data provider is required",),
@@ -192,11 +191,17 @@ class LocalBacktestEngine:
                         )
                     contexts.append(context_result.context)
 
-                    bars_result = data_provider.get_bars(
-                        symbol,
-                        trading_day,
-                        timeframe,
-                    )
+                    if data_source == _READ_ONLY_ADAPTER_SOURCE:
+                        bars_result = data_provider.get_bars(
+                            context_result.context,
+                            timeframe,
+                        )
+                    else:
+                        bars_result = data_provider.get_bars(
+                            symbol,
+                            trading_day,
+                            timeframe,
+                        )
                     data_statuses.append(f"{symbol}:{trading_day}:{bars_result.status.value}")
                     data_diagnostics.extend(bars_result.diagnostics)
                     if bars_result.status is HistoricalDataStatus.INVALID_INPUT:
@@ -1270,10 +1275,21 @@ def _data_gap_result(
     gap_report: tuple[str, ...],
     data_diagnostics: tuple[str, ...],
 ) -> BacktestResult:
+    data_source = _request_data_source(request)
+    status = (
+        BacktestStatus.BLOCKED
+        if data_source == _READ_ONLY_ADAPTER_SOURCE
+        else BacktestStatus.DATA_GAP
+    )
+    message = (
+        "真实行情不可用，回测失败关闭"
+        if status is BacktestStatus.BLOCKED
+        else "missing bars fail closed before strategy evaluation"
+    )
     return BacktestResult(
-        status=BacktestStatus.DATA_GAP,
+        status=status,
         diagnostics=BacktestDiagnostics(
-            messages=("missing bars fail closed before strategy evaluation",),
+            messages=(message,),
             resolver_statuses=resolver_statuses,
             data_statuses=data_statuses,
         ),
@@ -1304,7 +1320,11 @@ def _data_summary(
     diagnostics: tuple[str, ...],
 ) -> BacktestDataSummary:
     return BacktestDataSummary(
-        source=_STATIC_FIXTURE_SOURCE,
+        source=(
+            _READ_ONLY_ADAPTER_SOURCE
+            if _request_data_source(request) == _READ_ONLY_ADAPTER_SOURCE
+            else _STATIC_FIXTURE_SOURCE
+        ),
         timeframe=request.timeframe.strip().lower(),
         start_trading_day=request.start_trading_day,
         end_trading_day=request.end_trading_day,

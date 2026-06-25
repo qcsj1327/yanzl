@@ -5,6 +5,7 @@ description = "MVP skeleton for a domestic futures quantitative trading system u
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "akshare>=1.18.64",
     "alembic>=1.16.0",
     "psycopg[binary]>=3.2.0",
     "pydantic>=2.11.0",

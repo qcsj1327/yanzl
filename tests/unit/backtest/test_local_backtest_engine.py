@@ -24,6 +24,10 @@ from futures_mvp.modules.backtest import (
     SimulatedTrade,
 )
 from futures_mvp.modules.backtest import engine as engine_module
+from futures_mvp.modules.market_data.adapters import (
+    ReadOnlyMarketDataAdapter,
+    ReadOnlyMarketDataAdapterConfig,
+)
 from futures_mvp.modules.market_data.consumer import build_resolver_consumer_context
 from futures_mvp.modules.market_data.contracts import (
     BarTimeframe,
@@ -63,6 +67,7 @@ def _request(
     allocation_per_symbol: Decimal | None = None,
     commission_model: object | None = None,
     slippage_model: object | None = None,
+    data_source: str = MarketDataSource.STATIC_FIXTURE.value,
 ) -> BacktestRequest:
     actual_resolver = resolver if resolver is not None else InstrumentResolver()
     actual_provider = (
@@ -79,6 +84,7 @@ def _request(
         initial_cash=Decimal("100000"),
         resolver=actual_resolver,
         data_provider=actual_provider,
+        data_source=data_source,
         symbols=symbols,
         quantity_mode=quantity_mode,
         fixed_quantity=fixed_quantity,
@@ -87,6 +93,45 @@ def _request(
         commission_model=commission_model,
         slippage_model=slippage_model,
     )
+
+
+class _FakeBacktestAkShareClient:
+    def futures_display_main_sina(self) -> list[dict[str, object]]:
+        return [{"symbol": "AO0", "exchange": "SHFE"}]
+
+    def match_main_contract(self, symbol: str) -> str:
+        return "AO0"
+
+    def futures_zh_spot(
+        self,
+        symbol: str,
+        market: str = "CF",
+        adjust: str = "0",
+    ) -> list[dict[str, object]]:
+        return [
+            {
+                "symbol": "ao2609",
+                "current_price": "3205",
+                "volume": "10",
+                "hold": "20",
+            }
+        ]
+
+    def futures_zh_minute_sina(self, symbol: str, period: str) -> list[dict[str, object]]:
+        return [
+            {
+                "datetime": "2026-06-12 09:01:00",
+                "open": "3200",
+                "high": "3210",
+                "low": "3190",
+                "close": "3205",
+                "volume": "10",
+                "hold": "20",
+            }
+        ]
+
+    def futures_zh_daily_sina(self, symbol: str) -> list[dict[str, object]]:
+        return self.futures_zh_minute_sina(symbol, "1")
 
 
 def _trade(
@@ -210,8 +255,36 @@ def test_read_only_adapter_data_source_blocks_before_market_data_read() -> None:
     assert blocked.status is BacktestStatus.BLOCKED
     assert blocked.data_source_summary is not None
     assert blocked.data_source_summary.source == MarketDataSource.READ_ONLY_ADAPTER.value
-    assert "read-only market data adapter not configured" in blocked.diagnostics.messages
+    assert "只读行情适配器未配置" in blocked.diagnostics.messages
     assert blocked.bars_consumed_count == 0
+
+
+def test_real_market_data_source_runs_when_adapter_is_configured() -> None:
+    adapter = ReadOnlyMarketDataAdapter(
+        ReadOnlyMarketDataAdapterConfig(enabled=True),
+        client=_FakeBacktestAkShareClient(),
+        now=datetime(2026, 6, 12, 10, 0, tzinfo=UTC),
+    )
+    resolver = InstrumentResolver(
+        data_source=MarketDataSource.READ_ONLY_ADAPTER,
+        adapter=adapter,
+    )
+
+    result = LocalBacktestEngine().run(
+        _request(
+            resolver=resolver,
+            data_provider=adapter,
+            data_source=MarketDataSource.READ_ONLY_ADAPTER.value,
+        )
+    )
+
+    assert result.status is BacktestStatus.COMPLETED
+    assert result.data_source_summary is not None
+    assert result.data_source_summary.source == MarketDataSource.READ_ONLY_ADAPTER.value
+    assert result.bars_consumed_count == 1
+    assert result.resolver_lineage[0].lineage.resolver_source == (
+        MarketDataSource.READ_ONLY_ADAPTER.value
+    )
 
 
 def test_equity_curve_is_deterministic() -> None:

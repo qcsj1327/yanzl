@@ -4,7 +4,7 @@ import re
 from collections.abc import Iterable
 from datetime import date
 
-from futures_mvp.modules.market_data.contracts import MarketDataSource
+from futures_mvp.modules.market_data.contracts import MarketDataAdapter, MarketDataSource
 from futures_mvp.modules.market_data.models import (
     ContractRole,
     InstrumentContract,
@@ -23,9 +23,11 @@ class InstrumentResolver:
         registry: InstrumentRegistry | None = None,
         *,
         data_source: str | MarketDataSource = MarketDataSource.STATIC_FIXTURE,
+        adapter: MarketDataAdapter | None = None,
     ) -> None:
         self._registry = registry or InstrumentRegistry()
         self._data_source = _normalize_data_source(data_source)
+        self._adapter = adapter
 
     def resolve(self, symbol: str, trading_day: str | date) -> InstrumentResolution:
         normalized_symbol = _normalize_symbol(symbol)
@@ -45,18 +47,7 @@ class InstrumentResolver:
                 diagnostics=("trading_day must be an ISO date YYYY-MM-DD",),
             )
         if self._data_source is MarketDataSource.READ_ONLY_ADAPTER:
-            return InstrumentResolution(
-                status=InstrumentResolveStatus.NOT_FOUND,
-                symbol=normalized_symbol,
-                trading_day=parsed_day,
-                source=self._data_source.value,
-                diagnostics=(
-                    f"source={self._data_source.value}",
-                    "read-only market data adapter not configured",
-                    "resolver does not use adapter raw payload as identity truth",
-                    "no network, broker, CTP, SimNow, live feed, or live trading",
-                ),
-            )
+            return self._resolve_from_read_only_adapter(normalized_symbol, parsed_day)
 
         contracts = self._registry.list_contracts(normalized_symbol)
         if not contracts:
@@ -163,6 +154,102 @@ class InstrumentResolver:
                 ),
                 _metadata_summary(trade_contract),
                 "resolver does not create signal, direction, price or quantity",
+            ),
+        )
+
+    def _resolve_from_read_only_adapter(
+        self,
+        normalized_symbol: str,
+        parsed_day: date,
+    ) -> InstrumentResolution:
+        if self._adapter is None:
+            return InstrumentResolution(
+                status=InstrumentResolveStatus.NOT_FOUND,
+                symbol=normalized_symbol,
+                trading_day=parsed_day,
+                source=self._data_source.value,
+                diagnostics=(
+                    f"数据源={self._data_source.value}",
+                    "只读行情适配器未配置",
+                    "解析器不会把适配器原始载荷作为身份事实源",
+                    "不会访问网络，不连接 Broker、CTP、SimNow，不启用实盘",
+                ),
+            )
+        try:
+            main_contract = self._adapter.get_main_contract(normalized_symbol, parsed_day)
+            trade_contract = self._adapter.get_trade_contract(normalized_symbol, parsed_day)
+        except Exception as exc:
+            return InstrumentResolution(
+                status=InstrumentResolveStatus.NOT_FOUND,
+                symbol=normalized_symbol,
+                trading_day=parsed_day,
+                source=self._data_source.value,
+                diagnostics=(
+                    f"数据源={self._data_source.value}",
+                    f"只读行情适配器异常：{type(exc).__name__}",
+                    "解析器失败关闭",
+                ),
+            )
+        if main_contract is None or trade_contract is None:
+            return InstrumentResolution(
+                status=InstrumentResolveStatus.NOT_FOUND,
+                symbol=normalized_symbol,
+                trading_day=parsed_day,
+                source=self._data_source.value,
+                diagnostics=(
+                    f"数据源={self._data_source.value}",
+                    "只读行情适配器未返回主力合约或交易合约",
+                    "解析器不会猜测合约身份",
+                ),
+            )
+        if main_contract.exchange != trade_contract.exchange:
+            return InstrumentResolution(
+                status=InstrumentResolveStatus.AMBIGUOUS,
+                symbol=normalized_symbol,
+                trading_day=parsed_day,
+                source=self._data_source.value,
+                diagnostics=(
+                    f"数据源={self._data_source.value}",
+                    "主力合约和交易合约交易所不一致",
+                    "解析器失败关闭",
+                ),
+            )
+        metadata_diagnostics = _metadata_invalid_diagnostics(main_contract, trade_contract)
+        if metadata_diagnostics:
+            return InstrumentResolution(
+                status=InstrumentResolveStatus.METADATA_INVALID,
+                symbol=normalized_symbol,
+                trading_day=parsed_day,
+                instrument_id=main_contract.instrument_id,
+                trade_instrument_id=trade_contract.instrument_id,
+                exchange=main_contract.exchange,
+                source=self._data_source.value,
+                effective_from=parsed_day,
+                effective_to=parsed_day,
+                diagnostics=(
+                    f"数据源={self._data_source.value}",
+                    "只读行情适配器合约元数据无效",
+                    *metadata_diagnostics,
+                ),
+            )
+        return InstrumentResolution(
+            status=InstrumentResolveStatus.RESOLVED,
+            symbol=normalized_symbol,
+            trading_day=parsed_day,
+            instrument_id=main_contract.instrument_id,
+            trade_instrument_id=trade_contract.instrument_id,
+            exchange=main_contract.exchange,
+            source=self._data_source.value,
+            confidence="read_only_adapter",
+            effective_from=parsed_day,
+            effective_to=parsed_day,
+            metadata=trade_contract.metadata,
+            diagnostics=(
+                f"数据源={self._data_source.value}",
+                f"选择主力合约={main_contract.instrument_id}",
+                f"选择交易合约={trade_contract.instrument_id}",
+                "解析器不会创建信号、方向、价格或数量",
+                "解析器不会把适配器原始载荷作为身份事实源",
             ),
         )
 

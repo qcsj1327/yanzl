@@ -190,6 +190,33 @@ Stage U.2 may implement：
 Stage U.2 must still not connect live feeds, CTP, SimNow, broker or network
 submission. It must not enable non-`MOCK` execution targets.
 
+## 真实行情解析器集成
+
+`real_market_data` 数据源接入后，`InstrumentResolver` 仍是唯一身份来源。
+
+集成规则：
+
+- 默认解析器仍使用 `static_fixture`。
+- `real_market_data` 必须显式注入 `ReadOnlyMarketDataAdapter`。
+- 未注入适配器时，解析器返回未找到并给出“只读行情适配器未配置”诊断。
+- 注入适配器后，解析器只消费适配器返回的标准化 `InstrumentContract`。
+- AkShare 原始字段、原始行、原始载荷不得成为身份事实源。
+- 主力合约和交易合约交易所不一致时失败关闭。
+- 合约元数据缺失或无效时失败关闭。
+
+下游仍只能使用解析器输出：
+
+- `symbol`。
+- `instrument_id`。
+- `trade_instrument_id`。
+- `exchange`。
+- `trading_day`。
+- `source`。
+- `confidence`。
+- `diagnostics`。
+
+解析器仍不得创建信号、方向、数量、价格、订单或执行目标。
+
 Stage U.1 validation：
 
 ```bash
