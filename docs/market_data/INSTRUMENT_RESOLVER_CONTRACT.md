@@ -217,6 +217,83 @@ submission. It must not enable non-`MOCK` execution targets.
 
 解析器仍不得创建信号、方向、数量、价格、订单或执行目标。
 
+## Phase N 真实行情只读运行时
+
+Phase N 在 `real_market_data` 数据源之上新增本地只读运行时：
+
+- `MarketDataRuntime`。
+- `MarketDataRuntimeConfig`。
+- `MarketDataRuntimeStatus`。
+- `MarketDataRuntimeSnapshot`。
+
+运行时职责仅限于本地读取真实行情、维护内存缓存和输出诊断。它不是
+Broker，不是 CTP，不是 SimNow，不是实盘入口，也不会下单。
+
+默认状态固定为：
+
+- 未启动。
+- 未配置。
+- 不会联网。
+- 不会调用 AkShare。
+
+只有同时满足以下条件时，运行时才允许读取 AkShare：
+
+- `MarketDataRuntimeConfig.enabled=True`。
+- 已配置 `trading_day`。
+- 用户显式触发 `start()` 或 `poll_once(symbols)`。
+
+`poll_once(symbols)` 支持的第一批品种为：
+
+- `ao`。
+- `rb`。
+- `ag`。
+- `cu`。
+
+每个品种必须先通过现有 `InstrumentResolver` 解析身份。运行时只使用
+resolver 输出的 `symbol`、`instrument_id`、`trade_instrument_id`、
+`exchange` 和 `trading_day` 作为身份来源；AkShare 原始字段、原始行和
+原始载荷不得替代 resolver identity。
+
+轮询规则：
+
+- 每个 symbol 独立返回状态和诊断。
+- 单个 symbol 失败不得污染其他 symbol。
+- 网络、API、空数据、异常或 resolver 未解析时返回 `BLOCKED` 或
+  `DEGRADED`。
+- 不自动补数据。
+- 不自动猜合约。
+
+内存缓存只保存最近一次结果：
+
+- `latest_quote`。
+- `latest_bars_summary`。
+- `updated_at`。
+- `source`。
+- `diagnostics`。
+
+缓存不写数据库，不写文件，不持久化为业务事实。
+
+运行时诊断必须包含：
+
+- AkShare 可用性。
+- 配置状态。
+- 是否已发生网络调用。
+- 最近错误。
+- 每个 symbol 状态。
+
+安全边界保持不变：
+
+- 不写 schema。
+- 不执行 Alembic。
+- 不写 DB。
+- 不写 OMS / Trade / Position / Accounting / Margin / Settlement。
+- 不连接 Broker。
+- 不连接 CTP。
+- 不连接 SimNow。
+- 不启用 `ExecutionTarget.PAPER`、`ExecutionTarget.SIM` 或
+  `ExecutionTarget.LIVE`。
+- 不提交真实订单。
+
 Stage U.1 validation：
 
 ```bash

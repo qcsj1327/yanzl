@@ -1,7 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 
+from futures_mvp.modules.market_data.runtime import (
+    MarketDataRuntime,
+    MarketDataRuntimeConfig,
+    MarketDataRuntimeSnapshot,
+    MarketDataRuntimeStatus,
+)
 from futures_mvp.modules.operator_console import app, labels
 from futures_mvp.modules.operator_console.actions import DryRunActionResult
 from futures_mvp.modules.operator_console.app import render_console
@@ -222,6 +229,47 @@ def test_market_data_placeholder_blocks_without_command() -> None:
     assert "配置可用于预演。" not in rendered
 
 
+def test_market_data_page_displays_runtime_status() -> None:
+    ui = FakeUI(selected_label=labels.page_title(OperatorPage.MARKET_DATA.value))
+    runtime = MarketDataRuntime()
+
+    render_console(ui, default_console_view_model(), market_data_runtime=runtime)
+
+    rendered = _rendered(ui)
+    assert "### 运行状态" in rendered
+    assert "未配置" in rendered
+    assert "### 是否已启动" in rendered
+    assert "否" in rendered
+    assert "### 当前数据源" in rendered
+    assert "real_market_data" in rendered
+    assert ("启动行情运行时", False, "market_data_runtime:start") in ui.buttons
+    assert ("停止行情运行时", False, "market_data_runtime:stop") in ui.buttons
+    assert ("单次刷新行情", False, "market_data_runtime:poll_once") in ui.buttons
+
+
+def test_market_data_poll_button_does_not_generate_command() -> None:
+    ui = FakeUI(
+        selected_label=labels.page_title(OperatorPage.MARKET_DATA.value),
+        clicked_labels={"单次刷新行情"},
+    )
+    runtime = MarketDataRuntime(
+        MarketDataRuntimeConfig(enabled=True, trading_day=date(2026, 6, 12)),
+        client=_FakeAkShareClient(),
+    )
+
+    render_console(ui, default_console_view_model(), market_data_runtime=runtime)
+
+    snapshot = ui.session_state["operator_console_market_data_runtime_snapshot"]
+    rendered = _rendered(ui)
+    assert isinstance(snapshot, MarketDataRuntimeSnapshot)
+    assert snapshot.status is MarketDataRuntimeStatus.BLOCKED
+    assert snapshot.network_call_occurred is False
+    assert snapshot.latest_error == "行情运行时未启动，需先启动后刷新"
+    assert "配置可用于预演。" not in rendered
+    assert "typed dry-run command preview" in rendered
+    assert "operator_console_result_history" not in ui.session_state
+
+
 def test_diagnostics_render_safety_boundary() -> None:
     ui = FakeUI(selected_label=labels.page_title(OperatorPage.DIAGNOSTICS.value))
 
@@ -308,3 +356,44 @@ def test_main_lazy_import_renders_streamlit_adapter(monkeypatch) -> None:
     assert fake_streamlit.ui.titles == ["本地操作台"]
     assert fake_streamlit.ui.headers == ["总览"]
     assert fake_streamlit.ui.selectboxes[0][0] == "页面"
+
+
+class _FakeAkShareClient:
+    def futures_display_main_sina(self) -> list[dict[str, object]]:
+        return [{"symbol": "AO0", "exchange": "SHFE"}]
+
+    def match_main_contract(self, symbol: str) -> str:
+        return "AO0"
+
+    def futures_zh_spot(
+        self,
+        symbol: str,
+        market: str = "CF",
+        adjust: str = "0",
+    ) -> list[dict[str, object]]:
+        return [
+            {
+                "symbol": "ao2609",
+                "current_price": "3205",
+                "volume": "10",
+                "hold": "20",
+                "bid_price": "3204",
+                "ask_price": "3206",
+            }
+        ]
+
+    def futures_zh_minute_sina(self, symbol: str, period: str) -> list[dict[str, object]]:
+        return [
+            {
+                "datetime": "2026-06-12 09:01:00",
+                "open": "3200",
+                "high": "3210",
+                "low": "3190",
+                "close": "3205",
+                "volume": "10",
+                "hold": "20",
+            }
+        ]
+
+    def futures_zh_daily_sina(self, symbol: str) -> list[dict[str, object]]:
+        return self.futures_zh_minute_sina(symbol, "1")

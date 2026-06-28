@@ -91,14 +91,19 @@ Console V1 固定边界：
 展示行情源与 resolver 状态：
 
 - 数据源。
+- 运行状态。
+- 是否已启动。
+- 是否已配置。
 - 连接状态。
 - 配置状态。
+- 当前数据源。
 - 最近行情。
 - 最近 K 线。
 - 更新时间。
 - 解析器来源。
 - 阻断原因。
 - 支持品种：`ao`、`rb`、`ag`、`cu`。
+- 每个 symbol 的最近行情状态。
 - 诊断信息。
 
 数据源选择：
@@ -106,12 +111,47 @@ Console V1 固定边界：
 - `static_fixture`：允许本地 preview / dry-run。
 - `real_market_data`：未配置时固定 `BLOCKED`，不生成命令，不访问网络；显式配置后只读读取行情，仍不提交订单。
 
+Phase N 后，Market Data 页面可以显示本地真实行情只读运行时：
+
+- 启动按钮只调用本地 `MarketDataRuntime.start()`。
+- 停止按钮只调用本地 `MarketDataRuntime.stop()`。
+- 单次刷新按钮只调用本地 `MarketDataRuntime.poll_once(symbols)`。
+
+这些按钮只控制行情读取运行时，不生成 typed command，不进入 dry-run /
+apply 路径，不触发交易链路。
+
+默认页面仍是安全关闭状态：
+
+- 未启动。
+- 未配置。
+- 不会联网。
+- 不会调用 AkShare。
+
+只有运行时显式配置 `enabled=True` 且用户触发启动或单次刷新后，才允许读取
+AkShare。读取结果只保存在内存快照中，用于页面展示：
+
+- 最近报价。
+- 最近 K 线摘要。
+- 最近更新时间。
+- 数据源。
+- 错误诊断。
+- 每个 symbol 状态。
+
+Phase N 的 `real_market_data` 是真实行情只读运行时，不是 Broker，不是
+CTP，不是 SimNow，不是实盘，不下单，不写数据库，不启用
+`ExecutionTarget.PAPER` / `ExecutionTarget.SIM` / `ExecutionTarget.LIVE`。
+
 ### Diagnostics
 
 只读展示：
 
 - resolver diagnostics。
 - market data diagnostics。
+- AkShare 可用性。
+- 配置状态。
+- 网络调用是否已发生。
+- 最近错误。
+- 每个 symbol 状态。
 - research diagnostics。
 - paper diagnostics。
 - safety checks。

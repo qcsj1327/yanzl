@@ -16,6 +16,12 @@ from futures_mvp.modules.market_data.models import (
 )
 from futures_mvp.modules.market_data.registry import InstrumentRegistry
 from futures_mvp.modules.market_data.resolver import InstrumentResolver
+from futures_mvp.modules.market_data.runtime import (
+    MarketDataRuntime,
+    MarketDataRuntimeConfig,
+    MarketDataRuntimeSnapshot,
+    MarketDataRuntimeStatus,
+)
 
 __all__ = [
     "ContractRole",
@@ -25,6 +31,10 @@ __all__ = [
     "InstrumentResolution",
     "InstrumentResolveStatus",
     "InstrumentResolver",
+    "MarketDataRuntime",
+    "MarketDataRuntimeConfig",
+    "MarketDataRuntimeSnapshot",
+    "MarketDataRuntimeStatus",
     "ReadOnlyMarketDataAdapter",
     "ResolvedInstrumentIdentity",
     "ResolverConsumerContext",

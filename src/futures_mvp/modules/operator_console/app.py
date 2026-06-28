@@ -6,6 +6,7 @@ from typing import Any, Protocol, cast
 
 from futures_mvp.modules.market_data.models import InstrumentResolveStatus
 from futures_mvp.modules.market_data.resolver import InstrumentResolver
+from futures_mvp.modules.market_data.runtime import MarketDataRuntime
 from futures_mvp.modules.operator_console import labels
 from futures_mvp.modules.operator_console.actions import (
     DryRunActionResult,
@@ -34,6 +35,7 @@ from futures_mvp.modules.operator_console.view_models import (
     ResultHistoryViewModel,
     SessionPageViewModel,
     default_console_view_model,
+    market_data_view_model_from_snapshot,
 )
 
 
@@ -157,6 +159,7 @@ def render_console(
     view_model: OperatorConsoleViewModel | None = None,
     *,
     paper_dry_run: DryRunProvider | None = None,
+    market_data_runtime: MarketDataRuntime | None = None,
 ) -> None:
     model = _model_with_session_state(ui, view_model or default_console_view_model())
     ui.title(labels.section_label("Operator Console"))
@@ -167,6 +170,7 @@ def render_console(
         model,
         selected_page,
         paper_dry_run=paper_dry_run,
+        market_data_runtime=market_data_runtime,
     )
     if _has_result(rendered_model.results):
         ui.divider()
@@ -260,6 +264,7 @@ def _render_page(
     page: OperatorPage,
     *,
     paper_dry_run: DryRunProvider | None,
+    market_data_runtime: MarketDataRuntime | None,
 ) -> OperatorConsoleViewModel:
     if page is OperatorPage.DASHBOARD:
         _render_dashboard(ui, model)
@@ -276,7 +281,11 @@ def _render_page(
         if result is not None:
             return _with_result(ui, model, "PAPER", result)
     elif page is OperatorPage.MARKET_DATA:
-        configuration = _render_market_data(ui, model)
+        configuration = _render_market_data(
+            ui,
+            model,
+            market_data_runtime=market_data_runtime,
+        )
         return _with_configuration(model, configuration)
     elif page is OperatorPage.DIAGNOSTICS:
         _render_diagnostics(ui, model)
@@ -502,7 +511,13 @@ def _render_configuration(
 def _render_market_data(
     ui: OperatorConsoleUI,
     model: OperatorConsoleViewModel,
+    *,
+    market_data_runtime: MarketDataRuntime | None,
 ) -> ConfigurationViewModel:
+    runtime = market_data_runtime or MarketDataRuntime()
+    runtime_snapshot = runtime.health()
+    ui.set_session_value("operator_console_market_data_runtime_snapshot", runtime_snapshot)
+    runtime_market_data = market_data_view_model_from_snapshot(runtime_snapshot)
     current = model.configuration.dry_run_config
     source_options = (STATIC_FIXTURE_DATA_SOURCE, READ_ONLY_ADAPTER_DATA_SOURCE)
     source = ui.selectbox(
@@ -535,7 +550,7 @@ def _render_market_data(
     )
     assembly = assemble_config(config)
     ui.set_session_value("operator_console_dry_run_config", assembly.config)
-    market_data = model.market_data
+    market_data = runtime_market_data
     top = ui.columns(4)
     _render_card(
         top[0],
@@ -553,6 +568,27 @@ def _render_market_data(
         (labels.status_label(market_data.read_only_adapter_status),),
     )
     _render_card(top[3], labels.section_label("resolver_source"), (market_data.resolver_source,))
+    runtime_row = ui.columns(4)
+    _render_card(
+        runtime_row[0],
+        labels.section_label("runtime_status"),
+        (labels.status_label(market_data.runtime_status),),
+    )
+    _render_card(
+        runtime_row[1],
+        labels.section_label("runtime_started"),
+        (market_data.runtime_started,),
+    )
+    _render_card(
+        runtime_row[2],
+        labels.section_label("runtime_configured"),
+        (market_data.runtime_configured,),
+    )
+    _render_card(
+        runtime_row[3],
+        labels.section_label("runtime_source"),
+        (market_data.selected_source,),
+    )
     middle = ui.columns(4)
     _render_card(
         middle[0],
@@ -588,6 +624,49 @@ def _render_market_data(
     )
     _render_card(bottom[2], labels.section_label("latest_bars"), market_data.latest_bars)
     _render_card(bottom[3], labels.section_label("source_diagnostics"), market_data.diagnostics)
+    status_row = ui.columns(1)
+    _render_card(
+        status_row[0],
+        labels.section_label("symbol_status"),
+        market_data.symbol_statuses,
+    )
+    action_row = ui.columns(3)
+    if action_row[0].button(
+        labels.action_label("Start Market Data Runtime"),
+        disabled=False,
+        key="market_data_runtime:start",
+    ):
+        runtime_snapshot = runtime.start()
+        ui.set_session_value("operator_console_market_data_runtime_snapshot", runtime_snapshot)
+        _render_card(
+            action_row[0],
+            labels.section_label("runtime_status"),
+            (labels.status_label(runtime_snapshot.status),),
+        )
+    if action_row[1].button(
+        labels.action_label("Stop Market Data Runtime"),
+        disabled=False,
+        key="market_data_runtime:stop",
+    ):
+        runtime_snapshot = runtime.stop()
+        ui.set_session_value("operator_console_market_data_runtime_snapshot", runtime_snapshot)
+        _render_card(
+            action_row[1],
+            labels.section_label("runtime_status"),
+            (labels.status_label(runtime_snapshot.status),),
+        )
+    if action_row[2].button(
+        labels.action_label("Poll Market Data Once"),
+        disabled=False,
+        key="market_data_runtime:poll_once",
+    ):
+        runtime_snapshot = runtime.poll_once(market_data.supported_symbols)
+        ui.set_session_value("operator_console_market_data_runtime_snapshot", runtime_snapshot)
+        _render_card(
+            action_row[2],
+            labels.section_label("runtime_status"),
+            (labels.status_label(runtime_snapshot.status),),
+        )
     preview_col = ui.columns(1)[0]
     preview_col.subheader(labels.section_label("typed_command_preview"))
     if assembly.preview is None:

@@ -6,6 +6,13 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import cast
 
+from futures_mvp.modules.market_data.runtime import (
+    MarketDataRuntimeSnapshot,
+    MarketDataRuntimeStatus,
+    RuntimeBarsSummary,
+    RuntimeQuoteSnapshot,
+    SymbolRuntimeSnapshot,
+)
 from futures_mvp.modules.operator_console.config_assembly import (
     READ_ONLY_ADAPTER_DATA_SOURCE,
     STATIC_FIXTURE_DATA_SOURCE,
@@ -102,9 +109,13 @@ class MarketDataViewModel:
     read_only_adapter_status: str
     connection_status: str
     configuration_status: str
+    runtime_status: str
+    runtime_started: str
+    runtime_configured: str
     resolver_source: str
     blocked_reason: str | None
     supported_symbols: tuple[str, ...]
+    symbol_statuses: tuple[tuple[str, str], ...]
     diagnostics: tuple[tuple[str, str], ...]
     latest_quote: tuple[tuple[str, str], ...] = ()
     latest_bars: tuple[tuple[str, str], ...] = ()
@@ -405,9 +416,18 @@ def default_console_view_model() -> OperatorConsoleViewModel:
             read_only_adapter_status="已阻断",
             connection_status="未连接",
             configuration_status="未配置",
+            runtime_status=MarketDataRuntimeStatus.NOT_CONFIGURED.value,
+            runtime_started="否",
+            runtime_configured="否",
             resolver_source="static_fixture",
             blocked_reason="只读行情适配器未配置，不会访问网络",
             supported_symbols=("ao", "rb", "ag", "cu"),
+            symbol_statuses=(
+                ("ao", "未刷新"),
+                ("rb", "未刷新"),
+                ("ag", "未刷新"),
+                ("cu", "未刷新"),
+            ),
             latest_quote=(("状态", "无真实行情"),),
             latest_bars=(("状态", "无真实 K 线"),),
             updated_at="未更新",
@@ -520,6 +540,107 @@ def default_console_view_model() -> OperatorConsoleViewModel:
             forbidden_actions=forbidden,
         ),
     )
+
+
+def market_data_view_model_from_snapshot(
+    snapshot: MarketDataRuntimeSnapshot,
+) -> MarketDataViewModel:
+    blocked_reason = snapshot.latest_error
+    if blocked_reason is None and not snapshot.configured:
+        blocked_reason = "真实行情运行时未配置，不会访问网络"
+    return MarketDataViewModel(
+        selected_source=snapshot.source,
+        static_fixture_status="可用",
+        read_only_adapter_status=_adapter_status(snapshot),
+        connection_status="已启动" if snapshot.started else "未连接",
+        configuration_status="已配置" if snapshot.configured else "未配置",
+        runtime_status=snapshot.status.value,
+        runtime_started="是" if snapshot.started else "否",
+        runtime_configured="是" if snapshot.configured else "否",
+        resolver_source="InstrumentResolver",
+        blocked_reason=blocked_reason,
+        supported_symbols=("ao", "rb", "ag", "cu"),
+        symbol_statuses=_symbol_status_rows(snapshot.symbols),
+        latest_quote=_latest_quote_rows(snapshot.symbols),
+        latest_bars=_latest_bars_rows(snapshot.symbols),
+        updated_at=_datetime_text(snapshot.updated_at),
+        diagnostics=(
+            ("数据源", snapshot.source),
+            ("akshare_available", str(snapshot.akshare_available)),
+            ("network_call_occurred", "是" if snapshot.network_call_occurred else "否"),
+            ("latest_error", snapshot.latest_error or "无"),
+            *tuple(("diagnostics", item) for item in snapshot.diagnostics),
+        ),
+    )
+
+
+def _adapter_status(snapshot: MarketDataRuntimeSnapshot) -> str:
+    if snapshot.status is MarketDataRuntimeStatus.RUNNING:
+        return "运行中"
+    if snapshot.status is MarketDataRuntimeStatus.DEGRADED:
+        return "降级"
+    if snapshot.status is MarketDataRuntimeStatus.BLOCKED:
+        return "已阻断"
+    if snapshot.configured:
+        return "已配置"
+    return "已阻断"
+
+
+def _symbol_status_rows(
+    symbols: tuple[SymbolRuntimeSnapshot, ...],
+) -> tuple[tuple[str, str], ...]:
+    if not symbols:
+        return (
+            ("ao", "未刷新"),
+            ("rb", "未刷新"),
+            ("ag", "未刷新"),
+            ("cu", "未刷新"),
+        )
+    return tuple((item.symbol, item.status.value) for item in symbols)
+
+
+def _latest_quote_rows(
+    symbols: tuple[SymbolRuntimeSnapshot, ...],
+) -> tuple[tuple[str, str], ...]:
+    rows = []
+    for item in symbols:
+        if item.latest_quote is None:
+            rows.append((item.symbol, "无最近报价"))
+            continue
+        rows.append((item.symbol, _quote_text(item.latest_quote)))
+    return tuple(rows) or (("状态", "无真实行情"),)
+
+
+def _latest_bars_rows(
+    symbols: tuple[SymbolRuntimeSnapshot, ...],
+) -> tuple[tuple[str, str], ...]:
+    rows = []
+    for item in symbols:
+        if item.latest_bars_summary is None:
+            rows.append((item.symbol, "无 K 线摘要"))
+            continue
+        rows.append((item.symbol, _bars_text(item.latest_bars_summary)))
+    return tuple(rows) or (("状态", "无真实 K 线"),)
+
+
+def _quote_text(quote: RuntimeQuoteSnapshot) -> str:
+    return (
+        f"{quote.trade_instrument_id} / 最近价 {quote.last_price} / "
+        f"成交量 {quote.volume} / {quote.ts.isoformat()}"
+    )
+
+
+def _bars_text(summary: RuntimeBarsSummary) -> str:
+    return (
+        f"{summary.trade_instrument_id} / {summary.timeframe.value} / "
+        f"数量 {summary.count} / 最新收盘 {summary.last_close}"
+    )
+
+
+def _datetime_text(value: object | None) -> str:
+    if hasattr(value, "isoformat"):
+        return str(value.isoformat())
+    return "未更新"
 
 
 def _paper_portfolio_rows(portfolio: object | None) -> tuple[tuple[str, str], ...]:
