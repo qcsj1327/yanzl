@@ -128,13 +128,77 @@ def test_dashboard_renders_status_and_safety_banner() -> None:
 
     rendered = _rendered(ui)
     assert "### 安全边界" in rendered
-    assert "MOCK only" in rendered
-    assert "research only" in rendered
-    assert "no live trading" in rendered
+    assert "仅本地模拟" in rendered
+    assert "仅研究展示" in rendered
+    assert "不启用实盘" in rendered
     assert "研究平台: 正常" in rendered
     assert "行情源: 正常" in rendered
     assert "当前来源: static_fixture" in rendered
     assert "最近预演: 尚未运行" in rendered
+
+
+def test_config_center_renders_unified_local_configuration() -> None:
+    ui = FakeUI(selected_label=labels.page_title(OperatorPage.CONFIG_CENTER.value))
+
+    render_console(ui, default_console_view_model())
+
+    rendered = _rendered(ui)
+    assert "### 基本配置" in rendered
+    assert "**账户 ID:** demo" in rendered
+    assert "**交易日:** 2026-06-28" in rendered
+    assert "**行情数据源:** 静态样例" in rendered
+    assert "**运行模式:** 本地模拟" in rendered
+    assert "**品种:** AO、RB" in rendered
+    assert "**时间周期:** 日线" in rendered
+    assert "### 研究配置" in rendered
+    assert "**策略:** BuyAndHold" in rendered
+    assert "**仓位模式:** 固定数量" in rendered
+    assert "**固定数量:** 1" in rendered
+    assert "**固定资金:** 100000" in rendered
+    assert "**手续费:** 0.0001" in rendered
+    assert "**滑点:** 1 Tick" in rendered
+    assert "**资金分配:** 等权分配" in rendered
+    assert "### 纸面配置" in rendered
+    assert "**纸面运行时:** 未启动" in rendered
+    assert "**运行:** 未启动" in rendered
+    assert "**暂停:** 未启动" in rendered
+    assert "**停止:** 未启动" in rendered
+
+
+def test_config_center_renders_safety_broker_market_data_preview_and_checks() -> None:
+    ui = FakeUI(selected_label=labels.page_title(OperatorPage.CONFIG_CENTER.value))
+
+    render_console(ui, default_console_view_model())
+
+    rendered = _rendered(ui)
+    assert "### 券商配置" in rendered
+    assert "**Broker:** 只读" in rendered
+    assert "**只读:** 只读" in rendered
+    assert "**影子对照:** 启用" in rendered
+    assert "**禁用:** 禁用" in rendered
+    assert "Login" not in rendered
+    assert "Submit" not in rendered
+    assert "Cancel" not in rendered
+    assert "### 行情配置" in rendered
+    assert "**静态样例:** 可用" in rendered
+    assert "**只读行情数据:** 未配置" in rendered
+    assert "**网络:** 不会联网" in rendered
+    assert "**真实行情:** 不会读取真实行情" in rendered
+    assert "### 安全锁" in rendered
+    assert "**实盘交易:** 关闭" in rendered
+    assert "**Paper:** 启用" in rendered
+    assert "**Broker:** 只读" in rendered
+    assert "**目标类型:** 未启用" in rendered
+    assert "### 本次运行配置" in rendered
+    assert "**策略:** BuyAndHold" in rendered
+    assert "**运行模式:** MOCK" in rendered
+    assert "配置检查" in ui.subheaders
+    assert "✓ 数据源：通过" in rendered
+    assert "✓ 策略：通过" in rendered
+    assert "✓ 解析器：通过" in rendered
+    assert "✓ 券商：只读" in rendered
+    assert "✓ 运行时：未启动" in rendered
+    assert "✓ 诊断：通过" in rendered
 
 
 def test_research_view_renders_metrics() -> None:
@@ -182,13 +246,13 @@ def test_broker_view_renders_read_only_snapshot_and_difference_report() -> None:
     render_console(ui, default_console_view_model())
 
     rendered = _rendered(ui)
-    assert "### Broker 状态" in rendered
-    assert "### Broker 账户" in rendered
-    assert "### Broker 持仓" in rendered
-    assert "### Broker 订单" in rendered
-    assert "### Broker 成交" in rendered
-    assert "### Shadow Compare" in rendered
-    assert "### Difference Report" in rendered
+    assert "### 券商状态" in rendered
+    assert "### 券商账户" in rendered
+    assert "### 券商持仓" in rendered
+    assert "### 券商订单" in rendered
+    assert "### 券商成交" in rendered
+    assert "### 影子对照" in rendered
+    assert "### 差异报告" in rendered
     assert "不登录、不重试、不报单、不撤单、不写数据库" in rendered
 
 
@@ -241,7 +305,7 @@ def test_market_data_placeholder_blocks_without_command() -> None:
     assert isinstance(config, ConsoleDryRunConfig)
     assert config.market_data_source == READ_ONLY_ADAPTER_DATA_SOURCE
     assert "只读行情适配器未配置，不会访问网络" in rendered
-    assert "当前配置还不能生成 typed dry-run command preview。" in rendered
+    assert "当前配置还不能生成命令预览。" in rendered
     assert "配置可用于预演。" not in rendered
 
 
@@ -269,7 +333,7 @@ def test_diagnostics_page_renders_broker_diagnostics() -> None:
     render_console(ui, default_console_view_model())
 
     rendered = _rendered(ui)
-    assert "### Broker Diagnostics" in rendered
+    assert "### 券商诊断" in rendered
     assert "**BrokerReadOnlyAdapter:** READY" in rendered
     assert "**submit/cancel:** 禁用" in rendered
 
@@ -293,7 +357,7 @@ def test_market_data_poll_button_does_not_generate_command() -> None:
     assert snapshot.network_call_occurred is False
     assert snapshot.latest_error == "行情运行时未启动，需先启动后刷新"
     assert "配置可用于预演。" not in rendered
-    assert "typed dry-run command preview" in rendered
+    assert "当前配置还不能生成命令预览。" in rendered
     assert "operator_console_result_history" not in ui.session_state
 
 

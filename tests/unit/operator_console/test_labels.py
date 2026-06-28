@@ -3,11 +3,15 @@ from futures_mvp.modules.operator_console import labels
 
 def test_all_page_titles_have_chinese_mapping() -> None:
     expected = {
+        "总览": "总览",
         "Dashboard": "总览",
-        "Research": "Research 研究",
-        "Portfolio": "Portfolio 组合",
-        "Paper": "Paper 纸面",
-        "Market Data": "Market Data 行情",
+        "配置中心": "配置中心",
+        "Research": "研究",
+        "Portfolio": "组合",
+        "Paper": "纸面运行",
+        "Broker": "券商只读",
+        "Market Data": "行情数据",
+        "系统诊断": "系统诊断",
         "Diagnostics": "系统诊断",
     }
 
@@ -93,12 +97,20 @@ def test_required_safety_action_risk_and_result_labels_exist() -> None:
 
     assert labels.config_label("missing_fields") == "缺少字段"
     assert labels.config_label("ready_for_dry_run") == "配置可用于预演"
-    assert labels.section_label("typed_command_preview") == "typed 命令预览"
+    assert labels.section_label("typed_command_preview") == "命令预览"
     assert labels.section_label("command_sources") == "命令来源"
     assert labels.section_label("result_history") == "最近预演历史"
+    assert labels.section_label("basic_config") == "基本配置"
+    assert labels.section_label("research_config") == "研究配置"
+    assert labels.section_label("paper_config") == "纸面配置"
+    assert labels.section_label("broker_config") == "券商配置"
+    assert labels.section_label("market_data_config") == "行情配置"
+    assert labels.section_label("safety_lock") == "安全锁"
+    assert labels.section_label("run_config_preview") == "本次运行配置"
+    assert labels.section_label("config_checks") == "配置检查"
     assert (
         labels.config_text("preview_blocked")
-        == "当前配置还不能生成 typed dry-run command preview。"
+        == "当前配置还不能生成命令预览。"
     )
     assert labels.config_text("preview_ready") == "配置可用于预演。"
 
@@ -134,6 +146,24 @@ def test_ui_polish_field_and_diagnostic_labels_exist() -> None:
         "latest result": "最近结果",
         "diagnostics": "诊断",
         "history": "历史记录",
+        "timeframe": "时间周期",
+        "position_mode": "仓位模式",
+        "fixed_quantity": "固定数量",
+        "fixed_capital": "固定资金",
+        "commission": "手续费",
+        "slippage": "滑点",
+        "capital_allocation": "资金分配",
+        "run_action": "运行",
+        "pause_action": "暂停",
+        "stop_action": "停止",
+        "read_only_market_data": "只读行情数据",
+        "live_trading": "实盘交易",
+        "data_source_check": "数据源",
+        "strategy_check": "策略",
+        "resolver_check": "解析器",
+        "broker_check": "券商",
+        "runtime_check": "运行时",
+        "diagnostics_check": "诊断",
     }
     for key, value in expected_fields.items():
         lookup = labels.section_label(key) if key == "Operator Console" else labels.field_label(key)

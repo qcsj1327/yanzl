@@ -269,6 +269,9 @@ def _render_page(
 ) -> OperatorConsoleViewModel:
     if page is OperatorPage.DASHBOARD:
         _render_dashboard(ui, model)
+    elif page is OperatorPage.CONFIG_CENTER:
+        configuration = _render_config_center(ui, model)
+        return _with_configuration(model, configuration)
     elif page is OperatorPage.RESEARCH:
         _render_research(ui, model)
     elif page is OperatorPage.PORTFOLIO:
@@ -300,9 +303,9 @@ def _render_dashboard(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) ->
         ui,
         labels.section_label("safety_banner"),
         (
-            "MOCK only",
-            "research only",
-            "no live trading",
+            "仅本地模拟",
+            "仅研究展示",
+            "不启用实盘",
             "不写数据库",
         ),
     )
@@ -335,7 +338,7 @@ def _render_dashboard(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) ->
         first_row[2],
         labels.section_label("safety_lock_card"),
         (
-            "LIVE 禁用",
+            "实盘禁用",
             "Broker 禁用",
             "CTP / SimNow 禁用",
             "真实资金禁用",
@@ -350,7 +353,45 @@ def _render_dashboard(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) ->
             f"{labels.field_label('latest dry-run')}: "
             f"{model.dashboard.latest_dry_run_summary}",
             labels.dashboard_text("db_delta_zero"),
-            "命令来源：static_fixture 时可预演，read_only_adapter_placeholder 时阻断",
+            "命令来源：静态样例可预演，只读行情未配置时阻断",
+        ),
+    )
+
+
+def _render_config_center(
+    ui: OperatorConsoleUI,
+    model: OperatorConsoleViewModel,
+) -> ConfigurationViewModel:
+    config = _read_config_form(ui, model.configuration.dry_run_config)
+    assembly = assemble_config(config)
+    ui.set_session_value("operator_console_dry_run_config", assembly.config)
+    center = model.config_center
+    first_row = ui.columns(3)
+    _render_card(first_row[0], labels.section_label("basic_config"), center.basic)
+    _render_card(first_row[1], labels.section_label("research_config"), center.research)
+    _render_card(first_row[2], labels.section_label("paper_config"), center.paper)
+    second_row = ui.columns(3)
+    _render_card(second_row[0], labels.section_label("broker_config"), center.broker)
+    _render_card(second_row[1], labels.section_label("market_data_config"), center.market_data)
+    _render_card(second_row[2], labels.section_label("safety_lock"), center.safety_locks)
+    preview_row = ui.columns(2)
+    _render_card(
+        preview_row[0],
+        labels.section_label("run_config_preview"),
+        _run_preview_items(assembly.config, center.run_preview),
+    )
+    _render_check_items(preview_row[1], center.checks)
+    return ConfigurationViewModel(
+        normal=_normal_config_items(config),
+        advanced=model.configuration.advanced,
+        sources=model.configuration.sources,
+        dry_run_config=assembly.config,
+        preview=assembly.preview,
+        validation=assembly.validation,
+        market_data_sources=model.configuration.market_data_sources,
+        dry_run_required=_dry_run_required_items(
+            assembly.config,
+            assembly.validation.missing_fields,
         ),
     )
 
@@ -822,6 +863,7 @@ def _with_result(
     return OperatorConsoleViewModel(
         pages=model.pages,
         dashboard=model.dashboard,
+        config_center=model.config_center,
         research=model.research,
         portfolio=model.portfolio,
         paper_page=model.paper_page,
@@ -853,6 +895,7 @@ def _with_configuration(
     return OperatorConsoleViewModel(
         pages=model.pages,
         dashboard=model.dashboard,
+        config_center=model.config_center,
         research=model.research,
         portfolio=model.portfolio,
         paper_page=model.paper_page,
@@ -930,6 +973,41 @@ def _render_command_preview(ui: OperatorConsoleUI, preview: CommandPreview) -> N
             ("db_write", preview.db_write),
         ),
     )
+
+
+def _run_preview_items(
+    config: ConsoleDryRunConfig,
+    fallback: tuple[tuple[str, str], ...],
+) -> tuple[tuple[str, str], ...]:
+    if not any(
+        (
+            config.account_id.strip(),
+            config.symbol.strip(),
+            config.trading_day.strip(),
+            config.quantity.strip(),
+            config.price.strip(),
+        )
+    ):
+        return fallback
+    symbols = config.symbol.strip().upper() or "未配置"
+    return (
+        ("account_id", _display_config_value(config.account_id, config.is_example)),
+        ("market_data_source", _data_source_display(config.market_data_source)),
+        ("strategy", "BuyAndHold"),
+        ("symbols", symbols),
+        ("commission", "0.0001"),
+        ("slippage", "1 Tick"),
+        ("rollout mode", "MOCK"),
+    )
+
+
+def _render_check_items(
+    ui: OperatorConsoleUI,
+    checks: tuple[tuple[str, str], ...],
+) -> None:
+    ui.subheader(labels.section_label("config_checks"))
+    for key, value in checks:
+        ui.markdown(f"✓ {labels.field_label(key)}：{value}")
 
 
 def _render_resolver_preview(
@@ -1193,9 +1271,17 @@ def _resolver_generated_value(value: str) -> str:
 
 def _resolver_source_label(source: str) -> str:
     if source == "static_fixture":
-        return "static fixture only, not live market source"
+        return "仅静态样例，不是真实行情源"
     if not source:
-        return "static fixture only, not live market source"
+        return "仅静态样例，不是真实行情源"
+    return source
+
+
+def _data_source_display(source: str) -> str:
+    if source == STATIC_FIXTURE_DATA_SOURCE:
+        return "静态样例"
+    if source == READ_ONLY_ADAPTER_DATA_SOURCE:
+        return "只读行情数据"
     return source
 
 
@@ -1240,6 +1326,7 @@ def _model_with_session_state(
     return OperatorConsoleViewModel(
         pages=model.pages,
         dashboard=model.dashboard,
+        config_center=model.config_center,
         research=model.research,
         portfolio=model.portfolio,
         paper_page=model.paper_page,
@@ -1254,6 +1341,7 @@ def _model_with_session_state(
             dry_run_config=config,
             preview=model.configuration.preview,
             validation=model.configuration.validation,
+            market_data_sources=model.configuration.market_data_sources,
             dry_run_required=model.configuration.dry_run_required,
         ),
         results=ResultHistoryViewModel(

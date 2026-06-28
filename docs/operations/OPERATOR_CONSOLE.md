@@ -1,14 +1,14 @@
-# Operator Console V1
+# 本地操作台 V2：配置中心
 
-Baseline：`phase-l-read-only-market-data-mvp / 52744c4`。
+基线：`phase-p-broker-readonly-platform-v1 / 272ce01`。
 
-Operator Console V1 是本地只读 / dry-run preview UI。它面向不想直接读代码或跑 CLI 的本地操作者，用中文页面展示 Research、Paper、Portfolio、Market Data、Diagnostics 的链路状态。
+本地操作台 V2 是平台配置中心。它面向不想直接读代码或跑命令行的本地操作者，用中文页面统一展示总览、配置中心、研究、组合、纸面运行、券商只读、行情数据和系统诊断。
 
 它不是实盘交易控制台，不是 Broker / CTP / SimNow 控制台，不是真实账户入口，也不是数据库编辑器。
 
 ## 安全边界
 
-Console V1 固定边界：
+本地操作台 V2 固定边界：
 
 - 仅展示本地状态和 research-only 结果。
 - 仅允许 `MOCK only` dry-run preview。
@@ -17,7 +17,9 @@ Console V1 固定边界：
 - 不提交真实订单，不读取或操作真实账户。
 - 不写数据库，不写 schema，不执行 Alembic migration。
 - 不写 OMS / Trade / Position / Accounting / Margin / Settlement。
-- 不持久化 console history、result 或 config。
+- 不持久化操作台历史、结果或配置。
+
+配置中心只管理本地 UI 会话中的配置视图。它可以展示和临时装配本次运行所需配置，但不能修改业务事实，不能写入 OMS、Trade、Position、Accounting、Margin、Settlement，也不能启用任何非 `MOCK` 执行目标。
 
 `read_only_adapter_placeholder` 只作为可见但阻断的数据源占位。选择它时 Console 必须显示 `BLOCKED`，不得生成 command，不得访问网络。
 
@@ -31,35 +33,50 @@ Console V1 固定边界：
 
 ## 页面
 
-### Dashboard
+### 总览
 
 展示本地总览：
 
-- Research Platform status。
-- Paper Runtime status。
-- Portfolio status。
-- Market Data source status。
-- Current source：`static_fixture` 或 `read_only_adapter_placeholder`。
-- Last dry-run summary。
-- Safety banner：`MOCK only / research only / no live trading / 不写数据库`。
+- 研究平台状态。
+- 纸面运行时状态。
+- 组合状态。
+- 行情数据源状态。
+- 当前来源：`static_fixture` 或 `read_only_adapter_placeholder`。
+- 最近预演摘要。
+- 安全边界：仅本地模拟、仅研究展示、不启用实盘、不写数据库。
 
-### Research
+### 配置中心
+
+配置中心是 V2 的新增入口，统一展示：
+
+- 基本配置：账户、交易日、数据源、运行模式、交易品种、时间周期。
+- 研究配置：策略、仓位模式、固定数量、固定资金、手续费、滑点、资金分配。
+- 纸面配置：纸面运行时、状态、运行、暂停、停止；未启动时显示“未启动”。
+- 券商配置：Broker、只读、Shadow、禁用；不得出现登录、提交、撤销按钮。
+- 行情配置：静态样例、只读行情数据；只读行情未配置时必须显示“未配置、不会联网、不会读取真实行情”。
+- 安全锁：实盘交易关闭、Paper 启用、Broker 只读、ExecutionTarget 未启用。
+- 本次运行配置：账户、数据源、策略、交易品种、手续费、滑点、运行模式。
+- 配置检查：数据源、策略、解析器、券商、运行时、诊断。
+
+配置中心的配置只属于本地操作台会话，不是业务事实源，不落库，不改变交易、仓位、资金或会计状态。
+
+### 研究
 
 展示 backtest / research-only 结果：
 
-- Backtest status。
-- strategy。
-- symbols。
-- orders。
-- trades。
-- positions。
-- realized / unrealized pnl。
-- equity curve summary。
-- metrics：`total_return`、`max_equity`、`min_equity`。
+- 回测状态。
+- 策略。
+- 品种。
+- 订单。
+- 成交。
+- 持仓。
+- 已实现 / 未实现 PnL。
+- 权益曲线摘要。
+- 指标：`total_return`、`max_equity`、`min_equity`。
 
 这些结果只用于研究观测，不是 OMS、Trade、Position、Accounting 或真实账户事实源。
 
-### Portfolio
+### 组合
 
 展示 research portfolio：
 
@@ -72,7 +89,7 @@ Console V1 固定边界：
 - cash weight。
 - allocation。
 
-### Paper
+### 纸面运行
 
 展示 Paper research runtime：
 
@@ -84,9 +101,9 @@ Console V1 固定边界：
 - paper portfolio。
 - `PaperConsistencyReport`。
 
-页面只提供 dry-run preview 按钮。Paper apply 按钮保持禁用占位，不写本地账本。
+页面只提供预演按钮。Paper 写入按钮保持禁用占位，不写本地账本。
 
-### Market Data
+### 行情数据
 
 展示行情源与 resolver 状态：
 
@@ -111,7 +128,7 @@ Console V1 固定边界：
 - `static_fixture`：允许本地 preview / dry-run。
 - `real_market_data`：未配置时固定 `BLOCKED`，不生成命令，不访问网络；显式配置后只读读取行情，仍不提交订单。
 
-Phase N 后，Market Data 页面可以显示本地真实行情只读运行时：
+行情数据页面可以显示本地真实行情只读运行时：
 
 - 启动按钮只调用本地 `MarketDataRuntime.start()`。
 - 停止按钮只调用本地 `MarketDataRuntime.stop()`。
@@ -141,7 +158,7 @@ Phase N 的 `real_market_data` 是真实行情只读运行时，不是 Broker，
 CTP，不是 SimNow，不是实盘，不下单，不写数据库，不启用
 `ExecutionTarget.PAPER` / `ExecutionTarget.SIM` / `ExecutionTarget.LIVE`。
 
-### Diagnostics
+### 系统诊断
 
 只读展示：
 
@@ -161,6 +178,6 @@ Diagnostics 不运行 migration，不修复数据库，不启用 Broker / LIVE�
 
 ## 当前实现说明
 
-Console V1 复用现有 operator console 的 session-state dry-run summary，但 session-state 只用于当前 UI 会话展示，不作为持久化 history / result / config。
+本地操作台 V2 复用现有操作台的会话状态预演摘要，但会话状态只用于当前 UI 会话展示，不作为持久化历史、结果或配置。
 
-所有页面采用 wide layout 和紧凑卡片 / 表格，目标是在 1280x720 截图下尽量完整显示主要状态。页面文案以中文为主，避免把内部英文状态长段堆给操作者。
+所有页面采用宽布局和紧凑卡片 / 表格，目标是在 1280x720 截图下尽量完整显示主要状态。页面文案统一中文，内部 Python 标识符、类名、函数名、枚举名和第三方名称除外。

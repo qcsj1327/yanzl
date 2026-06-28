@@ -4,22 +4,26 @@ from enum import StrEnum
 
 
 class LabelKey(StrEnum):
-    DASHBOARD = "Dashboard"
+    DASHBOARD = "总览"
+    CONFIG_CENTER = "配置中心"
     RESEARCH = "Research"
     PORTFOLIO = "Portfolio"
     PAPER = "Paper"
     BROKER = "Broker"
     MARKET_DATA = "Market Data"
-    DIAGNOSTICS = "Diagnostics"
+    DIAGNOSTICS = "系统诊断"
 
 
 PAGE_TITLES: dict[str, str] = {
+    "总览": "总览",
     "Dashboard": "总览",
-    "Research": "Research 研究",
-    "Portfolio": "Portfolio 组合",
-    "Paper": "Paper 纸面",
-    "Broker": "Broker 只读",
-    "Market Data": "Market Data 行情",
+    "配置中心": "配置中心",
+    "Research": "研究",
+    "Portfolio": "组合",
+    "Paper": "纸面运行",
+    "Broker": "券商只读",
+    "Market Data": "行情数据",
+    "系统诊断": "系统诊断",
     "Diagnostics": "系统诊断",
 }
 
@@ -133,6 +137,14 @@ SECTION_LABELS: dict[str, str] = {
     "Operator Console": "本地操作台",
     "system_status_card": "系统状态",
     "safety_lock_card": "安全锁定",
+    "safety_lock": "安全锁",
+    "basic_config": "基本配置",
+    "research_config": "研究配置",
+    "paper_config": "纸面配置",
+    "broker_config": "券商配置",
+    "market_data_config": "行情配置",
+    "run_config_preview": "本次运行配置",
+    "config_checks": "配置检查",
     "next_step_card": "下一步操作",
     "latest_result_card": "最近结果",
     "what_is_this": "这是什么",
@@ -164,21 +176,21 @@ SECTION_LABELS: dict[str, str] = {
     "symbol_contributions": "品种贡献",
     "position_weights": "持仓权重",
     "allocation": "配置",
-    "paper_runtime": "Paper Runtime",
+    "paper_runtime": "纸面运行时",
     "paper_lifecycle": "Session 生命周期",
     "paper_consistency": "一致性报告",
     "paper_orders": "Paper 订单",
     "paper_fills": "Paper 成交",
     "paper_positions": "Paper 持仓",
     "paper_portfolio": "Paper 组合",
-    "broker_status": "Broker 状态",
-    "broker_accounts": "Broker 账户",
-    "broker_positions": "Broker 持仓",
-    "broker_orders": "Broker 订单",
-    "broker_trades": "Broker 成交",
-    "broker_shadow_compare": "Shadow Compare",
-    "broker_differences": "Difference Report",
-    "broker_diagnostics": "Broker Diagnostics",
+    "broker_status": "券商状态",
+    "broker_accounts": "券商账户",
+    "broker_positions": "券商持仓",
+    "broker_orders": "券商订单",
+    "broker_trades": "券商成交",
+    "broker_shadow_compare": "影子对照",
+    "broker_differences": "差异报告",
+    "broker_diagnostics": "券商诊断",
     "broker_read_only_notice": (
         "Broker 页面只展示只读快照和差异报告，不登录、不重试、不报单、不撤单、不写数据库"
     ),
@@ -211,7 +223,7 @@ SECTION_LABELS: dict[str, str] = {
     "safety_checks": "安全检查",
     "local_checks": "本地检查",
     "dry_run_required_config": "预演所需配置",
-    "typed_command_preview": "typed 命令预览",
+    "typed_command_preview": "命令预览",
     "command_sources": "命令来源",
     "result_history": "最近预演历史",
     "blocked_dry_run_title": "⚠️ 本次预演未执行",
@@ -230,7 +242,7 @@ FIELD_LABELS: dict[str, str] = {
     "health": "健康状态",
     "latest result": "最近结果",
     "Research Platform": "研究平台",
-    "Paper Runtime": "Paper Runtime",
+    "Paper Runtime": "纸面运行时",
     "Portfolio": "组合",
     "Market Data": "行情源",
     "Diagnostics": "诊断",
@@ -239,6 +251,7 @@ FIELD_LABELS: dict[str, str] = {
     "backtest_status": "Backtest 状态",
     "strategy": "策略",
     "symbols": "品种",
+    "timeframe": "时间周期",
     "realized_pnl": "已实现 PnL",
     "unrealized_pnl": "未实现 PnL",
     "total_return": "总收益",
@@ -256,6 +269,29 @@ FIELD_LABELS: dict[str, str] = {
     "fills_match": "成交一致",
     "selected_source": "选择数据源",
     "market_data_source": "行情数据源",
+    "static_fixture": "静态样例",
+    "read_only_market_data": "只读行情数据",
+    "network": "网络",
+    "real_quote": "真实行情",
+    "position_mode": "仓位模式",
+    "fixed_quantity": "固定数量",
+    "fixed_capital": "固定资金",
+    "commission": "手续费",
+    "slippage": "滑点",
+    "capital_allocation": "资金分配",
+    "run_action": "运行",
+    "pause_action": "暂停",
+    "stop_action": "停止",
+    "broker_read_only": "只读",
+    "shadow_mode": "影子对照",
+    "broker_disabled": "禁用",
+    "live_trading": "实盘交易",
+    "data_source_check": "数据源",
+    "strategy_check": "策略",
+    "resolver_check": "解析器",
+    "broker_check": "券商",
+    "runtime_check": "运行时",
+    "diagnostics_check": "诊断",
     "supported_symbols": "支持品种",
     "read_only_adapter_placeholder": "只读 Adapter 占位",
     "source_of_truth": "事实边界",
@@ -267,9 +303,9 @@ FIELD_LABELS: dict[str, str] = {
     "page": "页面",
     "ExecutionTarget": "目标类型",
     "migration": "迁移状态",
-    "Paper": "Paper 最近结果",
+    "Paper": "Paper",
     "SIM": "SIM 最近结果",
-    "Broker": "Broker 只读",
+    "Broker": "Broker",
     "status": "状态",
     "reason": "原因",
     "currency": "币种",
@@ -437,7 +473,7 @@ REASON_LABELS: dict[str, str] = {
 }
 
 CONFIG_TEXT: dict[str, str] = {
-    "preview_blocked": "当前配置还不能生成 typed dry-run command preview。",
+    "preview_blocked": "当前配置还不能生成命令预览。",
     "preview_ready": "配置可用于预演。",
 }
 

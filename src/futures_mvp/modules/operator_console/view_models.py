@@ -24,13 +24,14 @@ from futures_mvp.modules.operator_console.config_assembly import (
 
 
 class OperatorPage(StrEnum):
-    DASHBOARD = "Dashboard"
+    DASHBOARD = "总览"
+    CONFIG_CENTER = "配置中心"
     RESEARCH = "Research"
     PORTFOLIO = "Portfolio"
     PAPER = "Paper"
     BROKER = "Broker"
     MARKET_DATA = "Market Data"
-    DIAGNOSTICS = "Diagnostics"
+    DIAGNOSTICS = "系统诊断"
 
 
 class ConsoleActionStatus(StrEnum):
@@ -221,6 +222,18 @@ class ConfigurationViewModel:
 
 
 @dataclass(frozen=True)
+class ConfigCenterViewModel:
+    basic: tuple[tuple[str, str], ...]
+    research: tuple[tuple[str, str], ...]
+    paper: tuple[tuple[str, str], ...]
+    broker: tuple[tuple[str, str], ...]
+    market_data: tuple[tuple[str, str], ...]
+    safety_locks: tuple[tuple[str, str], ...]
+    run_preview: tuple[tuple[str, str], ...]
+    checks: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
 class ResultHistoryViewModel:
     items: tuple[tuple[str, str], ...]
     session_status: str = "NOT_RUN"
@@ -282,6 +295,7 @@ class BrokerConsoleViewModel:
 class OperatorConsoleViewModel:
     pages: tuple[OperatorPage, ...]
     dashboard: DashboardViewModel
+    config_center: ConfigCenterViewModel
     research: ResearchViewModel
     portfolio: PortfolioViewModel
     paper_page: PaperConsolePageViewModel
@@ -342,6 +356,67 @@ def default_console_view_model() -> OperatorConsoleViewModel:
     return OperatorConsoleViewModel(
         pages=tuple(OperatorPage),
         dashboard=DashboardViewModel(),
+        config_center=ConfigCenterViewModel(
+            basic=(
+                ("account_id", "demo"),
+                ("trading_day", "2026-06-28"),
+                ("market_data_source", "静态样例"),
+                ("rollout mode", "本地模拟"),
+                ("symbols", "AO、RB"),
+                ("timeframe", "日线"),
+            ),
+            research=(
+                ("strategy", "BuyAndHold"),
+                ("position_mode", "固定数量"),
+                ("fixed_quantity", "1"),
+                ("fixed_capital", "100000"),
+                ("commission", "0.0001"),
+                ("slippage", "1 Tick"),
+                ("capital_allocation", "等权分配"),
+            ),
+            paper=(
+                ("Paper Runtime", "未启动"),
+                ("status", "未启动"),
+                ("run_action", "未启动"),
+                ("pause_action", "未启动"),
+                ("stop_action", "未启动"),
+            ),
+            broker=(
+                ("Broker", "只读"),
+                ("broker_read_only", "只读"),
+                ("shadow_mode", "启用"),
+                ("broker_disabled", "禁用"),
+            ),
+            market_data=(
+                ("static_fixture", "可用"),
+                ("read_only_market_data", "未配置"),
+                ("network", "不会联网"),
+                ("real_quote", "不会读取真实行情"),
+            ),
+            safety_locks=(
+                ("live_trading", "关闭"),
+                ("Paper", "启用"),
+                ("Broker", "只读"),
+                ("ExecutionTarget", "未启用"),
+            ),
+            run_preview=(
+                ("account_id", "demo"),
+                ("market_data_source", "静态样例"),
+                ("strategy", "BuyAndHold"),
+                ("symbols", "AO、RB"),
+                ("commission", "0.0001"),
+                ("slippage", "1 Tick"),
+                ("rollout mode", "MOCK"),
+            ),
+            checks=(
+                ("data_source_check", "通过"),
+                ("strategy_check", "通过"),
+                ("resolver_check", "通过"),
+                ("broker_check", "只读"),
+                ("runtime_check", "未启动"),
+                ("diagnostics_check", "通过"),
+            ),
+        ),
         research=ResearchViewModel(
             backtest_status="COMPLETED",
             strategy="sample_breakout_research",
@@ -397,7 +472,7 @@ def default_console_view_model() -> OperatorConsoleViewModel:
         paper_page=PaperConsolePageViewModel(
             runtime_status="READY",
             lifecycle=(
-                ("run", "dry-run only"),
+                ("run", "仅预演"),
                 ("pause", "展示占位"),
                 ("stop", "展示占位"),
             ),
