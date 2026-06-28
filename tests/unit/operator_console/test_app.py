@@ -176,6 +176,22 @@ def test_paper_view_renders_consistency_and_dry_run_controls() -> None:
     assert ("确认运行 Paper 写入", True, "action:Run Paper Apply") in ui.buttons
 
 
+def test_broker_view_renders_read_only_snapshot_and_difference_report() -> None:
+    ui = FakeUI(selected_label=labels.page_title(OperatorPage.BROKER.value))
+
+    render_console(ui, default_console_view_model())
+
+    rendered = _rendered(ui)
+    assert "### Broker 状态" in rendered
+    assert "### Broker 账户" in rendered
+    assert "### Broker 持仓" in rendered
+    assert "### Broker 订单" in rendered
+    assert "### Broker 成交" in rendered
+    assert "### Shadow Compare" in rendered
+    assert "### Difference Report" in rendered
+    assert "不登录、不重试、不报单、不撤单、不写数据库" in rendered
+
+
 def test_paper_dry_run_click_renders_zero_db_result() -> None:
     def provider() -> DryRunActionResult:
         return DryRunActionResult(
@@ -247,6 +263,17 @@ def test_market_data_page_displays_runtime_status() -> None:
     assert ("单次刷新行情", False, "market_data_runtime:poll_once") in ui.buttons
 
 
+def test_diagnostics_page_renders_broker_diagnostics() -> None:
+    ui = FakeUI(selected_label=labels.page_title(OperatorPage.DIAGNOSTICS.value))
+
+    render_console(ui, default_console_view_model())
+
+    rendered = _rendered(ui)
+    assert "### Broker Diagnostics" in rendered
+    assert "**BrokerReadOnlyAdapter:** READY" in rendered
+    assert "**submit/cancel:** 禁用" in rendered
+
+
 def test_market_data_poll_button_does_not_generate_command() -> None:
     ui = FakeUI(
         selected_label=labels.page_title(OperatorPage.MARKET_DATA.value),
@@ -278,9 +305,9 @@ def test_diagnostics_render_safety_boundary() -> None:
     rendered = _rendered(ui)
     assert "### 安全检查" in rendered
     assert "**目标类型:** MOCK only" in rendered
-    assert "**写库:** disabled" in rendered
-    assert "**真实交易:** disabled" in rendered
-    assert "**Broker/CTP/SimNow:** disabled" in rendered
+    assert "**写库:** 禁用" in rendered
+    assert "**真实交易:** 禁用" in rendered
+    assert "**Broker/CTP/SimNow:** 禁用" in rendered
 
 
 def test_main_lazy_import_renders_streamlit_adapter(monkeypatch) -> None:

@@ -28,6 +28,7 @@ class OperatorPage(StrEnum):
     RESEARCH = "Research"
     PORTFOLIO = "Portfolio"
     PAPER = "Paper"
+    BROKER = "Broker"
     MARKET_DATA = "Market Data"
     DIAGNOSTICS = "Diagnostics"
 
@@ -237,6 +238,7 @@ class DiagnosticViewModel:
     items: tuple[tuple[str, str], ...]
     resolver: tuple[tuple[str, str], ...] = ()
     market_data: tuple[tuple[str, str], ...] = ()
+    broker: tuple[tuple[str, str], ...] = ()
     research: tuple[tuple[str, str], ...] = ()
     paper: tuple[tuple[str, str], ...] = ()
     safety: tuple[tuple[str, str], ...] = ()
@@ -263,12 +265,27 @@ class PaperRuntimeConsoleViewModel:
 
 
 @dataclass(frozen=True)
+class BrokerConsoleViewModel:
+    status: str
+    reason: str | None
+    accounts: tuple[tuple[str, str], ...]
+    positions: tuple[tuple[str, str], ...]
+    orders: tuple[tuple[str, str], ...]
+    trades: tuple[tuple[str, str], ...]
+    shadow_compare: tuple[tuple[str, str], ...]
+    differences: tuple[tuple[str, str], ...]
+    diagnostics: tuple[tuple[str, str], ...]
+    source: str = "operator_console_broker_read_only_view"
+
+
+@dataclass(frozen=True)
 class OperatorConsoleViewModel:
     pages: tuple[OperatorPage, ...]
     dashboard: DashboardViewModel
     research: ResearchViewModel
     portfolio: PortfolioViewModel
     paper_page: PaperConsolePageViewModel
+    broker: BrokerConsoleViewModel
     market_data: MarketDataViewModel
     paper: SessionPageViewModel
     safety: SafetyPageViewModel
@@ -410,6 +427,39 @@ def default_console_view_model() -> OperatorConsoleViewModel:
                 ("fills_match", "True"),
             ),
         ),
+        broker=BrokerConsoleViewModel(
+            status="READY",
+            reason=None,
+            accounts=(
+                ("account_id", "account-1"),
+                ("currency", "CNY"),
+                ("broker_cash", "96420"),
+                ("available", "96000"),
+                ("equity", "100120"),
+                ("margin", "3700"),
+                ("frozen", "0"),
+                ("updated_at", "2026-06-28T00:00:00+00:00"),
+            ),
+            positions=(
+                ("ao2609", "ao / LONG / 1 / 500"),
+                ("rb2601", "rb / LONG / 1 / 3200"),
+            ),
+            orders=(("po-ao-1", "ao2609 / BUY / FILLED / 1"),),
+            trades=(("pf-ao-1", "ao2609 / 500 / 1"),),
+            shadow_compare=(
+                ("status", "DIFFERENCE"),
+                ("reason", "默认样例仅用于展示，不代表业务事实"),
+                ("difference_count", "0"),
+            ),
+            differences=(("difference", "无差异"),),
+            diagnostics=(
+                ("diagnostic_1", "只读样例"),
+                ("diagnostic_2", "不自动重试"),
+                ("diagnostic_3", "不自动登录"),
+                ("diagnostic_4", "不报单"),
+                ("diagnostic_5", "不撤单"),
+            ),
+        ),
         market_data=MarketDataViewModel(
             selected_source=STATIC_FIXTURE_DATA_SOURCE,
             static_fixture_status="可用",
@@ -520,6 +570,12 @@ def default_console_view_model() -> OperatorConsoleViewModel:
                 ("read_only_adapter", "已阻断"),
                 ("network", "不会访问网络"),
             ),
+            broker=(
+                ("BrokerReadOnlyAdapter", "READY"),
+                ("Shadow Compare", "DIFFERENCE"),
+                ("network", "不会自动访问"),
+                ("submit/cancel", "禁用"),
+            ),
             research=(
                 ("backtest_status", "COMPLETED"),
                 ("source_of_truth", "research only"),
@@ -530,9 +586,9 @@ def default_console_view_model() -> OperatorConsoleViewModel:
             ),
             safety=(
                 ("ExecutionTarget", "MOCK only"),
-                ("DB write", "disabled"),
-                ("live trading", "disabled"),
-                ("broker/CTP/SimNow", "disabled"),
+                ("DB write", "禁用"),
+                ("live trading", "禁用"),
+                ("broker/CTP/SimNow", "禁用"),
             ),
         ),
         live_locked=LiveLockedViewModel(
@@ -572,6 +628,147 @@ def market_data_view_model_from_snapshot(
             *tuple(("diagnostics", item) for item in snapshot.diagnostics),
         ),
     )
+
+
+def broker_console_view_model(
+    broker_result: object,
+    *,
+    compare: object | None = None,
+) -> BrokerConsoleViewModel:
+    status = _value_text(getattr(broker_result, "status", "BLOCKED"))
+    if compare is None:
+        compare = object()
+    compare_status = _value_text(getattr(compare, "status", "BLOCKED"))
+    compare_reason = getattr(compare, "reason", None)
+    compare_differences = tuple(cast(Iterable[object], getattr(compare, "differences", ())))
+    if status == "BLOCKED":
+        return BrokerConsoleViewModel(
+            status=status,
+            reason=cast(str | None, getattr(broker_result, "reason", None)),
+            accounts=(),
+            positions=(),
+            orders=(),
+            trades=(),
+            shadow_compare=(("status", compare_status),),
+            differences=_difference_rows(compare_reason, compare_differences),
+            diagnostics=_diagnostic_rows(
+                tuple(cast(Iterable[str], getattr(broker_result, "diagnostics", ())))
+            ),
+        )
+    return BrokerConsoleViewModel(
+        status=status,
+        reason=cast(str | None, getattr(broker_result, "reason", None)),
+        accounts=_broker_account_rows(broker_result),
+        positions=_broker_position_rows(getattr(broker_result, "positions", ())),
+        orders=_broker_order_rows(getattr(broker_result, "orders", ())),
+        trades=_broker_trade_rows(getattr(broker_result, "trades", ())),
+        shadow_compare=(
+            ("status", compare_status),
+            ("reason", str(compare_reason or "无")),
+            ("difference_count", str(len(compare_differences))),
+        ),
+        differences=_difference_rows(compare_reason, compare_differences),
+        diagnostics=_diagnostic_rows(
+            tuple(cast(Iterable[str], getattr(broker_result, "diagnostics", ())))
+        ),
+    )
+
+
+def _broker_account_rows(result: object) -> tuple[tuple[str, str], ...]:
+    account = getattr(result, "account", None)
+    if account is None:
+        return ()
+    return (
+        ("account_id", account.account_id),
+        ("currency", account.currency),
+        ("broker_cash", _decimal_text(account.cash)),
+        ("available", _decimal_text(account.available)),
+        ("equity", _decimal_text(account.equity)),
+        ("margin", _decimal_text(account.margin)),
+        ("frozen", _decimal_text(account.frozen)),
+        ("updated_at", account.updated_at.isoformat()),
+    )
+
+
+def _broker_position_rows(positions: object) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (
+            str(getattr(position, "trade_instrument_id", "")),
+            " / ".join(
+                (
+                    str(getattr(position, "symbol", "")),
+                    str(getattr(position, "side", "")),
+                    _decimal_text(getattr(position, "quantity", Decimal("0"))),
+                    _decimal_text(getattr(position, "market_value", Decimal("0"))),
+                )
+            ),
+        )
+        for position in cast(Iterable[object], positions)
+    )
+
+
+def _broker_order_rows(orders: object) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (
+            str(getattr(order, "order_id", "")),
+            " / ".join(
+                (
+                    str(getattr(order, "trade_instrument_id", "")),
+                    str(getattr(order, "side", "")),
+                    str(getattr(order, "order_status", "")),
+                    _decimal_text(getattr(order, "filled_quantity", Decimal("0"))),
+                )
+            ),
+        )
+        for order in cast(Iterable[object], orders)
+    )
+
+
+def _broker_trade_rows(trades: object) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (
+            str(getattr(trade, "trade_id", "")),
+            " / ".join(
+                (
+                    str(getattr(trade, "trade_instrument_id", "")),
+                    _decimal_text(getattr(trade, "fill_price", Decimal("0"))),
+                    _decimal_text(getattr(trade, "fill_qty", Decimal("0"))),
+                )
+            ),
+        )
+        for trade in cast(Iterable[object], trades)
+    )
+
+
+def _difference_rows(
+    reason: object,
+    differences: tuple[object, ...],
+) -> tuple[tuple[str, str], ...]:
+    if reason and not differences:
+        return (("reason", str(reason)),)
+    key_attr = "key"
+    return tuple(
+        (
+            f"{getattr(item, 'category', '')}:{getattr(item, key_attr)}",
+            (
+                f"Paper={getattr(item, 'paper_value', '')} / "
+                f"Broker={getattr(item, 'broker_value', '')} / "
+                f"{getattr(item, 'severity', '')}"
+            ),
+        )
+        for item in differences
+    ) or (("difference", "无差异"),)
+
+
+def _diagnostic_rows(diagnostics: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
+    return tuple((f"diagnostic_{index}", item) for index, item in enumerate(diagnostics, start=1))
+
+
+def _value_text(value: object) -> str:
+    enum_value = getattr(value, "value", None)
+    if isinstance(enum_value, str):
+        return enum_value
+    return str(value)
 
 
 def _adapter_status(snapshot: MarketDataRuntimeSnapshot) -> str:

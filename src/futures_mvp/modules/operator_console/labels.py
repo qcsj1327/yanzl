@@ -8,6 +8,7 @@ class LabelKey(StrEnum):
     RESEARCH = "Research"
     PORTFOLIO = "Portfolio"
     PAPER = "Paper"
+    BROKER = "Broker"
     MARKET_DATA = "Market Data"
     DIAGNOSTICS = "Diagnostics"
 
@@ -17,6 +18,7 @@ PAGE_TITLES: dict[str, str] = {
     "Research": "Research 研究",
     "Portfolio": "Portfolio 组合",
     "Paper": "Paper 纸面",
+    "Broker": "Broker 只读",
     "Market Data": "Market Data 行情",
     "Diagnostics": "系统诊断",
 }
@@ -37,6 +39,8 @@ STATUS_LABELS: dict[str, str] = {
     "DUPLICATE": "重复，无新写入",
     "CONFLICT": "冲突",
     "ERROR": "错误",
+    "MATCH": "一致",
+    "DIFFERENCE": "存在差异",
     "SETTLED": "已结算",
     "CALCULATED": "已计算",
     "APPLIED": "已应用",
@@ -167,6 +171,17 @@ SECTION_LABELS: dict[str, str] = {
     "paper_fills": "Paper 成交",
     "paper_positions": "Paper 持仓",
     "paper_portfolio": "Paper 组合",
+    "broker_status": "Broker 状态",
+    "broker_accounts": "Broker 账户",
+    "broker_positions": "Broker 持仓",
+    "broker_orders": "Broker 订单",
+    "broker_trades": "Broker 成交",
+    "broker_shadow_compare": "Shadow Compare",
+    "broker_differences": "Difference Report",
+    "broker_diagnostics": "Broker Diagnostics",
+    "broker_read_only_notice": (
+        "Broker 页面只展示只读快照和差异报告，不登录、不重试、不报单、不撤单、不写数据库"
+    ),
     "selected_data_source": "当前数据源",
     "static_fixture_status": "静态样例状态",
     "read_only_adapter_status": "只读适配器状态",
@@ -254,6 +269,18 @@ FIELD_LABELS: dict[str, str] = {
     "migration": "迁移状态",
     "Paper": "Paper 最近结果",
     "SIM": "SIM 最近结果",
+    "Broker": "Broker 只读",
+    "status": "状态",
+    "reason": "原因",
+    "currency": "币种",
+    "broker_cash": "现金",
+    "available": "可用资金",
+    "equity": "权益",
+    "margin": "保证金",
+    "frozen": "冻结资金",
+    "updated_at": "更新时间",
+    "difference_count": "差异数量",
+    "difference": "差异",
     "Kill Switch": "紧急停止",
     "Scheduler Pause": "调度暂停",
     "Replay Pause": "回放暂停",
@@ -389,6 +416,16 @@ REASON_LABELS: dict[str, str] = {
     "resolver metadata 无效": "resolver 静态元数据缺失或无效，已阻断",
     "resolver 未解析合约": "resolver 未解析出合约，已阻断",
     "只读行情 Adapter 尚未配置": "只读行情 Adapter 尚未配置，已阻断",
+    "broker read only adapter is not configured": "Broker 只读适配器未配置，已阻断",
+    "broker snapshot source is not configured": "Broker 快照源未配置，已阻断",
+    "broker account id is required": "Broker 账户 ID 缺失，已阻断",
+    "broker network blocked": "Broker 网络错误，已阻断",
+    "broker login failed": "Broker 登录失败，已阻断",
+    "broker account does not exist": "Broker 账户不存在，已阻断",
+    "broker snapshot missing": "Broker 快照缺失，已阻断",
+    "broker snapshot blocked": "Broker 快照被阻断",
+    "paper result blocked": "Paper 结果被阻断",
+    "默认样例仅用于展示，不代表业务事实": "默认样例仅用于展示，不代表业务事实",
     "无": "无",
     "missing provider": "当前没有可用的预演执行器",
     "dry-run returned non-MOCK target": "当前目标不是 MOCK，已阻止执行",

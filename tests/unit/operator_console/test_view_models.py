@@ -10,7 +10,7 @@ def test_default_view_model_has_all_pages() -> None:
     model = default_console_view_model()
 
     assert model.pages == tuple(OperatorPage)
-    assert len(model.pages) == 6
+    assert len(model.pages) == 7
 
 
 def test_default_view_model_is_mock_only_and_live_locked() -> None:
@@ -49,6 +49,9 @@ def test_default_view_model_renders_research_portfolio_and_market_data() -> None
     assert model.market_data.blocked_reason == "只读行情适配器未配置，不会访问网络"
     assert model.market_data.supported_symbols == ("ao", "rb", "ag", "cu")
     assert dict(model.paper_page.consistency)["all_match"] == "True"
+    assert model.broker.status == "READY"
+    assert dict(model.broker.shadow_compare)["status"] == "DIFFERENCE"
+    assert model.broker.accounts
 
 
 def test_default_diagnostics_are_unknown_read_only_values() -> None:
@@ -61,10 +64,11 @@ def test_default_diagnostics_are_unknown_read_only_values() -> None:
     }
     assert dict(model.diagnostics.safety) == {
         "ExecutionTarget": "MOCK only",
-        "DB write": "disabled",
-        "live trading": "disabled",
-        "broker/CTP/SimNow": "disabled",
+        "DB write": "禁用",
+        "live trading": "禁用",
+        "broker/CTP/SimNow": "禁用",
     }
+    assert dict(model.diagnostics.broker)["submit/cancel"] == "禁用"
 
 
 def test_default_config_view_model_is_unconfigured_and_mock_only() -> None:

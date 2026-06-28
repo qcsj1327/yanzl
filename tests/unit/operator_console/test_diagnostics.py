@@ -19,9 +19,9 @@ def test_read_only_diagnostics_provider_returns_unknown_values() -> None:
     }
     assert dict(diagnostics.safety) == {
         "ExecutionTarget": "MOCK only",
-        "DB write": "disabled",
-        "live trading": "disabled",
-        "broker/CTP/SimNow": "disabled",
+        "DB write": "禁用",
+        "live trading": "禁用",
+        "broker/CTP/SimNow": "禁用",
     }
 
 

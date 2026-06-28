@@ -27,6 +27,7 @@ from futures_mvp.modules.operator_console.dry_run_wiring import (
     create_paper_config_dry_run_provider,
 )
 from futures_mvp.modules.operator_console.view_models import (
+    BrokerConsoleViewModel,
     ButtonViewModel,
     ConfigurationViewModel,
     ForbiddenActionViewModel,
@@ -280,6 +281,8 @@ def _render_page(
         result = _render_session_actions(ui, model.paper, provider)
         if result is not None:
             return _with_result(ui, model, "PAPER", result)
+    elif page is OperatorPage.BROKER:
+        _render_broker(ui, model.broker)
     elif page is OperatorPage.MARKET_DATA:
         configuration = _render_market_data(
             ui,
@@ -423,6 +426,27 @@ def _render_paper(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> Non
     _render_card(bottom[2], labels.section_label("paper_positions"), paper.positions)
     _render_card(bottom[3], labels.section_label("paper_portfolio"), paper.portfolio)
     ui.markdown(labels.section_label("placeholder"))
+
+
+def _render_broker(ui: OperatorConsoleUI, broker: BrokerConsoleViewModel) -> None:
+    top = ui.columns(4)
+    _render_card(
+        top[0],
+        labels.section_label("broker_status"),
+        (
+            ("status", labels.status_label(broker.status)),
+            ("reason", labels.reason_label(broker.reason or "无")),
+        ),
+    )
+    _render_card(top[1], labels.section_label("broker_accounts"), broker.accounts)
+    _render_card(top[2], labels.section_label("broker_shadow_compare"), broker.shadow_compare)
+    _render_card(top[3], labels.section_label("broker_diagnostics"), broker.diagnostics)
+    middle = ui.columns(4)
+    _render_card(middle[0], labels.section_label("broker_positions"), broker.positions)
+    _render_card(middle[1], labels.section_label("broker_orders"), broker.orders)
+    _render_card(middle[2], labels.section_label("broker_trades"), broker.trades)
+    _render_card(middle[3], labels.section_label("broker_differences"), broker.differences)
+    ui.markdown(labels.section_label("broker_read_only_notice"))
 
 
 def _render_safety(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> None:
@@ -711,16 +735,17 @@ def _render_results(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> N
 
 
 def _render_diagnostics(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> None:
-    row = ui.columns(5)
+    row = ui.columns(6)
     _render_card(row[0], labels.section_label("resolver_diagnostics"), model.diagnostics.resolver)
     _render_card(
         row[1],
         labels.section_label("market_data_diagnostics"),
         model.diagnostics.market_data,
     )
-    _render_card(row[2], labels.section_label("research_diagnostics"), model.diagnostics.research)
-    _render_card(row[3], labels.section_label("paper_diagnostics"), model.diagnostics.paper)
-    _render_card(row[4], labels.section_label("safety_checks"), model.diagnostics.safety)
+    _render_card(row[2], labels.section_label("broker_diagnostics"), model.diagnostics.broker)
+    _render_card(row[3], labels.section_label("research_diagnostics"), model.diagnostics.research)
+    _render_card(row[4], labels.section_label("paper_diagnostics"), model.diagnostics.paper)
+    _render_card(row[5], labels.section_label("safety_checks"), model.diagnostics.safety)
     ui.subheader(labels.section_label("diagnostic_items"))
     _render_card(ui, labels.section_label("local_checks"), model.diagnostics.items)
 
@@ -800,6 +825,7 @@ def _with_result(
         research=model.research,
         portfolio=model.portfolio,
         paper_page=model.paper_page,
+        broker=model.broker,
         market_data=model.market_data,
         paper=model.paper,
         safety=model.safety,
@@ -830,6 +856,7 @@ def _with_configuration(
         research=model.research,
         portfolio=model.portfolio,
         paper_page=model.paper_page,
+        broker=model.broker,
         market_data=model.market_data,
         paper=model.paper,
         safety=model.safety,
@@ -1216,6 +1243,7 @@ def _model_with_session_state(
         research=model.research,
         portfolio=model.portfolio,
         paper_page=model.paper_page,
+        broker=model.broker,
         market_data=model.market_data,
         paper=model.paper,
         safety=model.safety,

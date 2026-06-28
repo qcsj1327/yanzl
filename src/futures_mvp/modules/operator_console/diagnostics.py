@@ -20,12 +20,19 @@ def read_only_diagnostics_placeholder() -> DiagnosticViewModel:
             ("configuration", "未配置"),
             ("network", "不会访问网络"),
         ),
+        broker=(
+            ("BrokerReadOnlyAdapter", "BLOCKED"),
+            ("Snapshot", "未配置"),
+            ("Shadow Compare", "BLOCKED"),
+            ("network/login/retry", "禁用"),
+            ("submit/cancel/db_write", "禁用"),
+        ),
         research=(("source_of_truth", "research only"),),
         paper=(("PaperResearchRuntime", "READY"),),
         safety=(
             ("ExecutionTarget", "MOCK only"),
-            ("DB write", "disabled"),
-            ("live trading", "disabled"),
-            ("broker/CTP/SimNow", "disabled"),
+            ("DB write", "禁用"),
+            ("live trading", "禁用"),
+            ("broker/CTP/SimNow", "禁用"),
         ),
     )
