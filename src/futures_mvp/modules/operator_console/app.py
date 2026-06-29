@@ -5,6 +5,14 @@ from datetime import date
 from importlib import import_module
 from typing import Any, Protocol, cast
 
+from futures_mvp.modules.market_data.data_center import (
+    DataCenterService,
+    DataCenterSnapshot,
+    DataCenterSyncResult,
+    DataQualityRow,
+    HistoricalCoverageRow,
+    InstrumentDataCenterRow,
+)
 from futures_mvp.modules.market_data.models import InstrumentResolveStatus
 from futures_mvp.modules.market_data.resolver import InstrumentResolver
 from futures_mvp.modules.market_data.runtime import MarketDataRuntime
@@ -163,6 +171,7 @@ def render_console(
     paper_dry_run: DryRunProvider | None = None,
     market_data_runtime: MarketDataRuntime | None = None,
     historical_ingestion_service: Any | None = None,
+    data_center_service: DataCenterService | None = None,
 ) -> None:
     model = _model_with_session_state(ui, view_model or default_console_view_model())
     ui.title(labels.section_label("Operator Console"))
@@ -175,6 +184,7 @@ def render_console(
         paper_dry_run=paper_dry_run,
         market_data_runtime=market_data_runtime,
         historical_ingestion_service=historical_ingestion_service,
+        data_center_service=data_center_service,
     )
     if _has_result(rendered_model.results):
         ui.divider()
@@ -270,12 +280,21 @@ def _render_page(
     paper_dry_run: DryRunProvider | None,
     market_data_runtime: MarketDataRuntime | None,
     historical_ingestion_service: Any | None,
+    data_center_service: DataCenterService | None,
 ) -> OperatorConsoleViewModel:
     if page is OperatorPage.DASHBOARD:
         _render_dashboard(ui, model)
     elif page is OperatorPage.CONFIG_CENTER:
         configuration = _render_config_center(ui, model)
         return _with_configuration(model, configuration)
+    elif page is OperatorPage.DATA_CENTER:
+        _render_data_center(
+            ui,
+            data_center_service or DataCenterService(
+                ingestion_service=historical_ingestion_service,
+                runtime=market_data_runtime,
+            ),
+        )
     elif page is OperatorPage.RESEARCH:
         _render_research(ui, model)
     elif page is OperatorPage.PORTFOLIO:
@@ -306,12 +325,36 @@ def _render_page(
 def _render_dashboard(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> None:
     _render_card(
         ui,
-        labels.section_label("safety_banner"),
+        labels.section_label("beginner_workflow"),
         (
-            "仅本地模拟",
-            "仅研究展示",
-            "不启用实盘",
-            "不写数据库",
+            (
+                "第一步：选择品种",
+                "状态：可执行；建议：进入数据中心，先选择 AO / RB / AG / CU",
+            ),
+            (
+                "第二步：检查合约解析",
+                "状态：可执行；建议：确认主力合约、交易合约和交易所",
+            ),
+            (
+                "第三步：检查 AkShare 映射",
+                "状态：可执行；建议：确认品种映射存在且已启用",
+            ),
+            (
+                "第四步：同步历史行情",
+                "状态：可执行；建议：用户点击同步，不会自动联网",
+            ),
+            (
+                "第五步：检查数据覆盖",
+                "状态：未开始；建议：同步后检查覆盖开始、覆盖结束和 Bar 数量",
+            ),
+            (
+                "第六步：运行本地库回测",
+                "状态：已阻断；原因：本地历史库暂无确认覆盖；处理：先同步并检查覆盖",
+            ),
+            (
+                "第七步：查看纸面模拟 / Broker 只读影子对照",
+                "状态：可查看；建议：只看结果和只读影子对照，不自动执行",
+            ),
         ),
     )
     first_row = ui.columns(3)
@@ -353,12 +396,13 @@ def _render_dashboard(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) ->
     second_row = ui.columns(1)
     _render_card(
         second_row[0],
-        labels.section_label("latest_result_card"),
+        labels.section_label("workflow_help"),
         (
-            f"{labels.field_label('latest dry-run')}: "
-            f"{model.dashboard.latest_dry_run_summary}",
-            labels.dashboard_text("db_delta_zero"),
-            "命令来源：静态样例可预演，只读行情未配置时阻断",
+            "如果不知道先做什么：打开数据中心，选择 AO，然后点击检查配置。",
+            "如果被阻断：页面会说明原因、安全结果和下一步。",
+            "什么时候能同步：品种映射存在、合约解析通过后，由用户点击同步。",
+            "什么时候能回测：本地历史库已有数据，覆盖和质量检查通过后。",
+            "什么时候能纸面模拟：先看本地库回测结果，再查看纸面模拟结果。",
         ),
     )
 
@@ -462,7 +506,7 @@ def _render_paper(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> Non
     _render_card(
         top[0],
         labels.section_label("paper_runtime"),
-        (f"PaperResearchRuntime: {labels.status_label(paper.runtime_status)}",),
+        (f"纸面模拟运行状态: {labels.status_label(paper.runtime_status)}",),
     )
     _render_card(top[1], labels.section_label("paper_lifecycle"), paper.lifecycle)
     _render_card(top[2], labels.section_label("paper_consistency"), paper.consistency)
@@ -818,6 +862,296 @@ def _render_market_data(
     )
 
 
+def _render_data_center(
+    ui: OperatorConsoleUI,
+    service: DataCenterService,
+) -> None:
+    snapshot = service.snapshot()
+    selected_symbol = ui.selectbox(
+        labels.field_label("data_center_symbol"),
+        ("AO", "RB", "AG", "CU"),
+        index=0,
+        key="data_center:selected_symbol",
+    )
+    symbol = selected_symbol.lower()
+    instrument = _data_center_instrument(snapshot, selected_symbol)
+    coverage = _data_center_coverage(snapshot, selected_symbol)
+    quality = _data_center_quality(snapshot, selected_symbol)
+    source = snapshot.data_sources[0]
+    can_backtest = coverage.bar_count > 0 and quality.coverage_ratio != "0%"
+
+    top = ui.columns(2)
+    _render_card(
+        top[0],
+        labels.section_label("data_center_instruments"),
+        (
+            ("品种名称", selected_symbol),
+            ("品种映射", instrument.mapping),
+            ("合约解析", instrument.status),
+            ("主力合约", instrument.main_contract),
+            ("交易合约", instrument.trade_contract),
+            ("交易所", instrument.exchange),
+            ("数据源", instrument.data_source),
+        ),
+    )
+    _render_card(
+        top[1],
+        labels.section_label("data_center_sources"),
+        (
+            ("AkShare 是否可用", "是" if source.enabled else "否"),
+            ("数据源状态", source.status),
+            ("最近连接", source.latest_connection),
+            ("最近错误", source.latest_error),
+            ("版本", source.version),
+        ),
+    )
+
+    workflow = ui.columns(2)
+    _render_card(
+        workflow[0],
+        labels.section_label("data_center_step_config"),
+        (
+            ("状态", "已通过" if instrument.status == "可用" else "已阻断"),
+            ("AkShare 是否可用", "是" if source.enabled else "否：未配置时不会自动联网"),
+            ("品种映射是否存在", "是"),
+            ("合约解析是否可解析", "是" if instrument.trade_contract != "未解析" else "否"),
+            ("下一步", "同步该品种历史行情"),
+        ),
+    )
+    _render_card(
+        workflow[1],
+        labels.section_label("data_center_step_coverage"),
+        (
+            ("覆盖开始", coverage.coverage_start),
+            ("覆盖结束", coverage.coverage_end),
+            ("Bar 数量", str(coverage.bar_count)),
+            ("覆盖率", quality.coverage_ratio),
+            ("缺失情况", "无" if quality.missing_bars == 0 else str(quality.missing_bars)),
+            (
+                "阻断原因",
+                "无" if can_backtest else _no_local_data_text(selected_symbol, "1m"),
+            ),
+        ),
+    )
+
+    start_text = ui.text_input(
+        labels.field_label("data_center_start"),
+        value="2024-01-01",
+        key="data_center:sync_start",
+    )
+    end_text = ui.text_input(
+        labels.field_label("data_center_end"),
+        value="2026-06-30",
+        key="data_center:sync_end",
+    )
+    timeframe = ui.selectbox(
+        labels.field_label("data_center_timeframe"),
+        ("1m", "5m", "15m", "1h", "1d"),
+        index=0,
+        key="data_center:timeframe",
+    )
+    action_row = ui.columns(5)
+    if action_row[0].button(
+        labels.action_label("Sync Selected Historical Bars"),
+        disabled=False,
+        key="data_center:sync_selected",
+    ):
+        result = _run_data_center_sync(service, symbol, start_text, end_text, timeframe)
+        _render_card(
+            action_row[0],
+            labels.section_label("data_center_sync_result"),
+            _data_center_sync_result_rows(result),
+        )
+    if action_row[1].button(
+        labels.action_label("Check Historical Coverage"),
+        disabled=False,
+        key="data_center:check_coverage",
+    ):
+        checked = service.snapshot(timeframe=timeframe)
+        _render_card(
+            action_row[1],
+            labels.section_label("data_center_coverage"),
+            _selected_coverage_rows(checked, selected_symbol),
+        )
+    if action_row[2].button(
+        labels.action_label("Check Data Quality"),
+        disabled=False,
+        key="data_center:check_quality",
+    ):
+        checked = service.snapshot(timeframe=timeframe)
+        _render_card(
+            action_row[2],
+            labels.section_label("data_quality_result"),
+            _selected_quality_rows(checked, selected_symbol),
+        )
+    action_row[3].button(
+        labels.action_label("Open Backtest Entry"),
+        disabled=not can_backtest,
+        key="data_center:open_backtest",
+    )
+    action_row[4].button(
+        labels.action_label("Open Paper Result"),
+        disabled=False,
+        key="data_center:open_paper",
+    )
+
+    bottom = ui.columns(3)
+    _render_card(
+        bottom[0],
+        labels.section_label("data_center_step_sync"),
+        (
+            ("开始日期", start_text),
+            ("结束日期", end_text),
+            ("时间周期", timeframe),
+            ("按钮后果", "只同步该品种历史行情；不会自动执行其他页面"),
+        ),
+    )
+    _render_card(
+        bottom[1],
+        labels.section_label("data_center_step_quality"),
+        _selected_quality_rows(snapshot, selected_symbol),
+    )
+    _render_card(
+        bottom[2],
+        labels.section_label("data_center_step_backtest"),
+        (
+            ("当前是否可用于回测", "可以回测" if can_backtest else "请先同步历史行情"),
+            (
+                "下一步",
+                "去研究页面查看本地库回测入口"
+                if can_backtest
+                else "先同步，再检查覆盖和质量",
+            ),
+        ),
+    )
+    _render_card(
+        ui,
+        labels.section_label("data_center_diagnostics"),
+        (
+            ("合约解析", snapshot.diagnostics.resolver),
+            ("本地历史库", snapshot.diagnostics.repository),
+            ("历史K线", snapshot.diagnostics.historical_bar),
+            ("AkShare", snapshot.diagnostics.akshare),
+            ("同步服务", snapshot.diagnostics.sync_service),
+            ("数据库", snapshot.diagnostics.database),
+            ("下一步建议", "覆盖通过后进入 Research 页面运行本地库回测"),
+        ),
+    )
+    ui.markdown("数据中心只负责数据、质量、同步、覆盖和管理。")
+    ui.markdown("保持在行情数据链路内，不进入交易链路。")
+
+
+def _data_center_instrument(
+    snapshot: DataCenterSnapshot,
+    symbol: str,
+) -> InstrumentDataCenterRow:
+    for row in snapshot.instruments:
+        if row.symbol == symbol.upper():
+            return row
+    return snapshot.instruments[0]
+
+
+def _data_center_coverage(
+    snapshot: DataCenterSnapshot,
+    symbol: str,
+) -> HistoricalCoverageRow:
+    for row in snapshot.coverage:
+        if row.symbol == symbol.upper():
+            return row
+    return snapshot.coverage[0]
+
+
+def _data_center_quality(
+    snapshot: DataCenterSnapshot,
+    symbol: str,
+) -> DataQualityRow:
+    for row in snapshot.quality:
+        if row.symbol == symbol.upper():
+            return row
+    return snapshot.quality[0]
+
+
+def _selected_coverage_rows(
+    snapshot: DataCenterSnapshot,
+    symbol: str,
+) -> tuple[tuple[str, str], ...]:
+    coverage = _data_center_coverage(snapshot, symbol)
+    quality = _data_center_quality(snapshot, symbol)
+    return (
+        ("覆盖开始", coverage.coverage_start),
+        ("覆盖结束", coverage.coverage_end),
+        ("Bar 数量", str(coverage.bar_count)),
+        ("最近同步时间", coverage.latest_sync),
+        ("覆盖率", quality.coverage_ratio),
+        ("缺失情况", "无" if quality.missing_bars == 0 else str(quality.missing_bars)),
+    )
+
+
+def _selected_quality_rows(
+    snapshot: DataCenterSnapshot,
+    symbol: str,
+) -> tuple[tuple[str, str], ...]:
+    quality = _data_center_quality(snapshot, symbol)
+    return (
+        ("缺失 Bar", str(quality.missing_bars)),
+        ("重复 Bar", str(quality.duplicate_bars)),
+        ("异常 Bar", str(quality.abnormal_bars)),
+        ("连续性", quality.continuity),
+        ("Gap", str(quality.gap_count)),
+        ("同步状态", quality.sync_status),
+    )
+
+
+def _no_local_data_text(symbol: str, timeframe: str) -> str:
+    return (
+        f"本地历史库暂无 {symbol.upper()} 的 {timeframe} 数据。"
+        "系统没有访问外部行情，也没有写入交易数据。"
+        "请先点击“同步该品种历史行情”。"
+    )
+
+
+def _run_data_center_sync(
+    service: DataCenterService,
+    symbol: str,
+    start_text: str,
+    end_text: str,
+    timeframe: str,
+) -> DataCenterSyncResult:
+    try:
+        start = date.fromisoformat(start_text.strip())
+        end = date.fromisoformat(end_text.strip())
+    except ValueError:
+        return DataCenterSyncResult(
+            status="已阻断",
+            added=0,
+            updated=0,
+            skipped=0,
+            failed=1,
+            elapsed_ms=0,
+            diagnostics=("日期格式无效", "未进入 Broker，未启用 ExecutionTarget"),
+        )
+    return service.sync_history(
+        symbol=symbol.strip(),
+        start=start,
+        end=end,
+        timeframe=timeframe,
+    )
+
+
+def _data_center_sync_result_rows(
+    result: DataCenterSyncResult,
+) -> tuple[tuple[str, str], ...]:
+    return (
+        ("状态", result.status),
+        ("新增", str(result.added)),
+        ("更新", str(result.updated)),
+        ("跳过", str(result.skipped)),
+        ("失败", str(result.failed)),
+        ("耗时", f"{result.elapsed_ms}ms"),
+        *tuple(("诊断", item) for item in result.diagnostics),
+    )
+
+
 def _sync_historical_bars(
     service: Any | None,
     symbol: str,
@@ -829,7 +1163,7 @@ def _sync_historical_bars(
         return (
             ("状态", "BLOCKED"),
             ("失败原因", "历史行情同步服务未配置"),
-            ("安全边界", "未下单，未连接 Broker，未启用 ExecutionTarget"),
+            ("安全边界", "未进入交易链路，未连接 Broker，未启用 ExecutionTarget"),
         )
     try:
         trading_day = date.fromisoformat(trading_day_text.strip())
@@ -838,7 +1172,7 @@ def _sync_historical_bars(
         return (
             ("状态", "BLOCKED"),
             ("失败原因", "交易日格式无效"),
-            ("安全边界", "未下单，未连接 Broker，未启用 ExecutionTarget"),
+            ("安全边界", "未进入交易链路，未连接 Broker，未启用 ExecutionTarget"),
         )
     result = service.ingest_symbol(
         symbol.strip(),
@@ -881,17 +1215,22 @@ def _render_results(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> N
 
 
 def _render_diagnostics(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> None:
-    row = ui.columns(6)
+    row = ui.columns(7)
     _render_card(row[0], labels.section_label("resolver_diagnostics"), model.diagnostics.resolver)
     _render_card(
         row[1],
         labels.section_label("market_data_diagnostics"),
         model.diagnostics.market_data,
     )
-    _render_card(row[2], labels.section_label("broker_diagnostics"), model.diagnostics.broker)
-    _render_card(row[3], labels.section_label("research_diagnostics"), model.diagnostics.research)
-    _render_card(row[4], labels.section_label("paper_diagnostics"), model.diagnostics.paper)
-    _render_card(row[5], labels.section_label("safety_checks"), model.diagnostics.safety)
+    _render_card(
+        row[2],
+        labels.section_label("data_center_diagnostics"),
+        model.diagnostics.data_center,
+    )
+    _render_card(row[3], labels.section_label("broker_diagnostics"), model.diagnostics.broker)
+    _render_card(row[4], labels.section_label("research_diagnostics"), model.diagnostics.research)
+    _render_card(row[5], labels.section_label("paper_diagnostics"), model.diagnostics.paper)
+    _render_card(row[6], labels.section_label("safety_checks"), model.diagnostics.safety)
     ui.subheader(labels.section_label("diagnostic_items"))
     _render_card(ui, labels.section_label("local_checks"), model.diagnostics.items)
 
@@ -974,6 +1313,7 @@ def _with_result(
         paper_page=model.paper_page,
         broker=model.broker,
         market_data=model.market_data,
+        data_center=model.data_center,
         paper=model.paper,
         safety=model.safety,
         configuration=model.configuration,
@@ -1006,6 +1346,7 @@ def _with_configuration(
         paper_page=model.paper_page,
         broker=model.broker,
         market_data=model.market_data,
+        data_center=model.data_center,
         paper=model.paper,
         safety=model.safety,
         configuration=configuration,
@@ -1437,6 +1778,7 @@ def _model_with_session_state(
         paper_page=model.paper_page,
         broker=model.broker,
         market_data=model.market_data,
+        data_center=model.data_center,
         paper=model.paper,
         safety=model.safety,
         configuration=ConfigurationViewModel(

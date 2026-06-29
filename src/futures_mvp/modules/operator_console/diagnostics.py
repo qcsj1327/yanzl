@@ -28,7 +28,7 @@ def read_only_diagnostics_placeholder() -> DiagnosticViewModel:
             ("submit/cancel/db_write", "禁用"),
         ),
         research=(("source_of_truth", "research only"),),
-        paper=(("PaperResearchRuntime", "READY"),),
+        paper=(("纸面模拟运行状态", "READY"),),
         safety=(
             ("ExecutionTarget", "MOCK only"),
             ("DB write", "禁用"),

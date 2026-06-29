@@ -6,6 +6,7 @@ def test_all_page_titles_have_chinese_mapping() -> None:
         "总览": "总览",
         "Dashboard": "总览",
         "配置中心": "配置中心",
+        "数据中心": "数据中心",
         "Research": "研究",
         "Portfolio": "组合",
         "Paper": "纸面运行",
@@ -55,12 +56,17 @@ def test_required_safety_action_risk_and_result_labels_exist() -> None:
     assert labels.safety_label("SimNow Disabled") == "SimNow 已禁用"
     assert labels.safety_label("MOCK only") == "仅本地模拟，不连接真实交易所"
 
-    assert labels.action_label("Run Paper Dry-run") == "运行 Paper 预演"
-    assert labels.action_label("Run Paper Apply") == "确认运行 Paper 写入"
-    assert labels.action_label("Run SIM Dry-run") == "运行 SIM 预演"
-    assert labels.action_label("Run SIM Apply") == "确认运行 SIM 写入"
+    assert labels.action_label("Run Paper Dry-run") == "查看纸面模拟结果"
+    assert labels.action_label("Run Paper Apply") == "纸面模拟写入已禁用"
+    assert labels.action_label("Run SIM Dry-run") == "查看本地仿真结果"
+    assert labels.action_label("Run SIM Apply") == "本地仿真写入已禁用"
     assert labels.action_label("View Result") == "查看结果"
     assert labels.action_label("Refresh Health") == "刷新状态"
+    assert labels.action_label("Sync Historical Bars") == "同步该品种历史行情"
+    assert labels.action_label("Resync Historical Bars") == "重新同步该品种历史行情"
+    assert labels.action_label("Check Historical Coverage") == "检查覆盖"
+    assert labels.action_label("Rebuild Historical Bars") == "删除后重建该品种历史行情"
+    assert labels.action_label("Check Data Quality") == "检查数据质量"
     assert labels.action_label("Enable Kill Switch") == "开启紧急停止"
     assert labels.action_label("Disable Kill Switch") == "解除紧急停止"
     assert labels.action_label("Pause Scheduler") == "暂停调度"
@@ -105,6 +111,11 @@ def test_required_safety_action_risk_and_result_labels_exist() -> None:
     assert labels.section_label("paper_config") == "纸面配置"
     assert labels.section_label("broker_config") == "券商配置"
     assert labels.section_label("market_data_config") == "行情配置"
+    assert labels.section_label("data_center_sources") == "数据源"
+    assert labels.section_label("data_center_instruments") == "当前品种"
+    assert labels.section_label("data_center_coverage") == "数据覆盖"
+    assert labels.section_label("data_center_quality") == "数据质量"
+    assert labels.section_label("data_center_diagnostics") == "数据中心诊断"
     assert labels.section_label("safety_lock") == "安全锁"
     assert labels.section_label("run_config_preview") == "本次运行配置"
     assert labels.section_label("config_checks") == "配置检查"
@@ -138,13 +149,13 @@ def test_blocked_reason_labels_are_user_facing_chinese() -> None:
 def test_ui_polish_field_and_diagnostic_labels_exist() -> None:
     expected_fields = {
         "Operator Console": "本地操作台",
-        "Runtime": "运行时",
+        "Runtime": "运行状态",
         "rollout mode": "运行模式",
         "mode": "模式",
         "target": "目标类型",
         "health": "健康状态",
         "latest result": "最近结果",
-        "diagnostics": "诊断",
+        "diagnostics": "诊断信息",
         "history": "历史记录",
         "timeframe": "时间周期",
         "position_mode": "仓位模式",
@@ -153,14 +164,14 @@ def test_ui_polish_field_and_diagnostic_labels_exist() -> None:
         "commission": "手续费",
         "slippage": "滑点",
         "capital_allocation": "资金分配",
-        "run_action": "运行",
+        "run_action": "本地流程",
         "pause_action": "暂停",
         "stop_action": "停止",
         "read_only_market_data": "只读行情数据",
         "live_trading": "实盘交易",
         "data_source_check": "数据源",
         "strategy_check": "策略",
-        "resolver_check": "解析器",
+        "resolver_check": "合约解析",
         "broker_check": "券商",
         "runtime_check": "运行时",
         "diagnostics_check": "诊断",

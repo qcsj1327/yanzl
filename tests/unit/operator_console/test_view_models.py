@@ -10,8 +10,9 @@ def test_default_view_model_has_all_pages() -> None:
     model = default_console_view_model()
 
     assert model.pages == tuple(OperatorPage)
-    assert len(model.pages) == 8
+    assert len(model.pages) == 9
     assert model.pages[1] is OperatorPage.CONFIG_CENTER
+    assert model.pages[2] is OperatorPage.DATA_CENTER
 
 
 def test_default_view_model_is_mock_only_and_live_locked() -> None:
@@ -49,6 +50,10 @@ def test_default_view_model_renders_research_portfolio_and_market_data() -> None
     assert model.market_data.connection_status == "未连接"
     assert model.market_data.blocked_reason == "只读行情适配器未配置，不会访问网络"
     assert model.market_data.supported_symbols == ("ao", "rb", "ag", "cu")
+    assert "AkShare" in dict(model.data_center.data_sources)
+    assert set(dict(model.data_center.instruments)) == {"AO", "RB", "AG", "CU"}
+    assert set(dict(model.data_center.historical_coverage)) == {"AO", "RB", "AG", "CU"}
+    assert set(dict(model.data_center.data_quality)) == {"AO", "RB", "AG", "CU"}
     assert dict(model.paper_page.consistency)["all_match"] == "True"
     assert model.broker.status == "READY"
     assert dict(model.broker.shadow_compare)["status"] == "DIFFERENCE"
@@ -59,33 +64,35 @@ def test_default_view_model_has_config_center_sections() -> None:
     model = default_console_view_model()
 
     assert dict(model.config_center.basic) == {
-        "account_id": "demo",
-        "trading_day": "2026-06-28",
-        "market_data_source": "静态样例",
-        "rollout mode": "本地模拟",
-        "symbols": "AO、RB",
-        "timeframe": "日线",
+        "我是谁": "账户 ID：demo",
+        "我要跑哪天": "交易日：2026-06-28",
+        "我要看哪些品种": "AO、RB、AG、CU",
+        "我要用什么数据": "默认静态样例；真实数据需在数据中心同步",
+        "我要跑什么模式": "本地模拟 / 只读 / 禁止实盘",
     }
-    assert dict(model.config_center.research)["strategy"] == "BuyAndHold"
-    assert dict(model.config_center.research)["commission"] == "0.0001"
-    assert dict(model.config_center.research)["slippage"] == "1 Tick"
+    assert dict(model.config_center.research)["用什么策略"] == "BuyAndHold"
+    assert dict(model.config_center.research)["手续费多少"] == "0.0001"
+    assert dict(model.config_center.research)["滑点多少"] == "1 Tick"
     assert dict(model.config_center.paper)["status"] == "未启动"
     assert dict(model.config_center.broker) == {
-        "Broker": "只读",
+        "券商模式": "只读",
         "broker_read_only": "只读",
         "shadow_mode": "启用",
-        "broker_disabled": "禁用",
+        "禁止登录": "是",
+        "禁止下单": "是",
+        "禁止撤单": "是",
     }
-    assert dict(model.config_center.market_data)["read_only_market_data"] == "未配置"
-    assert dict(model.config_center.market_data)["network"] == "不会联网"
-    assert dict(model.config_center.market_data)["real_quote"] == "不会读取真实行情"
+    assert dict(model.config_center.market_data)["真实行情是否已配置"] == "未配置"
+    assert dict(model.config_center.market_data)["是否会联网"] == "不会自动联网"
+    assert dict(model.config_center.market_data)["是否已有本地历史数据"] == "请进入数据中心检查"
     assert dict(model.config_center.safety_locks) == {
         "live_trading": "关闭",
-        "Paper": "启用",
+        "纸面模拟": "只查看，不自动执行",
         "Broker": "只读",
         "ExecutionTarget": "未启用",
+        "数据库": "只写历史K线，不写交易事实",
     }
-    assert dict(model.config_center.run_preview)["rollout mode"] == "MOCK"
+    assert dict(model.config_center.run_preview)["运行模式"] == "仅本地模拟"
     assert dict(model.config_center.checks)["broker_check"] == "只读"
 
 
@@ -103,6 +110,7 @@ def test_default_diagnostics_are_unknown_read_only_values() -> None:
         "live trading": "禁用",
         "broker/CTP/SimNow": "禁用",
     }
+    assert dict(model.diagnostics.data_center)["AkShare"] == "显式点击才读取"
     assert dict(model.diagnostics.broker)["submit/cancel"] == "禁用"
 
 

@@ -7,6 +7,10 @@ from enum import StrEnum
 from typing import cast
 
 from futures_mvp.modules.market_data.akshare_mapping import akshare_mapping_rows
+from futures_mvp.modules.market_data.data_center import (
+    DataCenterService,
+    DataCenterSnapshot,
+)
 from futures_mvp.modules.market_data.runtime import (
     MarketDataRuntimeSnapshot,
     MarketDataRuntimeStatus,
@@ -27,6 +31,7 @@ from futures_mvp.modules.operator_console.config_assembly import (
 class OperatorPage(StrEnum):
     DASHBOARD = "总览"
     CONFIG_CENTER = "配置中心"
+    DATA_CENTER = "数据中心"
     RESEARCH = "Research"
     PORTFOLIO = "Portfolio"
     PAPER = "Paper"
@@ -136,6 +141,18 @@ class MarketDataViewModel:
         ("失败原因", "本地历史行情库无数据"),
     )
     updated_at: str = "未更新"
+
+
+@dataclass(frozen=True)
+class DataCenterViewModel:
+    data_sources: tuple[tuple[str, str], ...]
+    instruments: tuple[tuple[str, str], ...]
+    historical_coverage: tuple[tuple[str, str], ...]
+    data_quality: tuple[tuple[str, str], ...]
+    sync_buttons: tuple[ButtonViewModel, ...]
+    sync_result: tuple[tuple[str, str], ...]
+    coverage_chart: tuple[tuple[str, str], ...]
+    diagnostics: tuple[tuple[str, str], ...]
 
 
 @dataclass(frozen=True)
@@ -265,6 +282,7 @@ class DiagnosticViewModel:
     items: tuple[tuple[str, str], ...]
     resolver: tuple[tuple[str, str], ...] = ()
     market_data: tuple[tuple[str, str], ...] = ()
+    data_center: tuple[tuple[str, str], ...] = ()
     broker: tuple[tuple[str, str], ...] = ()
     research: tuple[tuple[str, str], ...] = ()
     paper: tuple[tuple[str, str], ...] = ()
@@ -315,6 +333,7 @@ class OperatorConsoleViewModel:
     paper_page: PaperConsolePageViewModel
     broker: BrokerConsoleViewModel
     market_data: MarketDataViewModel
+    data_center: DataCenterViewModel
     paper: SessionPageViewModel
     safety: SafetyPageViewModel
     configuration: ConfigurationViewModel
@@ -372,56 +391,55 @@ def default_console_view_model() -> OperatorConsoleViewModel:
         dashboard=DashboardViewModel(),
         config_center=ConfigCenterViewModel(
             basic=(
-                ("account_id", "demo"),
-                ("trading_day", "2026-06-28"),
-                ("market_data_source", "静态样例"),
-                ("rollout mode", "本地模拟"),
-                ("symbols", "AO、RB"),
-                ("timeframe", "日线"),
+                ("我是谁", "账户 ID：demo"),
+                ("我要跑哪天", "交易日：2026-06-28"),
+                ("我要看哪些品种", "AO、RB、AG、CU"),
+                ("我要用什么数据", "默认静态样例；真实数据需在数据中心同步"),
+                ("我要跑什么模式", "本地模拟 / 只读 / 禁止实盘"),
             ),
             research=(
-                ("strategy", "BuyAndHold"),
-                ("position_mode", "固定数量"),
-                ("fixed_quantity", "1"),
-                ("fixed_capital", "100000"),
-                ("commission", "0.0001"),
-                ("slippage", "1 Tick"),
-                ("capital_allocation", "等权分配"),
+                ("用什么策略", "BuyAndHold"),
+                ("用多少数量", "固定数量 1"),
+                ("手续费多少", "0.0001"),
+                ("滑点多少", "1 Tick"),
+                ("当前是否可回测", "请先确认数据中心已有本地历史数据"),
             ),
             paper=(
-                ("Paper Runtime", "未启动"),
+                ("纸面模拟", "只查看结果，不自动执行"),
                 ("status", "未启动"),
-                ("run_action", "未启动"),
+                ("run_action", "等待用户进入纸面模拟页面查看"),
                 ("pause_action", "未启动"),
                 ("stop_action", "未启动"),
             ),
             broker=(
-                ("Broker", "只读"),
+                ("券商模式", "只读"),
                 ("broker_read_only", "只读"),
                 ("shadow_mode", "启用"),
-                ("broker_disabled", "禁用"),
+                ("禁止登录", "是"),
+                ("禁止下单", "是"),
+                ("禁止撤单", "是"),
             ),
             market_data=(
-                ("static_fixture", "可用"),
-                ("read_only_market_data", "未配置"),
-                ("network", "不会联网"),
-                ("real_quote", "不会读取真实行情"),
+                ("当前是静态样例还是真实数据", "默认静态样例"),
+                ("真实行情是否已配置", "未配置"),
+                ("是否会联网", "不会自动联网"),
+                ("是否已有本地历史数据", "请进入数据中心检查"),
                 *akshare_mapping_rows(),
             ),
             safety_locks=(
                 ("live_trading", "关闭"),
-                ("Paper", "启用"),
+                ("纸面模拟", "只查看，不自动执行"),
                 ("Broker", "只读"),
                 ("ExecutionTarget", "未启用"),
+                ("数据库", "只写历史K线，不写交易事实"),
             ),
             run_preview=(
-                ("account_id", "demo"),
-                ("market_data_source", "静态样例"),
-                ("strategy", "BuyAndHold"),
-                ("symbols", "AO、RB"),
-                ("commission", "0.0001"),
-                ("slippage", "1 Tick"),
-                ("rollout mode", "MOCK"),
+                ("当前建议", "先进入数据中心选择品种"),
+                ("检查顺序", "合约解析 -> 品种映射 -> 历史K线"),
+                ("回测条件", "本地历史库有数据且覆盖通过"),
+                ("纸面模拟条件", "先查看回测结果"),
+                ("券商对照", "只读影子对照"),
+                ("运行模式", "仅本地模拟"),
             ),
             checks=(
                 ("data_source_check", "通过"),
@@ -591,6 +609,7 @@ def default_console_view_model() -> OperatorConsoleViewModel:
                 ("解析器", "静态夹具"),
             ),
         ),
+        data_center=data_center_view_model_from_snapshot(DataCenterService().snapshot()),
         paper=SessionPageViewModel(
             page=OperatorPage.PAPER,
             mode_name="PAPER",
@@ -673,6 +692,14 @@ def default_console_view_model() -> OperatorConsoleViewModel:
                 ("read_only_adapter", "已阻断"),
                 ("network", "不会访问网络"),
             ),
+            data_center=(
+                ("Resolver", "可用"),
+                ("Repository", "未配置"),
+                ("HistoricalBar", "已建模"),
+                ("AkShare", "显式点击才读取"),
+                ("同步服务", "未配置"),
+                ("数据库", "只读查询；同步仅写 HistoricalBar"),
+            ),
             broker=(
                 ("BrokerReadOnlyAdapter", "READY"),
                 ("Shadow Compare", "DIFFERENCE"),
@@ -684,8 +711,8 @@ def default_console_view_model() -> OperatorConsoleViewModel:
                 ("source_of_truth", "research only"),
             ),
             paper=(
-                ("PaperResearchRuntime", "READY"),
-                ("PaperConsistencyReport", "all_match=True"),
+                ("纸面模拟运行状态", "READY"),
+                ("纸面模拟一致性", "all_match=True"),
             ),
             safety=(
                 ("ExecutionTarget", "MOCK only"),
@@ -742,6 +769,105 @@ def market_data_view_model_from_snapshot(
             ("network_call_occurred", "是" if snapshot.network_call_occurred else "否"),
             ("latest_error", snapshot.latest_error or "无"),
             *tuple(("diagnostics", item) for item in snapshot.diagnostics),
+        ),
+    )
+
+
+def data_center_view_model_from_snapshot(
+    snapshot: DataCenterSnapshot,
+) -> DataCenterViewModel:
+    return DataCenterViewModel(
+        data_sources=tuple(
+            (
+                source.name,
+                (
+                    f"状态={source.status}；是否启用={'是' if source.enabled else '否'}；"
+                    f"最近连接={source.latest_connection}；最近错误={source.latest_error}；"
+                    f"版本={source.version}"
+                ),
+            )
+            for source in snapshot.data_sources
+        ),
+        instruments=tuple(
+            (
+                row.symbol,
+                (
+                    f"主力合约={row.main_contract}；交易合约={row.trade_contract}；"
+                    f"交易所={row.exchange}；Resolver={row.resolver}；"
+                    f"数据源={row.data_source}；Mapping={row.mapping}；状态={row.status}"
+                ),
+            )
+            for row in snapshot.instruments
+        ),
+        historical_coverage=tuple(
+            (
+                row.symbol,
+                (
+                    f"覆盖开始={row.coverage_start}；覆盖结束={row.coverage_end}；"
+                    f"Bar数量={row.bar_count}；最近同步={row.latest_sync}；来源={row.source}"
+                ),
+            )
+            for row in snapshot.coverage
+        ),
+        data_quality=tuple(
+            (
+                row.symbol,
+                (
+                    f"缺失Bar={row.missing_bars}；重复Bar={row.duplicate_bars}；"
+                    f"异常Bar={row.abnormal_bars}；覆盖率={row.coverage_ratio}；"
+                    f"同步状态={row.sync_status}；Gap={row.gap_count}；连续性={row.continuity}"
+                ),
+            )
+            for row in snapshot.quality
+        ),
+        sync_buttons=(
+            ButtonViewModel(
+                "Sync Historical Bars",
+                False,
+                ConsoleActionStatus.ENABLED_PLACEHOLDER,
+                "用户点击后才同步历史行情",
+            ),
+            ButtonViewModel(
+                "Resync Historical Bars",
+                False,
+                ConsoleActionStatus.ENABLED_PLACEHOLDER,
+                "用户点击后才重新同步",
+            ),
+            ButtonViewModel(
+                "Check Historical Coverage",
+                False,
+                ConsoleActionStatus.ENABLED_PLACEHOLDER,
+                "用户点击后才检查覆盖",
+            ),
+            ButtonViewModel(
+                "Rebuild Historical Bars",
+                False,
+                ConsoleActionStatus.ENABLED_PLACEHOLDER,
+                "用户点击后才删除重建",
+            ),
+            ButtonViewModel(
+                "Check Data Quality",
+                False,
+                ConsoleActionStatus.ENABLED_PLACEHOLDER,
+                "用户点击后才检查数据质量",
+            ),
+        ),
+        sync_result=(
+            ("新增", "0"),
+            ("更新", "0"),
+            ("跳过", "0"),
+            ("失败", "0"),
+            ("耗时", "0ms"),
+            ("诊断", "尚未同步"),
+        ),
+        coverage_chart=snapshot.coverage_chart,
+        diagnostics=(
+            ("Resolver", snapshot.diagnostics.resolver),
+            ("Repository", snapshot.diagnostics.repository),
+            ("HistoricalBar", snapshot.diagnostics.historical_bar),
+            ("AkShare", snapshot.diagnostics.akshare),
+            ("同步服务", snapshot.diagnostics.sync_service),
+            ("数据库", snapshot.diagnostics.database),
         ),
     )
 

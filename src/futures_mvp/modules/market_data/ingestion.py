@@ -128,7 +128,7 @@ class HistoricalDataIngestionService:
                 f"写入条数={total_written}",
                 "更新条数=0",
                 f"跳过条数={skipped}",
-                "未下单，未连接 Broker，未启用 ExecutionTarget",
+                "未进入交易链路，未连接 Broker，未启用 ExecutionTarget",
             ),
         )
 
@@ -243,7 +243,7 @@ def _blocked(*diagnostics: str) -> HistoricalDataIngestionResult:
         reason=reason,
         diagnostics=(
             *diagnostics,
-            "不会下单，不连接 Broker、CTP、SimNow，不启用实盘或执行目标",
+            "不会进入交易链路，不连接 Broker、CTP、SimNow，不启用实盘或执行目标",
         ),
     )
 
