@@ -49,6 +49,24 @@ from futures_mvp.modules.operator_console.view_models import (
 )
 
 
+@dataclass(frozen=True)
+class _PrimaryAction:
+    label: str
+    action_key: str | None
+    disabled: bool
+    why_disabled: str
+    next_step: str
+
+
+@dataclass(frozen=True)
+class _WorkflowState:
+    selected_symbol: str
+    can_backtest: bool
+    backtest_completed: bool
+    paper_completed: bool
+    primary_action: _PrimaryAction
+
+
 class OperatorConsoleUI(Protocol):
     def title(self, body: str) -> None: ...
 
@@ -174,21 +192,39 @@ def render_console(
     data_center_service: DataCenterService | None = None,
 ) -> None:
     model = _model_with_session_state(ui, view_model or default_console_view_model())
+    data_service = data_center_service or DataCenterService(
+        ingestion_service=historical_ingestion_service,
+        runtime=market_data_runtime,
+    )
+    workflow_state = _workflow_state(ui, model, data_service, "AO")
     ui.title(labels.section_label("Operator Console"))
+    developer_mode = _select_display_mode(ui)
     selected_page = _select_page(ui, model)
     ui.header(labels.page_title(selected_page.value))
     rendered_model = _render_page(
         ui,
         model,
         selected_page,
+        workflow_state=workflow_state,
+        developer_mode=developer_mode,
         paper_dry_run=paper_dry_run,
         market_data_runtime=market_data_runtime,
         historical_ingestion_service=historical_ingestion_service,
-        data_center_service=data_center_service,
+        data_center_service=data_service,
     )
-    if _has_result(rendered_model.results):
+    if selected_page is OperatorPage.PAPER and _has_result(rendered_model.results):
         ui.divider()
         _render_dry_run_result_summary(ui, rendered_model.results)
+
+
+def _select_display_mode(ui: OperatorConsoleUI) -> bool:
+    selected = ui.selectbox(
+        labels.section_label("developer_mode"),
+        ("普通用户", "开发者模式"),
+        index=0,
+        key="operator_console_display_mode",
+    )
+    return selected == "开发者模式"
 
 
 def main() -> None:
@@ -260,7 +296,7 @@ def main() -> None:
 def _select_page(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> OperatorPage:
     page_titles = tuple(labels.page_title(page.value) for page in model.pages)
     selected_title = ui.selectbox(
-        labels.field_label("page"),
+        "今天要完成什么",
         page_titles,
         index=0,
         key="operator_console_page",
@@ -277,132 +313,318 @@ def _render_page(
     model: OperatorConsoleViewModel,
     page: OperatorPage,
     *,
+    workflow_state: _WorkflowState,
+    developer_mode: bool,
     paper_dry_run: DryRunProvider | None,
     market_data_runtime: MarketDataRuntime | None,
     historical_ingestion_service: Any | None,
-    data_center_service: DataCenterService | None,
+    data_center_service: DataCenterService,
 ) -> OperatorConsoleViewModel:
     if page is OperatorPage.DASHBOARD:
-        _render_dashboard(ui, model)
+        _render_dashboard(ui, model, workflow_state)
     elif page is OperatorPage.CONFIG_CENTER:
-        configuration = _render_config_center(ui, model)
+        configuration = _render_config_center(
+            ui,
+            model,
+            developer_mode=developer_mode,
+            workflow_state=workflow_state,
+        )
         return _with_configuration(model, configuration)
     elif page is OperatorPage.DATA_CENTER:
         _render_data_center(
             ui,
-            data_center_service or DataCenterService(
-                ingestion_service=historical_ingestion_service,
-                runtime=market_data_runtime,
-            ),
+            data_center_service,
+            developer_mode=developer_mode,
         )
     elif page is OperatorPage.RESEARCH:
+        if not workflow_state.can_backtest:
+            _render_workflow_gate(ui, workflow_state, "研究页面")
+            return model
+        if not workflow_state.backtest_completed:
+            _render_backtest_entry_gate(ui, workflow_state)
+            return model
         _render_research(ui, model)
     elif page is OperatorPage.PORTFOLIO:
+        if not workflow_state.can_backtest:
+            _render_workflow_gate(ui, workflow_state, "组合页面")
+            return model
+        if not workflow_state.backtest_completed:
+            _render_stage_gate(
+                ui,
+                page_name="组合页面",
+                why="本地库回测还没有完成，组合结果暂时不能查看。",
+                next_step="请先完成本地库回测。",
+                current_action="完成本地库回测（只读本地历史行情，不连接券商）",
+            )
+            return model
         _render_portfolio(ui, model)
     elif page is OperatorPage.PAPER:
-        _render_paper(ui, model)
+        if not workflow_state.can_backtest:
+            _render_workflow_gate(ui, workflow_state, "纸面模拟页面")
+            return model
+        if not workflow_state.backtest_completed:
+            _render_stage_gate(
+                ui,
+                page_name="纸面模拟页面",
+                why="本地库回测还没有完成，纸面模拟暂时不能查看。",
+                next_step="请先完成本地库回测。",
+                current_action="完成本地库回测（只读本地历史行情，不连接券商）",
+            )
+            return model
         provider = paper_dry_run or create_paper_config_dry_run_provider(
             model.configuration.dry_run_config
         )
+        if not workflow_state.paper_completed:
+            result = _render_paper_not_completed(ui, model.paper, provider)
+            if result is not None:
+                return _with_result(ui, model, "PAPER", result)
+            return model
+        _render_paper(ui, model)
         result = _render_session_actions(ui, model.paper, provider)
         if result is not None:
             return _with_result(ui, model, "PAPER", result)
     elif page is OperatorPage.BROKER:
-        _render_broker(ui, model.broker)
+        if not workflow_state.can_backtest:
+            _render_workflow_gate(ui, workflow_state, "券商只读页面")
+            return model
+        if not workflow_state.backtest_completed:
+            _render_stage_gate(
+                ui,
+                page_name="券商只读页面",
+                why="本地库回测还没有完成，券商只读对照暂时不能查看。",
+                next_step="请先完成本地库回测。",
+                current_action="完成本地库回测（只读本地历史行情，不连接券商）",
+            )
+            return model
+        if not workflow_state.paper_completed:
+            _render_stage_gate(
+                ui,
+                page_name="券商只读页面",
+                why="纸面模拟还没有完成，券商只读对照暂时不能查看。",
+                next_step="请先完成纸面模拟。",
+                current_action="查看最近一次纸面模拟结果（只预演，不写账本）",
+            )
+            return model
+        _render_broker(ui, model.broker, developer_mode=developer_mode)
     elif page is OperatorPage.MARKET_DATA:
+        if not developer_mode:
+            _render_market_data_workflow_only(ui, workflow_state)
+            return model
         configuration = _render_market_data(
             ui,
             model,
+            developer_mode=developer_mode,
             market_data_runtime=market_data_runtime,
             historical_ingestion_service=historical_ingestion_service,
         )
         return _with_configuration(model, configuration)
     elif page is OperatorPage.DIAGNOSTICS:
-        _render_diagnostics(ui, model)
+        _render_diagnostics(ui, model, developer_mode=developer_mode)
     return model
 
 
-def _render_dashboard(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> None:
+def _render_dashboard(
+    ui: OperatorConsoleUI,
+    model: OperatorConsoleViewModel,
+    workflow_state: _WorkflowState,
+) -> None:
+    workflow = model.dashboard.workflow
     _render_card(
         ui,
         labels.section_label("beginner_workflow"),
         (
+            ("今天目标", workflow.today_goal),
+            ("当前品种", workflow_state.selected_symbol),
+            ("下一步", workflow_state.primary_action.next_step),
             (
-                "第一步：选择品种",
-                "状态：可执行；建议：进入数据中心，先选择 AO / RB / AG / CU",
-            ),
-            (
-                "第二步：检查合约解析",
-                "状态：可执行；建议：确认主力合约、交易合约和交易所",
-            ),
-            (
-                "第三步：检查 AkShare 映射",
-                "状态：可执行；建议：确认品种映射存在且已启用",
-            ),
-            (
-                "第四步：同步历史行情",
-                "状态：可执行；建议：用户点击同步，不会自动联网",
-            ),
-            (
-                "第五步：检查数据覆盖",
-                "状态：未开始；建议：同步后检查覆盖开始、覆盖结束和 Bar 数量",
-            ),
-            (
-                "第六步：运行本地库回测",
-                "状态：已阻断；原因：本地历史库暂无确认覆盖；处理：先同步并检查覆盖",
-            ),
-            (
-                "第七步：查看纸面模拟 / Broker 只读影子对照",
-                "状态：可查看；建议：只看结果和只读影子对照，不自动执行",
+                "安全说明",
+                "首页按钮只引导本地流程，不连接券商，不下单，不启用真实交易。",
             ),
         ),
     )
-    first_row = ui.columns(3)
+    first_row = ui.columns(2)
     _render_card(
         first_row[0],
-        labels.section_label("system_status_card"),
+        labels.section_label("workflow_status"),
         (
-            f"{labels.field_label('Research Platform')}: "
-            f"{labels.status_label(model.dashboard.research_status)}",
-            f"{labels.field_label('Paper Runtime')}: "
-            f"{labels.status_label(model.dashboard.paper_runtime_status)}",
-            f"{labels.field_label('Portfolio')}: "
-            f"{labels.status_label(model.dashboard.portfolio_status)}",
+            ("数据准备", "未完成"),
+            ("是否可以回测", "可以" if workflow_state.can_backtest else "不能"),
+            ("纸面模拟", "前置条件完成后可查看"),
+            ("券商对照", "前置条件完成后可查看"),
         ),
     )
     _render_card(
         first_row[1],
-        labels.section_label("market_data_status"),
-        (
-            f"{labels.field_label('Market Data')}: "
-            f"{labels.status_label(model.dashboard.market_data_status)}",
-            f"{labels.field_label('current_source')}: "
-            f"{model.dashboard.current_source}",
-            f"{labels.field_label('Diagnostics')}: "
-            f"{labels.status_label(model.dashboard.diagnostics_status)}",
-        ),
-    )
-    _render_card(
-        first_row[2],
         labels.section_label("safety_lock_card"),
         (
             "实盘禁用",
-            "Broker 禁用",
+            "券商只读",
             "CTP / SimNow 禁用",
             "真实资金禁用",
             labels.safety_label(model.dashboard.execution_target_status),
         ),
     )
-    second_row = ui.columns(1)
+    _render_workflow_steps(ui, workflow.steps, workflow_state.primary_action)
+
+
+def _render_workflow_steps(
+    ui: OperatorConsoleUI,
+    steps: tuple[object, ...],
+    primary_action: _PrimaryAction,
+) -> None:
+    ui.subheader(labels.section_label("workflow_board"))
+    for item in steps:
+        title = getattr(item, "title", "")
+        status = getattr(item, "status", "")
+        summary = getattr(item, "summary", "")
+        why = getattr(item, "why", "")
+        safe_result = getattr(item, "safe_result", "")
+        next_step = getattr(item, "next_step", "")
+        action_label = getattr(item, "action_label", "")
+        action_key = getattr(item, "action_key", None)
+        _render_card(
+            ui,
+            f"{getattr(item, 'step_no', '')}. {title}",
+            (
+                ("状态", status),
+                ("说明", summary),
+                ("为什么", why),
+                ("安全吗", safe_result),
+                ("下一步", next_step),
+                ("按钮后果", action_label),
+            ),
+        )
+        if action_key == primary_action.action_key:
+            ui.button(primary_action.label, disabled=primary_action.disabled, key=str(action_key))
+        elif action_key:
+            ui.markdown(f"当前不能点：{primary_action.next_step}")
+
+
+def _workflow_state(
+    ui: OperatorConsoleUI,
+    model: OperatorConsoleViewModel,
+    service: DataCenterService,
+    selected_symbol: str,
+) -> _WorkflowState:
+    snapshot = service.snapshot()
+    instrument = _data_center_instrument(snapshot, selected_symbol)
+    coverage = _data_center_coverage(snapshot, selected_symbol)
+    quality = _data_center_quality(snapshot, selected_symbol)
+    primary_action = _data_center_primary_action(
+        selected_symbol=selected_symbol,
+        instrument=instrument,
+        coverage=coverage,
+        quality=quality,
+    )
+    can_backtest = primary_action.action_key == "data_center:open_backtest"
+    backtest_completed = ui.session_value(
+        "operator_console_backtest_completed",
+        False,
+    ) is True
+    paper_completed = (
+        ui.session_value("operator_console_paper_completed", False) is True
+        or _paper_result_completed(model.results)
+    )
+    return _WorkflowState(
+        selected_symbol=selected_symbol,
+        can_backtest=can_backtest,
+        backtest_completed=backtest_completed,
+        paper_completed=paper_completed,
+        primary_action=primary_action,
+    )
+
+
+def _paper_result_completed(result: ResultHistoryViewModel) -> bool:
+    return (
+        result.run_status == "DRY_RUN_COMPLETED"
+        and result.db_delta == 0
+        and result.target == "MOCK only"
+    )
+
+
+def _workflow_allows_business_page(
+    ui: OperatorConsoleUI,
+    workflow_state: _WorkflowState,
+    page_name: str,
+) -> bool:
+    if workflow_state.can_backtest:
+        return True
+    _render_workflow_gate(ui, workflow_state, page_name)
+    return False
+
+
+def _render_workflow_gate(
+    ui: OperatorConsoleUI,
+    workflow_state: _WorkflowState,
+    page_name: str,
+) -> None:
     _render_card(
-        second_row[0],
-        labels.section_label("workflow_help"),
+        ui,
+        f"{page_name}暂时不能进入",
         (
-            "如果不知道先做什么：打开数据中心，选择 AO，然后点击检查配置。",
-            "如果被阻断：页面会说明原因、安全结果和下一步。",
-            "什么时候能同步：品种映射存在、合约解析通过后，由用户点击同步。",
-            "什么时候能回测：本地历史库已有数据，覆盖和质量检查通过后。",
-            "什么时候能纸面模拟：先看本地库回测结果，再查看纸面模拟结果。",
+            ("为什么", workflow_state.primary_action.why_disabled),
+            ("下一步", workflow_state.primary_action.next_step),
+            (
+                "安全吗",
+                "系统没有连接券商，没有下单，没有写入交易数据。",
+            ),
+            ("当前主操作", workflow_state.primary_action.label),
+        ),
+    )
+
+
+def _render_stage_gate(
+    ui: OperatorConsoleUI,
+    *,
+    page_name: str,
+    why: str,
+    next_step: str,
+    current_action: str,
+) -> None:
+    _render_card(
+        ui,
+        f"{page_name}暂时不能进入",
+        (
+            ("为什么", why),
+            ("下一步", next_step),
+            ("安全吗", "系统没有连接券商，没有下单，没有写入交易数据。"),
+            ("当前主操作", current_action),
+        ),
+    )
+
+
+def _render_backtest_entry_gate(
+    ui: OperatorConsoleUI,
+    workflow_state: _WorkflowState,
+) -> None:
+    _render_card(
+        ui,
+        "本地库回测可以开始",
+        (
+            ("为什么", "历史行情覆盖和数据质量已通过，但本地库回测还没有完成。"),
+            ("下一步", "请先完成本地库回测。"),
+            ("安全吗", "这里只读本地历史行情，不连接券商，不下单。"),
+            (
+                "当前主操作",
+                f"完成 {workflow_state.selected_symbol} 本地库回测"
+                "（只读历史行情，不连接券商）",
+            ),
+        ),
+    )
+
+
+def _render_market_data_workflow_only(
+    ui: OperatorConsoleUI,
+    workflow_state: _WorkflowState,
+) -> None:
+    _render_card(
+        ui,
+        "行情数据当前任务",
+        (
+            ("当前主操作", workflow_state.primary_action.label),
+            ("为什么", workflow_state.primary_action.why_disabled),
+            ("下一步", workflow_state.primary_action.next_step),
+            ("安全吗", "普通模式不启动行情运行时，不自动联网，不连接券商，不下单。"),
         ),
     )
 
@@ -410,11 +632,43 @@ def _render_dashboard(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) ->
 def _render_config_center(
     ui: OperatorConsoleUI,
     model: OperatorConsoleViewModel,
+    *,
+    developer_mode: bool,
+    workflow_state: _WorkflowState,
 ) -> ConfigurationViewModel:
-    config = _read_config_form(ui, model.configuration.dry_run_config)
+    config = (
+        _read_config_form(ui, model.configuration.dry_run_config)
+        if developer_mode
+        else model.configuration.dry_run_config
+    )
     assembly = assemble_config(config)
     ui.set_session_value("operator_console_dry_run_config", assembly.config)
     center = model.config_center
+    _render_card(
+        ui,
+        "当前任务状态",
+        (
+            ("我是谁", "本地样例账户"),
+            ("我要跑哪个品种", workflow_state.selected_symbol),
+            ("我要跑哪一天", "先按数据中心同步区间准备历史行情"),
+            ("我要使用什么数据", "本地历史行情"),
+            ("当前能不能回测", "可以" if workflow_state.can_backtest else "不能"),
+            ("当前是不是只读", "是，只读查看和本地预演"),
+            ("当前是否允许实盘", "不允许"),
+            ("下一步", workflow_state.primary_action.next_step),
+        ),
+    )
+    if not developer_mode:
+        return ConfigurationViewModel(
+            normal=model.configuration.normal,
+            advanced=model.configuration.advanced,
+            sources=model.configuration.sources,
+            dry_run_config=assembly.config,
+            preview=assembly.preview,
+            validation=assembly.validation,
+            market_data_sources=model.configuration.market_data_sources,
+            dry_run_required=model.configuration.dry_run_required,
+        )
     first_row = ui.columns(3)
     _render_card(first_row[0], labels.section_label("basic_config"), center.basic)
     _render_card(first_row[1], labels.section_label("research_config"), center.research)
@@ -426,10 +680,20 @@ def _render_config_center(
     preview_row = ui.columns(2)
     _render_card(
         preview_row[0],
-        labels.section_label("run_config_preview"),
+        "本次任务配置",
         _run_preview_items(assembly.config, center.run_preview),
     )
     _render_check_items(preview_row[1], center.checks)
+    if developer_mode:
+        _render_card(
+            ui,
+            labels.section_label("developer_diagnostics"),
+            (
+                ("命令来源", "typed config object / UI session state"),
+                ("配置预览", "仅用于预演，不落库"),
+                ("交易目标", "仅本地模拟"),
+            ),
+        )
     return ConfigurationViewModel(
         normal=_normal_config_items(config),
         advanced=model.configuration.advanced,
@@ -506,7 +770,11 @@ def _render_paper(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> Non
     _render_card(
         top[0],
         labels.section_label("paper_runtime"),
-        (f"纸面模拟运行状态: {labels.status_label(paper.runtime_status)}",),
+        (
+            ("状态", labels.status_label(paper.runtime_status)),
+            ("为什么", "纸面模拟用于确认本地流程是否跑通"),
+            ("安全吗", "默认只预演，不写账本，不连接真实交易所"),
+        ),
     )
     _render_card(top[1], labels.section_label("paper_lifecycle"), paper.lifecycle)
     _render_card(top[2], labels.section_label("paper_consistency"), paper.consistency)
@@ -515,28 +783,63 @@ def _render_paper(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> Non
     _render_card(bottom[1], labels.section_label("paper_fills"), paper.fills)
     _render_card(bottom[2], labels.section_label("paper_positions"), paper.positions)
     _render_card(bottom[3], labels.section_label("paper_portfolio"), paper.portfolio)
-    ui.markdown(labels.section_label("placeholder"))
+    ui.markdown("当前页面只用于查看纸面模拟，不会登录券商，不会下单。")
 
 
-def _render_broker(ui: OperatorConsoleUI, broker: BrokerConsoleViewModel) -> None:
+def _render_paper_not_completed(
+    ui: OperatorConsoleUI,
+    session: SessionPageViewModel,
+    provider: DryRunProvider | None,
+) -> DryRunActionResult | None:
+    _render_card(
+        ui,
+        "纸面模拟尚未完成",
+        (
+            ("为什么", "本地库回测已完成，但还没有纸面模拟结果。"),
+            ("下一步", "查看最近一次纸面模拟结果，确认只预演、不写账本。"),
+            ("安全吗", "纸面模拟只预演，不连接真实交易所，不写交易账本。"),
+            ("当前主操作", labels.action_label(session.dry_run_button.action_key)),
+        ),
+    )
+    return _render_dry_run_button(ui, session, provider)
+
+
+def _render_broker(
+    ui: OperatorConsoleUI,
+    broker: BrokerConsoleViewModel,
+    *,
+    developer_mode: bool = False,
+) -> None:
     top = ui.columns(4)
     _render_card(
         top[0],
         labels.section_label("broker_status"),
         (
-            ("status", labels.status_label(broker.status)),
-            ("reason", labels.reason_label(broker.reason or "无")),
+            ("状态", "只读可查看"),
+            ("为什么", "这是样例快照和只读对照，不是真实登录状态"),
+            ("安全吗", "不登录、不重试、不报单、不撤单、不写数据库"),
         ),
     )
     _render_card(top[1], labels.section_label("broker_accounts"), broker.accounts)
     _render_card(top[2], labels.section_label("broker_shadow_compare"), broker.shadow_compare)
-    _render_card(top[3], labels.section_label("broker_diagnostics"), broker.diagnostics)
+    _render_card(
+        top[3],
+        labels.section_label("safe_result"),
+        (
+            "不会登录券商",
+            "不会提交委托",
+            "不会撤销委托",
+            "不会写入交易数据库",
+        ),
+    )
     middle = ui.columns(4)
     _render_card(middle[0], labels.section_label("broker_positions"), broker.positions)
     _render_card(middle[1], labels.section_label("broker_orders"), broker.orders)
     _render_card(middle[2], labels.section_label("broker_trades"), broker.trades)
     _render_card(middle[3], labels.section_label("broker_differences"), broker.differences)
     ui.markdown(labels.section_label("broker_read_only_notice"))
+    if developer_mode:
+        _render_card(ui, labels.section_label("developer_diagnostics"), broker.diagnostics)
 
 
 def _render_safety(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> None:
@@ -626,6 +929,7 @@ def _render_market_data(
     ui: OperatorConsoleUI,
     model: OperatorConsoleViewModel,
     *,
+    developer_mode: bool = False,
     market_data_runtime: MarketDataRuntime | None,
     historical_ingestion_service: Any | None,
 ) -> ConfigurationViewModel:
@@ -669,8 +973,8 @@ def _render_market_data(
     top = ui.columns(4)
     _render_card(
         top[0],
-        labels.section_label("selected_data_source"),
-        (source,),
+        "当前行情选择",
+        (_data_source_display(source),),
     )
     _render_card(
         top[1],
@@ -682,7 +986,7 @@ def _render_market_data(
         labels.section_label("read_only_adapter_status"),
         (labels.status_label(market_data.read_only_adapter_status),),
     )
-    _render_card(top[3], labels.section_label("resolver_source"), (market_data.resolver_source,))
+    _render_card(top[3], "合约信息来源", ("本地合约映射",))
     runtime_row = ui.columns(4)
     _render_card(
         runtime_row[0],
@@ -702,7 +1006,7 @@ def _render_market_data(
     _render_card(
         runtime_row[3],
         labels.section_label("runtime_source"),
-        (market_data.selected_source,),
+        (_data_source_display(market_data.selected_source),),
     )
     middle = ui.columns(4)
     _render_card(
@@ -738,7 +1042,19 @@ def _render_market_data(
         (", ".join(market_data.supported_symbols),),
     )
     _render_card(bottom[2], labels.section_label("latest_bars"), market_data.latest_bars)
-    _render_card(bottom[3], labels.section_label("source_diagnostics"), market_data.diagnostics)
+    if developer_mode:
+        _render_card(bottom[3], labels.section_label("source_diagnostics"), market_data.diagnostics)
+    else:
+        _render_card(
+            bottom[3],
+            labels.section_label("safe_result"),
+            (
+                "不会连接券商",
+                "不会下单",
+                "不会启用真实交易",
+                "未配置时不会访问网络",
+            ),
+        )
     status_row = ui.columns(1)
     _render_card(
         status_row[0],
@@ -822,7 +1138,7 @@ def _render_market_data(
         )
     sync_action_row = ui.columns(1)
     if sync_action_row[0].button(
-        labels.action_label("Sync Historical Bars"),
+        f"同步 {sync_symbol.upper()} 历史行情（不连接券商，不下单）",
         disabled=False,
         key="historical_data_sync:run",
     ):
@@ -865,14 +1181,28 @@ def _render_market_data(
 def _render_data_center(
     ui: OperatorConsoleUI,
     service: DataCenterService,
+    *,
+    developer_mode: bool = False,
 ) -> None:
     snapshot = service.snapshot()
     selected_symbol = ui.selectbox(
         labels.field_label("data_center_symbol"),
-        ("AO", "RB", "AG", "CU"),
-        index=0,
+        ("请选择品种", "AO", "RB", "AG", "CU"),
+        index=1,
         key="data_center:selected_symbol",
     )
+    if selected_symbol == "请选择品种":
+        _render_card(
+            ui,
+            "当前主操作",
+            (
+                ("状态", "等待选择品种"),
+                ("为什么不能点", "还不知道要准备哪个品种的历史行情。"),
+                ("下一步做什么", "先在左侧选择 AO、RB、AG 或 CU。"),
+                ("按钮后果", "选择品种只改变页面展示，不联网，不下单。"),
+            ),
+        )
+        return
     symbol = selected_symbol.lower()
     instrument = _data_center_instrument(snapshot, selected_symbol)
     coverage = _data_center_coverage(snapshot, selected_symbol)
@@ -891,49 +1221,33 @@ def _render_data_center(
             ("主力合约", instrument.main_contract),
             ("交易合约", instrument.trade_contract),
             ("交易所", instrument.exchange),
-            ("数据源", instrument.data_source),
         ),
     )
     _render_card(
         top[1],
-        labels.section_label("data_center_sources"),
+        "当前品种能不能准备",
         (
-            ("AkShare 是否可用", "是" if source.enabled else "否"),
-            ("数据源状态", source.status),
-            ("最近连接", source.latest_connection),
-            ("最近错误", source.latest_error),
-            ("版本", source.version),
+            ("行情服务", "已配置" if source.enabled else "未配置"),
+            ("当前结论", "不能回测" if not can_backtest else "可以回测"),
+            ("为什么", "本地历史行情还没有覆盖" if not can_backtest else "覆盖和质量已通过"),
+            ("安全吗", "不会自动联网，不连接券商，不下单"),
         ),
     )
 
-    workflow = ui.columns(2)
+    workflow = ui.columns(1)
     _render_card(
         workflow[0],
         labels.section_label("data_center_step_config"),
         (
             ("状态", "已通过" if instrument.status == "可用" else "已阻断"),
-            ("AkShare 是否可用", "是" if source.enabled else "否：未配置时不会自动联网"),
-            ("品种映射是否存在", "是"),
-            ("合约解析是否可解析", "是" if instrument.trade_contract != "未解析" else "否"),
+            ("行情映射", "可用" if instrument.mapping != "未解析" else "未配置"),
+            ("合约信息", "可用" if instrument.trade_contract != "未解析" else "未解析"),
+            ("安全吗", "只读取本地配置，不连接券商"),
             ("下一步", "同步该品种历史行情"),
         ),
     )
-    _render_card(
-        workflow[1],
-        labels.section_label("data_center_step_coverage"),
-        (
-            ("覆盖开始", coverage.coverage_start),
-            ("覆盖结束", coverage.coverage_end),
-            ("Bar 数量", str(coverage.bar_count)),
-            ("覆盖率", quality.coverage_ratio),
-            ("缺失情况", "无" if quality.missing_bars == 0 else str(quality.missing_bars)),
-            (
-                "阻断原因",
-                "无" if can_backtest else _no_local_data_text(selected_symbol, "1m"),
-            ),
-        ),
-    )
 
+    ui.subheader(labels.section_label("data_center_step_sync"))
     start_text = ui.text_input(
         labels.field_label("data_center_start"),
         value="2024-01-01",
@@ -950,69 +1264,118 @@ def _render_data_center(
         index=0,
         key="data_center:timeframe",
     )
-    action_row = ui.columns(5)
-    if action_row[0].button(
-        labels.action_label("Sync Selected Historical Bars"),
-        disabled=False,
-        key="data_center:sync_selected",
-    ):
-        result = _run_data_center_sync(service, symbol, start_text, end_text, timeframe)
-        _render_card(
-            action_row[0],
-            labels.section_label("data_center_sync_result"),
-            _data_center_sync_result_rows(result),
-        )
-    if action_row[1].button(
-        labels.action_label("Check Historical Coverage"),
-        disabled=False,
-        key="data_center:check_coverage",
-    ):
-        checked = service.snapshot(timeframe=timeframe)
-        _render_card(
-            action_row[1],
-            labels.section_label("data_center_coverage"),
-            _selected_coverage_rows(checked, selected_symbol),
-        )
-    if action_row[2].button(
-        labels.action_label("Check Data Quality"),
-        disabled=False,
-        key="data_center:check_quality",
-    ):
-        checked = service.snapshot(timeframe=timeframe)
-        _render_card(
-            action_row[2],
-            labels.section_label("data_quality_result"),
-            _selected_quality_rows(checked, selected_symbol),
-        )
-    action_row[3].button(
-        labels.action_label("Open Backtest Entry"),
-        disabled=not can_backtest,
-        key="data_center:open_backtest",
-    )
-    action_row[4].button(
-        labels.action_label("Open Paper Result"),
-        disabled=False,
-        key="data_center:open_paper",
-    )
-
-    bottom = ui.columns(3)
+    step_rows = ui.columns(1)
     _render_card(
-        bottom[0],
-        labels.section_label("data_center_step_sync"),
+        step_rows[0],
+        "同步设置",
         (
             ("开始日期", start_text),
             ("结束日期", end_text),
             ("时间周期", timeframe),
-            ("按钮后果", "只同步该品种历史行情；不会自动执行其他页面"),
+            ("按钮后果", "只同步当前品种历史行情；不会连接券商，不会下单"),
+        ),
+    )
+    primary_action = _data_center_primary_action(
+        selected_symbol=selected_symbol,
+        instrument=instrument,
+        coverage=coverage,
+        quality=quality,
+    )
+    _render_card(
+        ui,
+        "当前主操作",
+        (
+            ("按钮", primary_action.label),
+            ("为什么不能点", primary_action.why_disabled),
+            ("下一步做什么", primary_action.next_step),
+        ),
+    )
+    if (
+        primary_action.action_key == "data_center:sync_selected"
+        and ui.button(
+            primary_action.label,
+            disabled=primary_action.disabled,
+            key=primary_action.action_key,
+        )
+    ):
+        result = _run_data_center_sync(service, symbol, start_text, end_text, timeframe)
+        _render_card(
+            ui,
+            labels.section_label("data_center_sync_result"),
+            _data_center_sync_result_rows(result),
+        )
+    if (
+        primary_action.action_key == "data_center:check_coverage"
+        and ui.button(
+            primary_action.label,
+            disabled=primary_action.disabled,
+            key=primary_action.action_key,
+        )
+    ):
+        checked = service.snapshot(timeframe=timeframe)
+        _render_card(
+            ui,
+            labels.section_label("data_center_coverage"),
+            _selected_coverage_rows(checked, selected_symbol),
+        )
+    if (
+        primary_action.action_key == "data_center:check_quality"
+        and ui.button(
+            primary_action.label,
+            disabled=primary_action.disabled,
+            key=primary_action.action_key,
+        )
+    ):
+        checked = service.snapshot(timeframe=timeframe)
+        _render_card(
+            ui,
+            labels.section_label("data_quality_result"),
+            _selected_quality_rows(checked, selected_symbol),
+        )
+    if (
+        primary_action.action_key == "data_center:open_backtest"
+        and ui.button(
+            primary_action.label,
+            disabled=primary_action.disabled,
+            key=primary_action.action_key,
+        )
+    ):
+        _render_card(
+            ui,
+            "本地库回测入口",
+            (
+                ("状态", "可以进入"),
+                ("为什么", "当前品种已有历史行情覆盖，可以用于本地库回测。"),
+                ("安全吗", "这里只读本地历史行情，不连接券商，不下单。"),
+                ("下一步", "打开研究页面查看本地库回测结果。"),
+            ),
+        )
+
+    bottom = ui.columns(1)
+    _render_card(
+        bottom[0],
+        labels.section_label("data_center_step_coverage"),
+        (
+            ("覆盖开始", coverage.coverage_start),
+            ("覆盖结束", coverage.coverage_end),
+            ("K 线数量", str(coverage.bar_count)),
+            ("覆盖率", quality.coverage_ratio),
+            ("缺失情况", "无" if quality.missing_bars == 0 else str(quality.missing_bars)),
+            (
+                "为什么",
+                "无" if can_backtest else _no_local_data_text(selected_symbol, "1m"),
+            ),
+            ("安全吗", "没有自动联网，没有写入交易数据"),
+            ("下一步", "同步历史行情后再检查覆盖"),
         ),
     )
     _render_card(
-        bottom[1],
+        bottom[0],
         labels.section_label("data_center_step_quality"),
         _selected_quality_rows(snapshot, selected_symbol),
     )
     _render_card(
-        bottom[2],
+        bottom[0],
         labels.section_label("data_center_step_backtest"),
         (
             ("当前是否可用于回测", "可以回测" if can_backtest else "请先同步历史行情"),
@@ -1024,21 +1387,78 @@ def _render_data_center(
             ),
         ),
     )
-    _render_card(
-        ui,
-        labels.section_label("data_center_diagnostics"),
-        (
-            ("合约解析", snapshot.diagnostics.resolver),
-            ("本地历史库", snapshot.diagnostics.repository),
-            ("历史K线", snapshot.diagnostics.historical_bar),
-            ("AkShare", snapshot.diagnostics.akshare),
-            ("同步服务", snapshot.diagnostics.sync_service),
-            ("数据库", snapshot.diagnostics.database),
-            ("下一步建议", "覆盖通过后进入 Research 页面运行本地库回测"),
-        ),
-    )
+    if developer_mode:
+        _render_card(
+            ui,
+            labels.section_label("developer_diagnostics"),
+            (
+                ("合约解析", snapshot.diagnostics.resolver),
+                ("本地历史库", snapshot.diagnostics.repository),
+                ("历史K线", snapshot.diagnostics.historical_bar),
+                ("AkShare", snapshot.diagnostics.akshare),
+                ("同步服务", snapshot.diagnostics.sync_service),
+                ("数据库", snapshot.diagnostics.database),
+                ("下一步建议", "覆盖通过后进入研究页面运行本地库回测"),
+            ),
+        )
     ui.markdown("数据中心只负责数据、质量、同步、覆盖和管理。")
     ui.markdown("保持在行情数据链路内，不进入交易链路。")
+
+
+def _data_center_primary_action(
+    *,
+    selected_symbol: str,
+    instrument: InstrumentDataCenterRow,
+    coverage: HistoricalCoverageRow,
+    quality: DataQualityRow,
+) -> _PrimaryAction:
+    if instrument.mapping == "未解析":
+        return _PrimaryAction(
+            label="检查品种映射（只读本地配置）",
+            action_key=None,
+            disabled=True,
+            why_disabled="品种映射缺失，当前不能同步历史行情。",
+            next_step="先补齐品种映射，再回到数据中心检查配置。",
+        )
+    if instrument.trade_contract == "未解析":
+        return _PrimaryAction(
+            label="检查合约解析（只读本地配置）",
+            action_key=None,
+            disabled=True,
+            why_disabled="交易合约没有解析出来，当前不能同步历史行情。",
+            next_step="先确认合约解析结果，再同步历史行情。",
+        )
+    if coverage.latest_sync == "未同步":
+        return _PrimaryAction(
+            label=f"同步 {selected_symbol} 历史行情（不连接券商，不下单）",
+            action_key="data_center:sync_selected",
+            disabled=False,
+            why_disabled="当前可以点击。尚未同步历史行情，回测没有可用输入。",
+            next_step=f"点击同步 {selected_symbol} 历史行情。",
+        )
+    if coverage.bar_count == 0:
+        return _PrimaryAction(
+            label=f"检查 {selected_symbol} 覆盖率（只读本地数据）",
+            action_key="data_center:check_coverage",
+            disabled=False,
+            why_disabled="当前可以点击。历史行情同步后还没有确认覆盖率。",
+            next_step=f"点击检查 {selected_symbol} 覆盖率。",
+        )
+    if quality.sync_status != "正常":
+        return _PrimaryAction(
+            label=f"检查 {selected_symbol} 数据质量（只读本地数据）",
+            action_key="data_center:check_quality",
+            disabled=False,
+            why_disabled="当前可以点击。覆盖已有数据，但质量还没有确认通过。",
+            next_step=f"点击检查 {selected_symbol} 数据质量。",
+        )
+    return _PrimaryAction(
+        label=f"进入本地库回测（只读 {selected_symbol} 历史行情）",
+        action_key="data_center:open_backtest",
+        disabled=False,
+        why_disabled="当前可以点击。覆盖和质量已通过。",
+        next_step="进入研究页面查看本地库回测结果。",
+    )
 
 
 def _data_center_instrument(
@@ -1080,7 +1500,7 @@ def _selected_coverage_rows(
     return (
         ("覆盖开始", coverage.coverage_start),
         ("覆盖结束", coverage.coverage_end),
-        ("Bar 数量", str(coverage.bar_count)),
+        ("K 线数量", str(coverage.bar_count)),
         ("最近同步时间", coverage.latest_sync),
         ("覆盖率", quality.coverage_ratio),
         ("缺失情况", "无" if quality.missing_bars == 0 else str(quality.missing_bars)),
@@ -1093,11 +1513,11 @@ def _selected_quality_rows(
 ) -> tuple[tuple[str, str], ...]:
     quality = _data_center_quality(snapshot, symbol)
     return (
-        ("缺失 Bar", str(quality.missing_bars)),
-        ("重复 Bar", str(quality.duplicate_bars)),
-        ("异常 Bar", str(quality.abnormal_bars)),
+        ("缺失 K 线", str(quality.missing_bars)),
+        ("重复 K 线", str(quality.duplicate_bars)),
+        ("异常 K 线", str(quality.abnormal_bars)),
         ("连续性", quality.continuity),
-        ("Gap", str(quality.gap_count)),
+        ("缺口", str(quality.gap_count)),
         ("同步状态", quality.sync_status),
     )
 
@@ -1128,7 +1548,7 @@ def _run_data_center_sync(
             skipped=0,
             failed=1,
             elapsed_ms=0,
-            diagnostics=("日期格式无效", "未进入 Broker，未启用 ExecutionTarget"),
+            diagnostics=("日期格式无效", "未进入券商，未启用交易目标"),
         )
     return service.sync_history(
         symbol=symbol.strip(),
@@ -1161,18 +1581,18 @@ def _sync_historical_bars(
 ) -> tuple[object, ...]:
     if service is None:
         return (
-            ("状态", "BLOCKED"),
+            ("状态", "已阻断"),
             ("失败原因", "历史行情同步服务未配置"),
-            ("安全边界", "未进入交易链路，未连接 Broker，未启用 ExecutionTarget"),
+            ("安全边界", "未进入交易链路，未连接券商，未启用交易目标"),
         )
     try:
         trading_day = date.fromisoformat(trading_day_text.strip())
         end_trading_day = date.fromisoformat(end_trading_day_text.strip())
     except ValueError:
         return (
-            ("状态", "BLOCKED"),
+            ("状态", "已阻断"),
             ("失败原因", "交易日格式无效"),
-            ("安全边界", "未进入交易链路，未连接 Broker，未启用 ExecutionTarget"),
+            ("安全边界", "未进入交易链路，未连接券商，未启用交易目标"),
         )
     result = service.ingest_symbol(
         symbol.strip(),
@@ -1181,15 +1601,15 @@ def _sync_historical_bars(
         end_trading_day=end_trading_day,
     )
     return (
-        ("状态", str(getattr(result, "status", "UNKNOWN"))),
+        ("状态", labels.status_label(str(getattr(result, "status", "UNKNOWN")))),
         ("写入条数", str(getattr(result, "bars_written", 0))),
         ("更新条数", str(getattr(result, "bars_updated", 0))),
         ("跳过条数", str(getattr(result, "bars_skipped", 0))),
-        ("bar 数量", str(getattr(result, "bar_count", 0))),
+        ("K 线数量", str(getattr(result, "bar_count", 0))),
         ("覆盖开始", str(getattr(result, "first_bar_ts", None) or "无")),
         ("覆盖结束", str(getattr(result, "latest_bar_ts", None) or "无")),
         ("最近入库时间", str(getattr(result, "latest_ingested_at", None) or "无")),
-        ("数据源", str(getattr(result, "source", "real_market_data"))),
+        ("数据源", str(getattr(result, "source", "只读行情"))),
         ("失败原因", str(getattr(result, "reason", None) or "无")),
         *tuple(("诊断", item) for item in getattr(result, "diagnostics", ())),
     )
@@ -1214,7 +1634,26 @@ def _render_results(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> N
         ui.markdown(labels.result_status_text(key))
 
 
-def _render_diagnostics(ui: OperatorConsoleUI, model: OperatorConsoleViewModel) -> None:
+def _render_diagnostics(
+    ui: OperatorConsoleUI,
+    model: OperatorConsoleViewModel,
+    *,
+    developer_mode: bool = False,
+) -> None:
+    _render_card(
+        ui,
+        "普通用户安全检查",
+        (
+            ("行情", "未配置真实行情时不会访问网络"),
+            ("纸面模拟", "默认只预演，不写账本"),
+            ("券商", "只读展示，不登录，不报单，不撤单"),
+            ("交易", "实盘禁用，真实资金未使用"),
+            ("下一步", "回到总览，按今日任务流程继续"),
+        ),
+    )
+    if not developer_mode:
+        ui.markdown("高级诊断默认隐藏。需要排障时，在左侧打开开发者模式。")
+        return
     row = ui.columns(7)
     _render_card(row[0], labels.section_label("resolver_diagnostics"), model.diagnostics.resolver)
     _render_card(
@@ -1249,14 +1688,15 @@ def _render_notices(ui: OperatorConsoleUI, notices: tuple[str, ...]) -> None:
         ui.markdown(labels.risk_notice(notice))
 
 
-def _render_button(ui: OperatorConsoleUI, button: ButtonViewModel) -> None:
-    ui.button(
+def _render_button(ui: OperatorConsoleUI, button: ButtonViewModel) -> bool:
+    clicked = ui.button(
         labels.action_label(button.action_key),
         disabled=button.disabled,
         key=f"action:{button.action_key}",
     )
     if button.disabled:
         ui.markdown(labels.section_label("disabled_placeholder"))
+    return clicked
 
 
 def _render_dry_run_button(
@@ -1289,10 +1729,9 @@ def _render_session_actions(
     session: SessionPageViewModel,
     provider: DryRunProvider | None,
 ) -> DryRunActionResult | None:
-    dry_run_col, apply_col, result_col = ui.columns(3)
+    dry_run_col = ui.columns(1)[0]
     result = _render_dry_run_button(dry_run_col, session, provider)
-    _render_button(apply_col, session.apply_button)
-    _render_button(result_col, session.view_result_button)
+    ui.markdown("纸面模拟写入功能保持关闭；本页面不会写账本，不连接真实交易所。")
     return result
 
 
@@ -1304,6 +1743,12 @@ def _with_result(
 ) -> OperatorConsoleViewModel:
     history = append_history(model.results.history, mode=mode, result=result)
     ui.set_session_value("operator_console_result_history", history)
+    if (
+        result.run_status == "DRY_RUN_COMPLETED"
+        and result.db_delta == 0
+        and result.target == "MOCK only"
+    ):
+        ui.set_session_value("operator_console_paper_completed", True)
     return OperatorConsoleViewModel(
         pages=model.pages,
         dashboard=model.dashboard,

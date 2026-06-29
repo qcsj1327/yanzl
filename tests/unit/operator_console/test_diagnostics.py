@@ -18,10 +18,10 @@ def test_read_only_diagnostics_provider_returns_unknown_values() -> None:
         "last error": "none",
     }
     assert dict(diagnostics.safety) == {
-        "ExecutionTarget": "MOCK only",
-        "DB write": "禁用",
-        "live trading": "禁用",
-        "broker/CTP/SimNow": "禁用",
+            "交易目标": "MOCK only",
+            "写库": "禁用",
+            "实盘交易": "禁用",
+            "券商/CTP/SimNow": "禁用",
     }
 
 

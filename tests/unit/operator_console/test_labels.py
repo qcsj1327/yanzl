@@ -50,19 +50,25 @@ def test_required_safety_action_risk_and_result_labels_exist() -> None:
     assert labels.safety_label("Kill Switch") == "紧急停止"
     assert labels.safety_label("Scheduler Pause") == "调度暂停"
     assert labels.safety_label("Replay Pause") == "回放暂停"
-    assert labels.safety_label("Broker Disabled") == "Broker 已禁用"
-    assert labels.safety_label("Live Disabled") == "LIVE 已禁用"
+    assert labels.safety_label("Broker Disabled") == "券商已禁用"
+    assert labels.safety_label("Live Disabled") == "实盘已禁用"
     assert labels.safety_label("CTP Disabled") == "CTP 已禁用"
     assert labels.safety_label("SimNow Disabled") == "SimNow 已禁用"
     assert labels.safety_label("MOCK only") == "仅本地模拟，不连接真实交易所"
 
-    assert labels.action_label("Run Paper Dry-run") == "查看纸面模拟结果"
+    assert (
+        labels.action_label("Run Paper Dry-run")
+        == "查看最近一次纸面模拟结果（只预演，不写账本）"
+    )
     assert labels.action_label("Run Paper Apply") == "纸面模拟写入已禁用"
     assert labels.action_label("Run SIM Dry-run") == "查看本地仿真结果"
     assert labels.action_label("Run SIM Apply") == "本地仿真写入已禁用"
-    assert labels.action_label("View Result") == "查看结果"
+    assert labels.action_label("View Result") == "查看最近一次结果（只读）"
     assert labels.action_label("Refresh Health") == "刷新状态"
-    assert labels.action_label("Sync Historical Bars") == "同步该品种历史行情"
+    assert (
+        labels.action_label("Sync Historical Bars")
+        == "同步当前品种历史行情（不连接券商，不下单）"
+    )
     assert labels.action_label("Resync Historical Bars") == "重新同步该品种历史行情"
     assert labels.action_label("Check Historical Coverage") == "检查覆盖"
     assert labels.action_label("Rebuild Historical Bars") == "删除后重建该品种历史行情"
@@ -75,13 +81,13 @@ def test_required_safety_action_risk_and_result_labels_exist() -> None:
     assert labels.action_label("Resume Replay") == "恢复回放"
 
     for value in (
-        "dry-run 不会写入数据库",
-        "apply 会写入本地账本",
+        "预演不会写入数据库",
+        "写入会改本地账本",
         "当前不涉及真实资金",
         "当前不会连接真实交易所",
         "当前不会连接 CTP / SimNow",
         "当前 PAPER / SIM / LIVE 目标仍未启用",
-        "当前仅允许 MOCK target",
+        "当前仅允许 MOCK",
         "危险操作需要二次确认",
     ):
         assert value in labels.RISK_NOTICES.values()
@@ -92,7 +98,7 @@ def test_required_safety_action_risk_and_result_labels_exist() -> None:
         "成交记录",
         "仓位更新",
         "保证金计算",
-        "PnL 计算",
+        "盈亏计算",
         "结算快照",
         "重复检测",
         "数据库写入变化",
@@ -129,7 +135,7 @@ def test_required_safety_action_risk_and_result_labels_exist() -> None:
 def test_blocked_reason_labels_are_user_facing_chinese() -> None:
     expected = {
         "paper dry-run requires complete session config": (
-            "当前缺少完整的 Paper 预演配置，因此没有执行"
+            "当前缺少完整的纸面模拟预演配置，因此没有执行"
         ),
         "sim dry-run requires complete session config": "当前缺少完整的 SIM 预演配置，因此没有执行",
         "missing provider": "当前没有可用的预演执行器",
@@ -137,7 +143,7 @@ def test_blocked_reason_labels_are_user_facing_chinese() -> None:
         "数量必须大于 0": "数量必须大于 0，已阻断",
         "价格必须大于 0": "价格必须大于 0，已阻断",
         "合约不在允许列表中": "合约不在允许列表中，已阻断",
-        "resolver metadata 无效": "resolver 静态元数据缺失或无效，已阻断",
+        "resolver metadata 无效": "合约静态信息缺失或无效，已阻断",
         "non-MOCK target": "当前目标不是 MOCK，已阻止执行",
         "db_delta nonzero": "预演出现数据库写入变化，已阻止标记为成功",
     }
@@ -198,8 +204,8 @@ def test_ui_polish_field_and_diagnostic_labels_exist() -> None:
 
 def test_forbidden_action_labels_exist() -> None:
     expected = {
-        "LIVE Enable": "LIVE 启用：禁止",
-        "Broker Enable": "Broker 启用：禁止",
+        "LIVE Enable": "实盘启用：禁止",
+        "Broker Enable": "券商启用：禁止",
         "CTP Connect": "CTP 连接：禁止",
         "SimNow Connect": "SimNow 连接：禁止",
         "Real Capital Trading": "真实资金交易：禁止",

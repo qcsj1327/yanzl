@@ -32,11 +32,11 @@ class OperatorPage(StrEnum):
     DASHBOARD = "总览"
     CONFIG_CENTER = "配置中心"
     DATA_CENTER = "数据中心"
-    RESEARCH = "Research"
-    PORTFOLIO = "Portfolio"
-    PAPER = "Paper"
-    BROKER = "Broker"
-    MARKET_DATA = "Market Data"
+    RESEARCH = "研究"
+    PORTFOLIO = "组合"
+    PAPER = "纸面模拟"
+    BROKER = "券商只读"
+    MARKET_DATA = "行情数据"
     DIAGNOSTICS = "系统诊断"
 
 
@@ -51,6 +51,29 @@ class ButtonViewModel:
     disabled: bool
     status: ConsoleActionStatus
     reason: str
+
+
+@dataclass(frozen=True)
+class WorkflowStepViewModel:
+    step_no: int
+    title: str
+    status: str
+    summary: str
+    why: str
+    safe_result: str
+    next_step: str
+    action_label: str
+    action_key: str | None = None
+    disabled: bool = False
+
+
+@dataclass(frozen=True)
+class WorkflowViewModel:
+    today_goal: str
+    next_step: str
+    selected_symbol: str
+    can_backtest: bool
+    steps: tuple[WorkflowStepViewModel, ...]
 
 
 @dataclass(frozen=True)
@@ -70,6 +93,102 @@ class DashboardViewModel:
         "no real exchange",
         "no ctp simnow",
         "targets disabled",
+    )
+    workflow: WorkflowViewModel = field(
+        default_factory=lambda: WorkflowViewModel(
+            today_goal="完成 AO 历史行情准备，并确认能否进入回测",
+            next_step="先到数据中心检查 AO 配置，然后同步 AO 历史行情",
+            selected_symbol="AO",
+            can_backtest=False,
+            steps=(
+                WorkflowStepViewModel(
+                    1,
+                    "选择品种",
+                    "已准备",
+                    "当前选择 AO",
+                    "首次打开时需要先确定今天要看的品种。",
+                    "选择品种只改变页面展示，不会联网，不会下单。",
+                    "继续检查 AO 配置。",
+                    "查看 AO 数据准备情况",
+                ),
+                WorkflowStepViewModel(
+                    2,
+                    "检查配置",
+                    "已准备",
+                    "AO 映射和合约信息可用",
+                    "同步历史行情前，需要确认品种和合约能被识别。",
+                    "检查只读取本地配置，不会连接券商。",
+                    "同步 AO 历史行情。",
+                    "检查 AO 配置",
+                ),
+                WorkflowStepViewModel(
+                    3,
+                    "同步历史行情",
+                    "等待操作",
+                    "本地历史行情还没有数据",
+                    "没有历史行情时，回测没有可用输入。",
+                    "同步只走历史行情通道，不连接券商，不下单。",
+                    "点击同步当前品种历史行情。",
+                    "同步 AO 历史行情（不连接券商，不下单）",
+                    "data_center:sync_selected",
+                ),
+                WorkflowStepViewModel(
+                    4,
+                    "检查覆盖率",
+                    "已阻断",
+                    "AO 当前覆盖率 0%",
+                    "本地历史库没有 AO 的 1m 数据。",
+                    "系统没有自动联网，也没有写入交易数据。",
+                    "同步后再检查覆盖率。",
+                    "检查 AO 覆盖率",
+                    "data_center:check_coverage",
+                ),
+                WorkflowStepViewModel(
+                    5,
+                    "检查数据质量",
+                    "等待操作",
+                    "质量结果等待同步后确认",
+                    "没有历史行情时，质量检查只能看到空结果。",
+                    "检查质量只读取本地数据，不进入交易链路。",
+                    "同步并检查覆盖后再检查质量。",
+                    "检查 AO 数据质量",
+                    "data_center:check_quality",
+                ),
+                WorkflowStepViewModel(
+                    6,
+                    "运行回测",
+                    "已阻断",
+                    "当前不能回测",
+                    "本地历史行情覆盖还没有通过。",
+                    "阻断状态下不会运行回测，不会产生交易事实。",
+                    "先完成历史行情同步和覆盖检查。",
+                    "进入回测",
+                    "data_center:open_backtest",
+                    True,
+                ),
+                WorkflowStepViewModel(
+                    7,
+                    "查看纸面模拟",
+                    "可查看",
+                    "只能查看模拟预演结果",
+                    "纸面模拟依赖回测和本地配置。",
+                    "默认不写账本，不连接真实交易所。",
+                    "配置完整后查看纸面模拟结果。",
+                    "查看最近一次纸面模拟结果（只预演，不写账本）",
+                    "action:Run Paper Dry-run",
+                ),
+                WorkflowStepViewModel(
+                    8,
+                    "查看券商只读对照",
+                    "可查看",
+                    "只看样例快照和只读对照",
+                    "当前不是券商登录入口。",
+                    "页面不登录、不报单、不撤单、不写数据库。",
+                    "只作为最终核对页面查看。",
+                    "查看券商只读对照（不登录）",
+                ),
+            ),
+        )
     )
 
 
@@ -135,9 +254,9 @@ class MarketDataViewModel:
     )
     historical_coverage: tuple[tuple[str, str], ...] = (
         ("本地库状态", "未同步"),
-        ("bar 数量", "0"),
+        ("K 线数量", "0"),
         ("最近入库时间", "无"),
-        ("数据源", "real_market_data"),
+        ("数据源", "只读行情"),
         ("失败原因", "本地历史行情库无数据"),
     )
     updated_at: str = "未更新"
@@ -406,15 +525,15 @@ def default_console_view_model() -> OperatorConsoleViewModel:
             ),
             paper=(
                 ("纸面模拟", "只查看结果，不自动执行"),
-                ("status", "未启动"),
-                ("run_action", "等待用户进入纸面模拟页面查看"),
-                ("pause_action", "未启动"),
-                ("stop_action", "未启动"),
+                ("当前状态", "未启动"),
+                ("用户操作", "查看最近一次纸面模拟结果"),
+                ("暂停说明", "当前没有运行中的纸面模拟"),
+                ("停止说明", "当前没有运行中的纸面模拟"),
             ),
             broker=(
                 ("券商模式", "只读"),
-                ("broker_read_only", "只读"),
-                ("shadow_mode", "启用"),
+                ("只读快照", "只展示，不登录"),
+                ("只读对照", "启用"),
                 ("禁止登录", "是"),
                 ("禁止下单", "是"),
                 ("禁止撤单", "是"),
@@ -427,10 +546,10 @@ def default_console_view_model() -> OperatorConsoleViewModel:
                 *akshare_mapping_rows(),
             ),
             safety_locks=(
-                ("live_trading", "关闭"),
+                ("实盘交易", "关闭"),
                 ("纸面模拟", "只查看，不自动执行"),
-                ("Broker", "只读"),
-                ("ExecutionTarget", "未启用"),
+                ("券商", "只读"),
+                ("交易目标", "未启用"),
                 ("数据库", "只写历史K线，不写交易事实"),
             ),
             run_preview=(
@@ -452,31 +571,31 @@ def default_console_view_model() -> OperatorConsoleViewModel:
         ),
         research=ResearchViewModel(
             backtest_status="COMPLETED",
-            strategy="sample_breakout_research",
+            strategy="样例突破研究策略",
             symbols=("ao", "rb", "ag", "cu"),
             orders=(
-                ("o-ao-1", "ao / ao2609 / BUY / FILLED / 1"),
-                ("o-rb-1", "rb / rb2601 / BUY / FILLED / 1"),
+                ("AO 委托", "AO / ao2609 / 买入 / 已成交 / 1"),
+                ("RB 委托", "RB / rb2601 / 买入 / 已成交 / 1"),
             ),
             trades=(
-                ("t-ao-1", "ao / ao2609 / 500 / 1"),
-                ("t-rb-1", "rb / rb2601 / 3200 / 1"),
+                ("AO 成交", "AO / ao2609 / 500 / 1"),
+                ("RB 成交", "RB / rb2601 / 3200 / 1"),
             ),
             positions=(
-                ("ao", "ao2609 / LONG / 1 / 市值 500"),
-                ("rb", "rb2601 / LONG / 1 / 市值 3200"),
+                ("AO", "ao2609 / 多头 / 1 / 市值 500"),
+                ("RB", "rb2601 / 多头 / 1 / 市值 3200"),
             ),
             realized_pnl="0",
             unrealized_pnl="120",
             equity_curve_summary=(
-                ("points", "3"),
-                ("first_equity", "100000"),
-                ("last_equity", "100120"),
+                ("点数", "3"),
+                ("初始权益", "100000"),
+                ("最新权益", "100120"),
             ),
             metrics=(
-                ("total_return", "0.0012"),
-                ("max_equity", "100120"),
-                ("min_equity", "100000"),
+                ("总收益", "0.0012"),
+                ("最高权益", "100120"),
+                ("最低权益", "100000"),
             ),
         ),
         portfolio=PortfolioViewModel(
@@ -488,58 +607,58 @@ def default_console_view_model() -> OperatorConsoleViewModel:
                 ("rb", "rb2601 / 数量 1 / 市值 3200"),
             ),
             symbol_contributions=(
-                ("ao", "市值 500 / PnL 20"),
-                ("rb", "市值 3200 / PnL 100"),
+                ("AO", "市值 500 / 盈亏 20"),
+                ("RB", "市值 3200 / 盈亏 100"),
             ),
             position_weights=(
-                ("ao", "0.0050"),
-                ("rb", "0.0320"),
+                ("AO", "0.0050"),
+                ("RB", "0.0320"),
             ),
             cash_weight="0.9630",
             allocation=(
-                ("cash", "96.30%"),
-                ("ao", "0.50%"),
-                ("rb", "3.20%"),
+                ("现金", "96.30%"),
+                ("AO", "0.50%"),
+                ("RB", "3.20%"),
             ),
         ),
         paper_page=PaperConsolePageViewModel(
             runtime_status="READY",
             lifecycle=(
-                ("run", "仅预演"),
-                ("pause", "展示占位"),
-                ("stop", "展示占位"),
+                ("运行", "仅预演"),
+                ("暂停", "当前没有运行中的任务"),
+                ("停止", "当前没有运行中的任务"),
             ),
             orders=(
-                ("po-ao-1", "ao / ao2609 / CREATED"),
-                ("po-rb-1", "rb / rb2601 / CREATED"),
+                ("AO 模拟委托", "AO / ao2609 / 已创建"),
+                ("RB 模拟委托", "RB / rb2601 / 已创建"),
             ),
             fills=(
-                ("pf-ao-1", "ao / 500 / 1"),
-                ("pf-rb-1", "rb / 3200 / 1"),
+                ("AO 模拟成交", "AO / 500 / 1"),
+                ("RB 模拟成交", "RB / 3200 / 1"),
             ),
             positions=(
-                ("ao", "ao2609 / 1 / 市值 500"),
-                ("rb", "rb2601 / 1 / 市值 3200"),
+                ("AO", "ao2609 / 1 / 市值 500"),
+                ("RB", "rb2601 / 1 / 市值 3200"),
             ),
             portfolio=(
-                ("cash", "96420"),
+                ("现金", "96420"),
                 ("equity", "100120"),
-                ("market_value", "3700"),
+                ("市值", "3700"),
             ),
             consistency=(
-                ("all_match", "True"),
-                ("cash_matches", "True"),
-                ("equity_matches", "True"),
-                ("positions_match", "True"),
-                ("orders_match", "True"),
-                ("fills_match", "True"),
+                ("全部一致", "是"),
+                ("现金一致", "是"),
+                ("权益一致", "是"),
+                ("持仓一致", "是"),
+                ("委托一致", "是"),
+                ("成交一致", "是"),
             ),
         ),
         broker=BrokerConsoleViewModel(
             status="READY",
             reason=None,
             accounts=(
-                ("account_id", "account-1"),
+                ("账户", "样例账户"),
                 ("currency", "CNY"),
                 ("broker_cash", "96420"),
                 ("available", "96000"),
@@ -549,23 +668,23 @@ def default_console_view_model() -> OperatorConsoleViewModel:
                 ("updated_at", "2026-06-28T00:00:00+00:00"),
             ),
             positions=(
-                ("ao2609", "ao / LONG / 1 / 500"),
-                ("rb2601", "rb / LONG / 1 / 3200"),
+                ("AO 持仓", "ao2609 / 多头 / 1 / 500"),
+                ("RB 持仓", "rb2601 / 多头 / 1 / 3200"),
             ),
-            orders=(("po-ao-1", "ao2609 / BUY / FILLED / 1"),),
-            trades=(("pf-ao-1", "ao2609 / 500 / 1"),),
+            orders=(("AO 委托", "ao2609 / 买入 / 已成交 / 1"),),
+            trades=(("AO 成交", "ao2609 / 500 / 1"),),
             shadow_compare=(
-                ("status", "DIFFERENCE"),
+                ("状态", "样例对照"),
                 ("reason", "默认样例仅用于展示，不代表业务事实"),
-                ("difference_count", "0"),
+                ("差异数量", "0"),
             ),
-            differences=(("difference", "无差异"),),
+            differences=(("对照结果", "无差异"),),
             diagnostics=(
-                ("diagnostic_1", "只读样例"),
-                ("diagnostic_2", "不自动重试"),
-                ("diagnostic_3", "不自动登录"),
-                ("diagnostic_4", "不报单"),
-                ("diagnostic_5", "不撤单"),
+                ("只读说明", "只读样例"),
+                ("重试说明", "不自动重试"),
+                ("登录说明", "不自动登录"),
+                ("报单说明", "不报单"),
+                ("撤单说明", "不撤单"),
             ),
         ),
         market_data=MarketDataViewModel(
@@ -596,7 +715,7 @@ def default_console_view_model() -> OperatorConsoleViewModel:
             ),
             historical_coverage=(
                 ("本地库状态", "未同步"),
-                ("bar 数量", "0"),
+                ("K 线数量", "0"),
                 ("最近入库时间", "无"),
                 ("数据源", READ_ONLY_ADAPTER_DATA_SOURCE),
                 ("失败原因", "本地历史行情库无数据"),
@@ -605,7 +724,7 @@ def default_console_view_model() -> OperatorConsoleViewModel:
             diagnostics=(
                 ("数据源", "static_fixture"),
                 ("网络", "不会访问网络"),
-                ("Broker", "禁用"),
+                ("券商", "禁用"),
                 ("解析器", "静态夹具"),
             ),
         ),
@@ -693,32 +812,32 @@ def default_console_view_model() -> OperatorConsoleViewModel:
                 ("network", "不会访问网络"),
             ),
             data_center=(
-                ("Resolver", "可用"),
-                ("Repository", "未配置"),
-                ("HistoricalBar", "已建模"),
+                ("合约解析", "可用"),
+                ("本地历史库", "未配置"),
+                ("历史K线", "已建模"),
                 ("AkShare", "显式点击才读取"),
                 ("同步服务", "未配置"),
-                ("数据库", "只读查询；同步仅写 HistoricalBar"),
+                ("数据库", "只读查询；同步仅写历史K线"),
             ),
             broker=(
-                ("BrokerReadOnlyAdapter", "READY"),
-                ("Shadow Compare", "DIFFERENCE"),
+                ("券商只读适配器", "正常"),
+                ("只读对照", "存在差异"),
                 ("network", "不会自动访问"),
-                ("submit/cancel", "禁用"),
+                ("报单/撤单", "禁用"),
             ),
             research=(
                 ("backtest_status", "COMPLETED"),
-                ("source_of_truth", "research only"),
+                ("事实来源", "仅研究结果"),
             ),
             paper=(
                 ("纸面模拟运行状态", "READY"),
                 ("纸面模拟一致性", "all_match=True"),
             ),
             safety=(
-                ("ExecutionTarget", "MOCK only"),
-                ("DB write", "禁用"),
-                ("live trading", "禁用"),
-                ("broker/CTP/SimNow", "禁用"),
+                ("交易目标", "MOCK only"),
+                ("写库", "禁用"),
+                ("实盘交易", "禁用"),
+                ("券商/CTP/SimNow", "禁用"),
             ),
         ),
         live_locked=LiveLockedViewModel(
@@ -743,7 +862,7 @@ def market_data_view_model_from_snapshot(
         runtime_status=snapshot.status.value,
         runtime_started="是" if snapshot.started else "否",
         runtime_configured="是" if snapshot.configured else "否",
-        resolver_source="InstrumentResolver",
+        resolver_source="合约解析",
         blocked_reason=blocked_reason,
         supported_symbols=("ao", "rb", "ag", "cu"),
         symbol_statuses=_symbol_status_rows(snapshot.symbols),
@@ -757,7 +876,7 @@ def market_data_view_model_from_snapshot(
         ),
         historical_coverage=(
             ("本地库状态", "未查询"),
-            ("bar 数量", "0"),
+                ("K 线数量", "0"),
             ("最近入库时间", "无"),
             ("数据源", snapshot.source),
             ("失败原因", blocked_reason or "无"),
@@ -793,8 +912,8 @@ def data_center_view_model_from_snapshot(
                 row.symbol,
                 (
                     f"主力合约={row.main_contract}；交易合约={row.trade_contract}；"
-                    f"交易所={row.exchange}；Resolver={row.resolver}；"
-                    f"数据源={row.data_source}；Mapping={row.mapping}；状态={row.status}"
+                    f"交易所={row.exchange}；合约解析={row.resolver}；"
+                    f"数据源={row.data_source}；品种映射={row.mapping}；状态={row.status}"
                 ),
             )
             for row in snapshot.instruments
@@ -804,7 +923,7 @@ def data_center_view_model_from_snapshot(
                 row.symbol,
                 (
                     f"覆盖开始={row.coverage_start}；覆盖结束={row.coverage_end}；"
-                    f"Bar数量={row.bar_count}；最近同步={row.latest_sync}；来源={row.source}"
+                    f"K线数量={row.bar_count}；最近同步={row.latest_sync}；来源={row.source}"
                 ),
             )
             for row in snapshot.coverage
@@ -813,9 +932,9 @@ def data_center_view_model_from_snapshot(
             (
                 row.symbol,
                 (
-                    f"缺失Bar={row.missing_bars}；重复Bar={row.duplicate_bars}；"
-                    f"异常Bar={row.abnormal_bars}；覆盖率={row.coverage_ratio}；"
-                    f"同步状态={row.sync_status}；Gap={row.gap_count}；连续性={row.continuity}"
+                    f"缺失K线={row.missing_bars}；重复K线={row.duplicate_bars}；"
+                    f"异常K线={row.abnormal_bars}；覆盖率={row.coverage_ratio}；"
+                    f"同步状态={row.sync_status}；缺口={row.gap_count}；连续性={row.continuity}"
                 ),
             )
             for row in snapshot.quality
@@ -862,9 +981,9 @@ def data_center_view_model_from_snapshot(
         ),
         coverage_chart=snapshot.coverage_chart,
         diagnostics=(
-            ("Resolver", snapshot.diagnostics.resolver),
-            ("Repository", snapshot.diagnostics.repository),
-            ("HistoricalBar", snapshot.diagnostics.historical_bar),
+            ("合约解析", snapshot.diagnostics.resolver),
+            ("本地历史库", snapshot.diagnostics.repository),
+            ("历史K线", snapshot.diagnostics.historical_bar),
             ("AkShare", snapshot.diagnostics.akshare),
             ("同步服务", snapshot.diagnostics.sync_service),
             ("数据库", snapshot.diagnostics.database),
@@ -993,8 +1112,8 @@ def _difference_rows(
         (
             f"{getattr(item, 'category', '')}:{getattr(item, key_attr)}",
             (
-                f"Paper={getattr(item, 'paper_value', '')} / "
-                f"Broker={getattr(item, 'broker_value', '')} / "
+                f"纸面模拟={getattr(item, 'paper_value', '')} / "
+                f"券商={getattr(item, 'broker_value', '')} / "
                 f"{getattr(item, 'severity', '')}"
             ),
         )
