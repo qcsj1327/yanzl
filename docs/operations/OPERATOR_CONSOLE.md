@@ -158,6 +158,32 @@ Phase N 的 `real_market_data` 是真实行情只读运行时，不是 Broker，
 CTP，不是 SimNow，不是实盘，不下单，不写数据库，不启用
 `ExecutionTarget.PAPER` / `ExecutionTarget.SIM` / `ExecutionTarget.LIVE`。
 
+Phase H 之后，行情数据页面可以显示历史行情同步控件：
+
+- 品种。
+- 交易日。
+- 周期。
+- 同步历史行情按钮。
+- 本地库覆盖情况。
+- 最近入库时间。
+- bar 数量。
+- 数据源。
+- 失败原因。
+
+同步按钮只执行历史行情同步：
+
+```text
+真实数据源 -> 标准化 -> 本地库
+```
+
+按钮不得生成 typed command，不进入 dry-run / apply，不下单，不登录 Broker，
+不连接 CTP / SimNow，不启用任何 `ExecutionTarget`。未注入同步服务、交易日
+无效、resolver 失败、AkShare 不可用、空数据、标准化失败或数据库不可用时，
+页面必须显示 `BLOCKED` 和中文失败原因。
+
+Backtest / Console 后续展示优先读取本地历史行情库。没有本地数据时，必须显示
+已阻断，不得在展示或回测路径里自动联网补数。
+
 ### 系统诊断
 
 只读展示：

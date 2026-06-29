@@ -23,6 +23,7 @@ from futures_mvp.db.models import (
     Base,
     ExecutionCommand,
     FeatureSnapshot,
+    HistoricalBar,
     MarginSnapshot,
     MarketBar,
     MarketTick,
@@ -76,6 +77,7 @@ def test_required_tables_are_declared() -> None:
         "market_ticks",
         "market_bars",
         "feature_snapshots",
+        "historical_bars",
         "signal_candidates",
         "signal_events",
         "risk_results",
@@ -84,6 +86,41 @@ def test_required_tables_are_declared() -> None:
         "normalized_execution_reports",
         "risk_events",
     }.issubset(Base.metadata.tables)
+
+
+def test_historical_bars_match_phase_h_storage_contract() -> None:
+    assert _unique_constraint_columns(
+        HistoricalBar,
+        "uq_historical_bars_identity",
+    ) == (
+        "instrument_id",
+        "trade_instrument_id",
+        "exchange",
+        "trading_day",
+        "timeframe",
+        "bar_ts",
+        "source",
+    )
+    for column_name in [
+        "id",
+        "symbol",
+        "instrument_id",
+        "trade_instrument_id",
+        "exchange",
+        "trading_day",
+        "timeframe",
+        "bar_ts",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "source",
+        "resolver_source",
+        "resolver_confidence",
+        "created_at",
+    ]:
+        assert column_name in HistoricalBar.__table__.columns
 
 
 def test_order_events_match_current_schema_idempotency() -> None:

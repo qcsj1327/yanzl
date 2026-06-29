@@ -19,6 +19,7 @@ class HistoricalDataStatus(StrEnum):
 class MarketDataSource(StrEnum):
     STATIC_FIXTURE = "static_fixture"
     LOCAL_HISTORICAL_CACHE = "local_historical_cache_placeholder"
+    LOCAL_HISTORICAL_DB = "local_historical_db"
     READ_ONLY_ADAPTER = "real_market_data"
 
 

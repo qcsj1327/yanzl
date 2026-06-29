@@ -7,6 +7,11 @@ from futures_mvp.modules.market_data.consumer import (
     build_resolver_consumer_context,
     resolver_context_command_mismatch,
 )
+from futures_mvp.modules.market_data.ingestion import (
+    HistoricalDataIngestionResult,
+    HistoricalDataIngestionService,
+    HistoricalIngestionStatus,
+)
 from futures_mvp.modules.market_data.models import (
     ContractRole,
     InstrumentContract,
@@ -25,6 +30,9 @@ from futures_mvp.modules.market_data.runtime import (
 
 __all__ = [
     "ContractRole",
+    "HistoricalDataIngestionResult",
+    "HistoricalDataIngestionService",
+    "HistoricalIngestionStatus",
     "InstrumentContract",
     "InstrumentMetadata",
     "InstrumentRegistry",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from importlib import import_module
 from typing import Any, Protocol, cast
 
@@ -161,6 +162,7 @@ def render_console(
     *,
     paper_dry_run: DryRunProvider | None = None,
     market_data_runtime: MarketDataRuntime | None = None,
+    historical_ingestion_service: Any | None = None,
 ) -> None:
     model = _model_with_session_state(ui, view_model or default_console_view_model())
     ui.title(labels.section_label("Operator Console"))
@@ -172,6 +174,7 @@ def render_console(
         selected_page,
         paper_dry_run=paper_dry_run,
         market_data_runtime=market_data_runtime,
+        historical_ingestion_service=historical_ingestion_service,
     )
     if _has_result(rendered_model.results):
         ui.divider()
@@ -266,6 +269,7 @@ def _render_page(
     *,
     paper_dry_run: DryRunProvider | None,
     market_data_runtime: MarketDataRuntime | None,
+    historical_ingestion_service: Any | None,
 ) -> OperatorConsoleViewModel:
     if page is OperatorPage.DASHBOARD:
         _render_dashboard(ui, model)
@@ -291,6 +295,7 @@ def _render_page(
             ui,
             model,
             market_data_runtime=market_data_runtime,
+            historical_ingestion_service=historical_ingestion_service,
         )
         return _with_configuration(model, configuration)
     elif page is OperatorPage.DIAGNOSTICS:
@@ -578,6 +583,7 @@ def _render_market_data(
     model: OperatorConsoleViewModel,
     *,
     market_data_runtime: MarketDataRuntime | None,
+    historical_ingestion_service: Any | None,
 ) -> ConfigurationViewModel:
     runtime = market_data_runtime or MarketDataRuntime()
     runtime_snapshot = runtime.health()
@@ -695,6 +701,38 @@ def _render_market_data(
         labels.section_label("symbol_status"),
         market_data.symbol_statuses,
     )
+    sync_symbol = ui.text_input(
+        labels.field_label("historical_symbol"),
+        value=dict(market_data.historical_sync_controls).get("品种", "ao"),
+        key="historical_data_sync:symbol",
+    )
+    sync_day_text = ui.text_input(
+        labels.field_label("historical_trading_day"),
+        value=dict(market_data.historical_sync_controls).get("交易日", "2026-06-12"),
+        key="historical_data_sync:trading_day",
+    )
+    sync_timeframe = ui.selectbox(
+        labels.field_label("historical_timeframe"),
+        ("1m", "5m", "15m", "1h", "1d"),
+        index=0,
+        key="historical_data_sync:timeframe",
+    )
+    coverage_row = ui.columns(2)
+    _render_card(
+        coverage_row[0],
+        labels.section_label("historical_sync_controls"),
+        (
+            ("品种", sync_symbol),
+            ("交易日", sync_day_text),
+            ("周期", sync_timeframe),
+            ("动作", "仅同步历史行情"),
+        ),
+    )
+    _render_card(
+        coverage_row[1],
+        labels.section_label("historical_coverage"),
+        market_data.historical_coverage,
+    )
     action_row = ui.columns(3)
     if action_row[0].button(
         labels.action_label("Start Market Data Runtime"),
@@ -732,6 +770,23 @@ def _render_market_data(
             labels.section_label("runtime_status"),
             (labels.status_label(runtime_snapshot.status),),
         )
+    sync_action_row = ui.columns(1)
+    if sync_action_row[0].button(
+        labels.action_label("Sync Historical Bars"),
+        disabled=False,
+        key="historical_data_sync:run",
+    ):
+        sync_lines = _sync_historical_bars(
+            historical_ingestion_service,
+            sync_symbol,
+            sync_day_text,
+            sync_timeframe,
+        )
+        _render_card(
+            sync_action_row[0],
+            labels.section_label("historical_sync_result"),
+            sync_lines,
+        )
     preview_col = ui.columns(1)[0]
     preview_col.subheader(labels.section_label("typed_command_preview"))
     if assembly.preview is None:
@@ -753,6 +808,37 @@ def _render_market_data(
         validation=assembly.validation,
         market_data_sources=model.configuration.market_data_sources,
         dry_run_required=model.configuration.dry_run_required,
+    )
+
+
+def _sync_historical_bars(
+    service: Any | None,
+    symbol: str,
+    trading_day_text: str,
+    timeframe: str,
+) -> tuple[object, ...]:
+    if service is None:
+        return (
+            ("状态", "BLOCKED"),
+            ("失败原因", "历史行情同步服务未配置"),
+            ("安全边界", "未下单，未连接 Broker，未启用 ExecutionTarget"),
+        )
+    try:
+        trading_day = date.fromisoformat(trading_day_text.strip())
+    except ValueError:
+        return (
+            ("状态", "BLOCKED"),
+            ("失败原因", "交易日格式无效"),
+            ("安全边界", "未下单，未连接 Broker，未启用 ExecutionTarget"),
+        )
+    result = service.ingest_symbol(symbol.strip(), trading_day, timeframe)
+    return (
+        ("状态", str(getattr(result, "status", "UNKNOWN"))),
+        ("bar 数量", str(getattr(result, "bar_count", 0))),
+        ("最近入库时间", str(getattr(result, "latest_ingested_at", None) or "无")),
+        ("数据源", str(getattr(result, "source", "real_market_data"))),
+        ("失败原因", str(getattr(result, "reason", None) or "无")),
+        *tuple(("诊断", item) for item in getattr(result, "diagnostics", ())),
     )
 
 

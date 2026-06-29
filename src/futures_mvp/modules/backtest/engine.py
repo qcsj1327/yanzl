@@ -53,6 +53,7 @@ from futures_mvp.modules.strategy_runtime.strategies import StrategyEvaluator
 _STATIC_FIXTURE_SOURCE = "static_historical_fixture"
 _DEFAULT_DATA_SOURCE = MarketDataSource.STATIC_FIXTURE.value
 _READ_ONLY_ADAPTER_SOURCE = MarketDataSource.READ_ONLY_ADAPTER.value
+_LOCAL_HISTORICAL_DB_SOURCE = MarketDataSource.LOCAL_HISTORICAL_DB.value
 _NOOP_STRATEGY_NAME = "noop"
 _STRATEGY_CONFIG_PLACEHOLDER = {"strategy_runtime_stage": "V.5", "strategy": "noop"}
 _PORTFOLIO_SNAPSHOT_SOURCE = "backtest_research_placeholder"
@@ -107,6 +108,27 @@ class LocalBacktestEngine:
                 messages=("resolver is required",),
             )
         if data_provider is None:
+            if data_source == _LOCAL_HISTORICAL_DB_SOURCE:
+                return BacktestResult(
+                    status=BacktestStatus.BLOCKED,
+                    diagnostics=BacktestDiagnostics(
+                        messages=(
+                            "本地历史行情库未配置，请先配置仓储或同步历史行情。",
+                            f"data_source={_LOCAL_HISTORICAL_DB_SOURCE}",
+                            "Backtest 不会直接访问 AkShare",
+                        ),
+                        data_statuses=(f"data_source:{_LOCAL_HISTORICAL_DB_SOURCE}:BLOCKED",),
+                    ),
+                    data_source_summary=BacktestDataSummary(
+                        source=_LOCAL_HISTORICAL_DB_SOURCE,
+                        timeframe=request.timeframe.strip().lower(),
+                        start_trading_day=request.start_trading_day,
+                        end_trading_day=request.end_trading_day,
+                        bars_consumed_count=0,
+                        trading_days_consumed=(),
+                        diagnostics_summary="本地历史行情库未配置，请先配置仓储或同步历史行情。",
+                    ),
+                )
             if data_source == _READ_ONLY_ADAPTER_SOURCE:
                 return BacktestResult(
                     status=BacktestStatus.BLOCKED,
@@ -191,7 +213,7 @@ class LocalBacktestEngine:
                         )
                     contexts.append(context_result.context)
 
-                    if data_source == _READ_ONLY_ADAPTER_SOURCE:
+                    if data_source in {_READ_ONLY_ADAPTER_SOURCE, _LOCAL_HISTORICAL_DB_SOURCE}:
                         bars_result = data_provider.get_bars(
                             context_result.context,
                             timeframe,
@@ -911,6 +933,7 @@ def _validate_request(request: BacktestRequest) -> str | None:
     if _request_data_source(request) not in (
         _DEFAULT_DATA_SOURCE,
         _READ_ONLY_ADAPTER_SOURCE,
+        _LOCAL_HISTORICAL_DB_SOURCE,
     ):
         return "unsupported data_source"
     if request.initial_cash <= Decimal("0"):
@@ -919,8 +942,9 @@ def _validate_request(request: BacktestRequest) -> str | None:
         return "resolver is required"
     if not hasattr(request.resolver, "resolve"):
         return "resolver must provide resolve(symbol, trading_day)"
-    if request.data_provider is None and _request_data_source(request) != (
-        _READ_ONLY_ADAPTER_SOURCE
+    if request.data_provider is None and _request_data_source(request) not in (
+        _READ_ONLY_ADAPTER_SOURCE,
+        _LOCAL_HISTORICAL_DB_SOURCE,
     ):
         return "data provider is required"
     if request.data_provider is not None and not hasattr(request.data_provider, "get_bars"):
@@ -1278,11 +1302,11 @@ def _data_gap_result(
     data_source = _request_data_source(request)
     status = (
         BacktestStatus.BLOCKED
-        if data_source == _READ_ONLY_ADAPTER_SOURCE
+        if data_source in {_READ_ONLY_ADAPTER_SOURCE, _LOCAL_HISTORICAL_DB_SOURCE}
         else BacktestStatus.DATA_GAP
     )
     message = (
-        "真实行情不可用，回测失败关闭"
+        "行情数据不可用，回测失败关闭"
         if status is BacktestStatus.BLOCKED
         else "missing bars fail closed before strategy evaluation"
     )
@@ -1323,6 +1347,8 @@ def _data_summary(
         source=(
             _READ_ONLY_ADAPTER_SOURCE
             if _request_data_source(request) == _READ_ONLY_ADAPTER_SOURCE
+            else _LOCAL_HISTORICAL_DB_SOURCE
+            if _request_data_source(request) == _LOCAL_HISTORICAL_DB_SOURCE
             else _STATIC_FIXTURE_SOURCE
         ),
         timeframe=request.timeframe.strip().lower(),

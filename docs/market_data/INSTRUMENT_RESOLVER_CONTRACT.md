@@ -451,3 +451,53 @@ manual IDs must not become identity fallbacks.
 
 Default schema decision remains NO schema. Durable resolver snapshots require a
 separate `Resolver Snapshot Persistence Contract Freeze`.
+
+## Phase H Historical Market Data Storage
+
+Phase H 打开历史行情本地库写入，但只限标准化后的 `HistoricalBar`。
+
+固定链路：
+
+```text
+真实数据源 -> 标准化 -> 本地库 -> 回测 / Console
+```
+
+AkShare 仍只是显式触发的只读数据源。它不能成为身份事实源，不能直接驱动
+Backtest，不能进入 Broker、OMS、Trade、Position、Accounting、Settlement
+链路。
+
+`historical_bars` 保存 resolver 派生身份：
+
+- `symbol`
+- `instrument_id`
+- `trade_instrument_id`
+- `exchange`
+- `trading_day`
+- `timeframe`
+- `bar_ts`
+- OHLCV
+- `source`
+- `resolver_source`
+- `resolver_confidence`
+
+唯一约束：
+
+```text
+instrument_id + trade_instrument_id + exchange + trading_day
++ timeframe + bar_ts + source
+```
+
+`raw_payload` 不进入历史行情主事实字段。未来如需保留原始载荷，只能作为诊断
+材料，不能替代 resolver identity、价格、成交量或周期事实。
+
+同步失败必须 `BLOCKED`：
+
+- resolver 未解析。
+- AkShare 未安装、未配置或接口异常。
+- 数据为空。
+- 标准化失败。
+- 数据库不可用。
+- 唯一约束冲突无法被幂等 upsert 处理。
+
+Phase H 不启用 `ExecutionTarget.PAPER`、`ExecutionTarget.SIM` 或
+`ExecutionTarget.LIVE`，不连接 Broker、CTP、SimNow，不提交或撤销订单。

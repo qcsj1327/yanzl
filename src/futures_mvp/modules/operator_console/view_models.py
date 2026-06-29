@@ -121,6 +121,18 @@ class MarketDataViewModel:
     diagnostics: tuple[tuple[str, str], ...]
     latest_quote: tuple[tuple[str, str], ...] = ()
     latest_bars: tuple[tuple[str, str], ...] = ()
+    historical_sync_controls: tuple[tuple[str, str], ...] = (
+        ("品种", "ao"),
+        ("交易日", "2026-06-12"),
+        ("周期", "1m"),
+    )
+    historical_coverage: tuple[tuple[str, str], ...] = (
+        ("本地库状态", "未同步"),
+        ("bar 数量", "0"),
+        ("最近入库时间", "无"),
+        ("数据源", "real_market_data"),
+        ("失败原因", "本地历史行情库无数据"),
+    )
     updated_at: str = "未更新"
 
 
@@ -555,6 +567,18 @@ def default_console_view_model() -> OperatorConsoleViewModel:
             ),
             latest_quote=(("状态", "无真实行情"),),
             latest_bars=(("状态", "无真实 K 线"),),
+            historical_sync_controls=(
+                ("品种", "ao"),
+                ("交易日", "2026-06-12"),
+                ("周期", "1m"),
+            ),
+            historical_coverage=(
+                ("本地库状态", "未同步"),
+                ("bar 数量", "0"),
+                ("最近入库时间", "无"),
+                ("数据源", READ_ONLY_ADAPTER_DATA_SOURCE),
+                ("失败原因", "本地历史行情库无数据"),
+            ),
             updated_at="未更新",
             diagnostics=(
                 ("数据源", "static_fixture"),
@@ -694,6 +718,18 @@ def market_data_view_model_from_snapshot(
         symbol_statuses=_symbol_status_rows(snapshot.symbols),
         latest_quote=_latest_quote_rows(snapshot.symbols),
         latest_bars=_latest_bars_rows(snapshot.symbols),
+        historical_sync_controls=(
+            ("品种", "ao"),
+            ("交易日", "2026-06-12"),
+            ("周期", "1m"),
+        ),
+        historical_coverage=(
+            ("本地库状态", "未查询"),
+            ("bar 数量", "0"),
+            ("最近入库时间", "无"),
+            ("数据源", snapshot.source),
+            ("失败原因", blocked_reason or "无"),
+        ),
         updated_at=_datetime_text(snapshot.updated_at),
         diagnostics=(
             ("数据源", snapshot.source),

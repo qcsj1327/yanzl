@@ -1617,3 +1617,44 @@ portfolio_equity = cash + sum(position market value)
 Phase Y does not implement short, margin, leverage, production persistence,
 schema, Alembic, DB writes, OMS / Trade / Position / Accounting mutation,
 broker, live feed, network or execution target enablement.
+
+## Phase H Local Historical DB Data Source
+
+Phase H 新增 Backtest 数据源：
+
+```text
+data_source = local_historical_db
+```
+
+默认数据源仍是 `static_fixture`。现有测试和默认回测不得因为本地库而改变。
+
+当选择 `local_historical_db`：
+
+- Backtest 先 resolver。
+- 只从 `HistoricalBarRepository` 读取本地 `historical_bars`。
+- 本地库无数据时返回 `BLOCKED`。
+- Backtest 不直接访问 AkShare。
+- Backtest 不触发历史行情同步。
+- Backtest 不写数据库。
+
+本地库数据必须已经由历史行情同步链路写入：
+
+```text
+真实数据源 -> 标准化 -> 本地库 -> Backtest
+```
+
+Backtest 消费的 bar 仍必须是 resolver 派生身份：
+
+- `symbol`
+- `instrument_id`
+- `trade_instrument_id`
+- `exchange`
+- `trading_day`
+- `resolver_source`
+- `resolver_confidence`
+
+本地库缺失、仓储未配置、查询参数无效或数据库不可用，都必须在策略运行前
+失败关闭。失败时不得创建订单、成交、研究持仓、PnL 或组合输出。
+
+Phase H 不启用 Broker、CTP、SimNow、实盘、`ExecutionTarget.PAPER`、
+`ExecutionTarget.SIM` 或 `ExecutionTarget.LIVE`。

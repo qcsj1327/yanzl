@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 
+from futures_mvp.modules.market_data.ingestion import (
+    HistoricalDataIngestionResult,
+    HistoricalIngestionStatus,
+)
 from futures_mvp.modules.market_data.runtime import (
     MarketDataRuntime,
     MarketDataRuntimeConfig,
@@ -325,6 +329,48 @@ def test_market_data_page_displays_runtime_status() -> None:
     assert ("启动行情运行时", False, "market_data_runtime:start") in ui.buttons
     assert ("停止行情运行时", False, "market_data_runtime:stop") in ui.buttons
     assert ("单次刷新行情", False, "market_data_runtime:poll_once") in ui.buttons
+    assert "### 历史行情同步" in rendered
+    assert "### 本地库覆盖情况" in rendered
+    assert ("同步历史行情", False, "historical_data_sync:run") in ui.buttons
+
+
+def test_market_data_sync_button_renders_local_coverage_without_command() -> None:
+    class FakeHistoricalIngestionService:
+        def ingest_symbol(
+            self,
+            symbol: str,
+            trading_day: date,
+            timeframe: str,
+        ) -> HistoricalDataIngestionResult:
+            assert symbol == "ao"
+            assert trading_day == date(2026, 6, 12)
+            assert timeframe == "1m"
+            return HistoricalDataIngestionResult(
+                status=HistoricalIngestionStatus.COMPLETED,
+                diagnostics=("历史行情同步完成", "未下单，未启用 ExecutionTarget"),
+                bars_written=3,
+                bar_count=3,
+                latest_ingested_at=datetime(2026, 6, 12, 10, 0),
+            )
+
+    ui = FakeUI(
+        selected_label=labels.page_title(OperatorPage.MARKET_DATA.value),
+        clicked_labels={"同步历史行情"},
+    )
+
+    render_console(
+        ui,
+        default_console_view_model(),
+        historical_ingestion_service=FakeHistoricalIngestionService(),
+    )
+
+    rendered = _rendered(ui)
+    assert "### 历史行情同步结果" in rendered
+    assert "**bar 数量:** 3" in rendered
+    assert "**数据源:** real_market_data" in rendered
+    assert "未下单，未启用 ExecutionTarget" in rendered
+    assert "配置可用于预演。" not in rendered
+    assert "operator_console_result_history" not in ui.session_state
 
 
 def test_diagnostics_page_renders_broker_diagnostics() -> None:

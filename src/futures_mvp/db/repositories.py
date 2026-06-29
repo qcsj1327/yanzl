@@ -3,7 +3,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import cast
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from futures_mvp.db.models import AccountSnapshot as AccountSnapshotOrm
 from futures_mvp.db.models import ExecutionCommand as ExecutionCommandOrm
 from futures_mvp.db.models import FeatureSnapshot as FeatureSnapshotOrm
+from futures_mvp.db.models import HistoricalBar as HistoricalBarOrm
 from futures_mvp.db.models import MarginSnapshot as MarginSnapshotOrm
 from futures_mvp.db.models import MarketBar as MarketBarOrm
 from futures_mvp.db.models import MarketTick as MarketTickOrm
@@ -95,6 +96,14 @@ from futures_mvp.modules.execution_reports.canonical import (
 )
 from futures_mvp.modules.feature.canonical import canonical_feature_snapshot_payload
 from futures_mvp.modules.market.canonical import canonical_bar_payload, canonical_tick_payload
+from futures_mvp.modules.market_data.contracts import (
+    BarTimeframe as HistoricalBarTimeframe,
+)
+from futures_mvp.modules.market_data.contracts import (
+    HistoricalBar,
+    HistoricalBarsResult,
+    HistoricalDataStatus,
+)
 from futures_mvp.modules.strategy.canonical import (
     canonical_signal_candidate_payload,
     canonical_signal_event_payload,
@@ -116,6 +125,257 @@ OPEN_RECOVERY_STATUSES = frozenset(
         OrderStatus.UNKNOWN,
     }
 )
+
+_HISTORICAL_BAR_SOURCE = "real_market_data"
+
+
+class HistoricalBarRepository:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def upsert_bars(
+        self,
+        bars: Iterable[HistoricalBar],
+        *,
+        source: str = _HISTORICAL_BAR_SOURCE,
+        resolver_source: str,
+        resolver_confidence: str,
+    ) -> int:
+        changed = 0
+        for bar in bars:
+            existing = self.session.scalar(
+                select(HistoricalBarOrm).where(
+                    HistoricalBarOrm.instrument_id == bar.instrument_id,
+                    HistoricalBarOrm.trade_instrument_id == bar.trade_instrument_id,
+                    HistoricalBarOrm.exchange == bar.exchange,
+                    HistoricalBarOrm.trading_day == bar.trading_day,
+                    HistoricalBarOrm.timeframe == bar.timeframe.value,
+                    HistoricalBarOrm.bar_ts == bar.bar_ts,
+                    HistoricalBarOrm.source == source,
+                )
+            )
+            if existing is None:
+                self.session.add(
+                    HistoricalBarOrm(
+                        symbol=bar.symbol,
+                        instrument_id=bar.instrument_id,
+                        trade_instrument_id=bar.trade_instrument_id,
+                        exchange=bar.exchange,
+                        trading_day=bar.trading_day,
+                        timeframe=bar.timeframe.value,
+                        bar_ts=bar.bar_ts,
+                        open=bar.open,
+                        high=bar.high,
+                        low=bar.low,
+                        close=bar.close,
+                        volume=bar.volume,
+                        turnover=bar.turnover,
+                        open_interest=bar.open_interest,
+                        source=source,
+                        resolver_source=resolver_source,
+                        resolver_confidence=resolver_confidence,
+                    )
+                )
+                changed += 1
+                continue
+            existing.symbol = bar.symbol
+            existing.open = bar.open
+            existing.high = bar.high
+            existing.low = bar.low
+            existing.close = bar.close
+            existing.volume = bar.volume
+            existing.turnover = bar.turnover
+            existing.open_interest = bar.open_interest
+            existing.resolver_source = resolver_source
+            existing.resolver_confidence = resolver_confidence
+        try:
+            self.session.flush()
+        except IntegrityError as exc:
+            raise RepositoryError("历史行情唯一约束冲突无法处理") from exc
+        return changed
+
+    def get_bars(
+        self,
+        identity: object,
+        timeframe: str | HistoricalBarTimeframe,
+        trading_day: date | None = None,
+        *,
+        source: str = _HISTORICAL_BAR_SOURCE,
+    ) -> HistoricalBarsResult:
+        fields = _historical_identity_fields(identity, trading_day)
+        normalized_timeframe = _historical_timeframe(timeframe)
+        if fields is None or normalized_timeframe is None:
+            return HistoricalBarsResult(
+                status=HistoricalDataStatus.INVALID_INPUT,
+                diagnostics=("本地历史行情查询参数无效",),
+            )
+        symbol, instrument_id, trade_instrument_id, exchange, day = fields
+        rows = tuple(
+            self.session.scalars(
+                select(HistoricalBarOrm)
+                .where(
+                    HistoricalBarOrm.symbol == symbol,
+                    HistoricalBarOrm.instrument_id == instrument_id,
+                    HistoricalBarOrm.trade_instrument_id == trade_instrument_id,
+                    HistoricalBarOrm.exchange == exchange,
+                    HistoricalBarOrm.trading_day == day,
+                    HistoricalBarOrm.timeframe == normalized_timeframe.value,
+                    HistoricalBarOrm.source == source,
+                )
+                .order_by(HistoricalBarOrm.bar_ts)
+            )
+        )
+        if not rows:
+            return HistoricalBarsResult(
+                status=HistoricalDataStatus.BLOCKED,
+                diagnostics=(
+                    "本地历史行情库无数据",
+                    "Backtest 不会直接访问 AkShare",
+                ),
+            )
+        return HistoricalBarsResult(
+            status=HistoricalDataStatus.OK,
+            bars=tuple(_historical_bar_to_domain(row) for row in rows),
+            diagnostics=(
+                "数据源=local_historical_db",
+                f"本地历史行情条数={len(rows)}",
+            ),
+        )
+
+    def get_latest_bar(
+        self,
+        identity: object,
+        timeframe: str | HistoricalBarTimeframe,
+        trading_day: date | None = None,
+        *,
+        source: str = _HISTORICAL_BAR_SOURCE,
+    ) -> HistoricalBar | None:
+        result = self.get_bars(identity, timeframe, trading_day, source=source)
+        return result.bars[-1] if result.bars else None
+
+    def count_bars(
+        self,
+        identity: object,
+        timeframe: str | HistoricalBarTimeframe,
+        trading_day: date | None = None,
+        *,
+        source: str = _HISTORICAL_BAR_SOURCE,
+    ) -> int:
+        fields = _historical_identity_fields(identity, trading_day)
+        normalized_timeframe = _historical_timeframe(timeframe)
+        if fields is None or normalized_timeframe is None:
+            return 0
+        symbol, instrument_id, trade_instrument_id, exchange, day = fields
+        return int(
+            self.session.scalar(
+                select(func.count(HistoricalBarOrm.id)).where(
+                    HistoricalBarOrm.symbol == symbol,
+                    HistoricalBarOrm.instrument_id == instrument_id,
+                    HistoricalBarOrm.trade_instrument_id == trade_instrument_id,
+                    HistoricalBarOrm.exchange == exchange,
+                    HistoricalBarOrm.trading_day == day,
+                    HistoricalBarOrm.timeframe == normalized_timeframe.value,
+                    HistoricalBarOrm.source == source,
+                )
+            )
+            or 0
+        )
+
+    def get_coverage(
+        self,
+        identity: object,
+        timeframe: str | HistoricalBarTimeframe,
+        trading_day: date | None = None,
+        *,
+        source: str = _HISTORICAL_BAR_SOURCE,
+    ) -> dict[str, object]:
+        fields = _historical_identity_fields(identity, trading_day)
+        normalized_timeframe = _historical_timeframe(timeframe)
+        if fields is None or normalized_timeframe is None:
+            return {
+                "status": "BLOCKED",
+                "bar_count": 0,
+                "latest_bar_ts": None,
+                "source": source,
+                "reason": "本地历史行情查询参数无效",
+            }
+        symbol, instrument_id, trade_instrument_id, exchange, day = fields
+        count_value, first_ts, latest_ts, latest_created_at = self.session.execute(
+            select(
+                func.count(HistoricalBarOrm.id),
+                func.min(HistoricalBarOrm.bar_ts),
+                func.max(HistoricalBarOrm.bar_ts),
+                func.max(HistoricalBarOrm.created_at),
+            ).where(
+                HistoricalBarOrm.symbol == symbol,
+                HistoricalBarOrm.instrument_id == instrument_id,
+                HistoricalBarOrm.trade_instrument_id == trade_instrument_id,
+                HistoricalBarOrm.exchange == exchange,
+                HistoricalBarOrm.trading_day == day,
+                HistoricalBarOrm.timeframe == normalized_timeframe.value,
+                HistoricalBarOrm.source == source,
+            )
+        ).one()
+        count_int = int(count_value or 0)
+        return {
+            "status": "OK" if count_int else "BLOCKED",
+            "bar_count": count_int,
+            "first_bar_ts": first_ts,
+            "latest_bar_ts": latest_ts,
+            "latest_ingested_at": latest_created_at,
+            "source": source,
+            "reason": "无" if count_int else "本地历史行情库无数据",
+        }
+
+
+def _historical_identity_fields(
+    identity: object,
+    trading_day: date | None,
+) -> tuple[str, str, str, str, date] | None:
+    value = getattr(identity, "identity", identity)
+    symbol = getattr(value, "symbol", None)
+    instrument_id = getattr(value, "instrument_id", None)
+    trade_instrument_id = getattr(value, "trade_instrument_id", None)
+    exchange = getattr(value, "exchange", None)
+    day = trading_day or getattr(value, "trading_day", None)
+    if (
+        isinstance(symbol, str)
+        and isinstance(instrument_id, str)
+        and isinstance(trade_instrument_id, str)
+        and isinstance(exchange, str)
+        and isinstance(day, date)
+    ):
+        return symbol, instrument_id, trade_instrument_id, exchange, day
+    return None
+
+
+def _historical_timeframe(value: str | HistoricalBarTimeframe) -> HistoricalBarTimeframe | None:
+    if isinstance(value, HistoricalBarTimeframe):
+        return value
+    try:
+        return HistoricalBarTimeframe(value.strip().lower())
+    except ValueError:
+        return None
+
+
+def _historical_bar_to_domain(row: HistoricalBarOrm) -> HistoricalBar:
+    return HistoricalBar(
+        symbol=row.symbol,
+        instrument_id=row.instrument_id,
+        trade_instrument_id=row.trade_instrument_id,
+        exchange=row.exchange,
+        trading_day=row.trading_day,
+        session_id="local_historical_db",
+        timeframe=HistoricalBarTimeframe(row.timeframe),
+        bar_ts=row.bar_ts,
+        open=row.open,
+        high=row.high,
+        low=row.low,
+        close=row.close,
+        volume=row.volume,
+        turnover=row.turnover,
+        open_interest=row.open_interest,
+    )
 
 
 def parse_order_id(order_id: str) -> int:

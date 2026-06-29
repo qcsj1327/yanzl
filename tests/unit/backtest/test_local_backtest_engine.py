@@ -31,6 +31,7 @@ from futures_mvp.modules.market_data.adapters import (
 from futures_mvp.modules.market_data.consumer import build_resolver_consumer_context
 from futures_mvp.modules.market_data.contracts import (
     BarTimeframe,
+    HistoricalBar,
     HistoricalBarsResult,
     HistoricalDataStatus,
     MarketDataSource,
@@ -132,6 +133,73 @@ class _FakeBacktestAkShareClient:
 
     def futures_zh_daily_sina(self, symbol: str) -> list[dict[str, object]]:
         return self.futures_zh_minute_sina(symbol, "1")
+
+
+class _EmptyLocalHistoricalProvider:
+    def get_bars(
+        self,
+        identity: object,
+        timeframe: str | BarTimeframe,
+    ) -> HistoricalBarsResult:
+        return HistoricalBarsResult(
+            status=HistoricalDataStatus.BLOCKED,
+            diagnostics=("本地历史行情库无数据", "Backtest 不会直接访问 AkShare"),
+        )
+
+
+class _OneBarLocalHistoricalProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def get_bars(
+        self,
+        identity: object,
+        timeframe: str | BarTimeframe,
+    ) -> HistoricalBarsResult:
+        self.calls += 1
+        value = getattr(identity, "identity", identity)
+        return HistoricalBarsResult(
+            status=HistoricalDataStatus.OK,
+            bars=(
+                _historical_bar(
+                    symbol=value.symbol,
+                    instrument_id=value.instrument_id,
+                    trade_instrument_id=value.trade_instrument_id,
+                    exchange=value.exchange,
+                    trading_day=value.trading_day,
+                    timeframe=BarTimeframe(timeframe),
+                ),
+            ),
+            diagnostics=("数据源=local_historical_db",),
+        )
+
+
+def _historical_bar(
+    *,
+    symbol: str,
+    instrument_id: str,
+    trade_instrument_id: str,
+    exchange: str,
+    trading_day: date,
+    timeframe: BarTimeframe,
+) -> HistoricalBar:
+    return HistoricalBar(
+        symbol=symbol,
+        instrument_id=instrument_id,
+        trade_instrument_id=trade_instrument_id,
+        exchange=exchange,
+        trading_day=trading_day,
+        session_id="local_historical_db",
+        timeframe=timeframe,
+        bar_ts=datetime(2026, 6, 12, 9, 1),
+        open=Decimal("3200"),
+        high=Decimal("3210"),
+        low=Decimal("3190"),
+        close=Decimal("3205"),
+        volume=Decimal("10"),
+        turnover=Decimal("0"),
+        open_interest=Decimal("20"),
+    )
 
 
 def _trade(
@@ -257,6 +325,81 @@ def test_read_only_adapter_data_source_blocks_before_market_data_read() -> None:
     assert blocked.data_source_summary.source == MarketDataSource.READ_ONLY_ADAPTER.value
     assert "只读行情适配器未配置" in blocked.diagnostics.messages
     assert blocked.bars_consumed_count == 0
+
+
+def test_local_historical_db_blocks_when_repository_is_not_configured() -> None:
+    result = LocalBacktestEngine().run(
+        replace(
+            _request(),
+            data_provider=None,
+            data_source=MarketDataSource.LOCAL_HISTORICAL_DB.value,
+        )
+    )
+
+    assert result.status is BacktestStatus.BLOCKED
+    assert result.data_source_summary is not None
+    assert result.data_source_summary.source == MarketDataSource.LOCAL_HISTORICAL_DB.value
+    assert result.bars_consumed_count == 0
+    assert "本地历史行情库未配置，请先配置仓储或同步历史行情。" in (
+        result.diagnostics.messages
+    )
+    assert "Backtest 不会直接访问 AkShare" in result.diagnostics.messages
+
+
+def test_static_fixture_still_requires_data_provider() -> None:
+    result = LocalBacktestEngine().run(
+        replace(
+            _request(),
+            data_provider=None,
+            data_source=MarketDataSource.STATIC_FIXTURE.value,
+        )
+    )
+
+    assert result.status is BacktestStatus.INVALID_INPUT
+    assert result.diagnostics.messages == ("data provider is required",)
+
+
+def test_local_historical_db_without_bars_is_blocked() -> None:
+    result = LocalBacktestEngine().run(
+        replace(
+            _request(),
+            data_provider=_EmptyLocalHistoricalProvider(),
+            data_source=MarketDataSource.LOCAL_HISTORICAL_DB.value,
+        )
+    )
+
+    assert result.status is BacktestStatus.BLOCKED
+    assert result.data_source_summary is not None
+    assert result.data_source_summary.source == MarketDataSource.LOCAL_HISTORICAL_DB.value
+    assert "本地历史行情库无数据" in result.data_source_summary.diagnostics_summary
+    assert result.bars_consumed_count == 0
+
+
+def test_local_historical_db_uses_repository_provider_without_akshare(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_if_akshare_is_loaded(_name: str) -> object:
+        raise AssertionError("Backtest local_historical_db 不应访问 AkShare")
+
+    monkeypatch.setattr(
+        "futures_mvp.modules.market_data.adapters.import_module",
+        fail_if_akshare_is_loaded,
+    )
+    provider = _OneBarLocalHistoricalProvider()
+
+    result = LocalBacktestEngine().run(
+        replace(
+            _request(),
+            data_provider=provider,
+            data_source=MarketDataSource.LOCAL_HISTORICAL_DB.value,
+        )
+    )
+
+    assert result.status is BacktestStatus.COMPLETED
+    assert provider.calls == 1
+    assert result.data_source_summary is not None
+    assert result.data_source_summary.source == MarketDataSource.LOCAL_HISTORICAL_DB.value
+    assert all("AkShare" not in message for message in result.diagnostics.messages)
 
 
 def test_real_market_data_source_runs_when_adapter_is_configured() -> None:

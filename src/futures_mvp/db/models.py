@@ -447,6 +447,58 @@ class MarketBar(Base):
     )
 
 
+class HistoricalBar(Base):
+    __tablename__ = "historical_bars"
+    __table_args__ = (
+        UniqueConstraint(
+            "instrument_id",
+            "trade_instrument_id",
+            "exchange",
+            "trading_day",
+            "timeframe",
+            "bar_ts",
+            "source",
+            name="uq_historical_bars_identity",
+        ),
+        Index(
+            "ix_historical_bars_lookup",
+            "symbol",
+            "trading_day",
+            "timeframe",
+            "source",
+        ),
+        Index(
+            "ix_historical_bars_instrument_day",
+            "exchange",
+            "instrument_id",
+            "trading_day",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    instrument_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    trade_instrument_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    exchange: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    trading_day: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    timeframe: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    bar_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    open: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    high: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    low: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    close: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    volume: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False)
+    turnover: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False, default=Decimal("0"))
+    open_interest: Mapped[Decimal] = mapped_column(DECIMAL, nullable=False, default=Decimal("0"))
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    resolver_source: Mapped[str] = mapped_column(String(64), nullable=False)
+    resolver_confidence: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class FeatureSnapshot(Base):
     __tablename__ = "feature_snapshots"
     __table_args__ = (
