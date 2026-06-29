@@ -6,6 +6,7 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import cast
 
+from futures_mvp.modules.market_data.akshare_mapping import akshare_mapping_rows
 from futures_mvp.modules.market_data.runtime import (
     MarketDataRuntimeSnapshot,
     MarketDataRuntimeStatus,
@@ -123,7 +124,8 @@ class MarketDataViewModel:
     latest_bars: tuple[tuple[str, str], ...] = ()
     historical_sync_controls: tuple[tuple[str, str], ...] = (
         ("品种", "ao"),
-        ("交易日", "2026-06-12"),
+        ("开始日期", "2026-06-12"),
+        ("结束日期", "2026-06-12"),
         ("周期", "1m"),
     )
     historical_coverage: tuple[tuple[str, str], ...] = (
@@ -404,6 +406,7 @@ def default_console_view_model() -> OperatorConsoleViewModel:
                 ("read_only_market_data", "未配置"),
                 ("network", "不会联网"),
                 ("real_quote", "不会读取真实行情"),
+                *akshare_mapping_rows(),
             ),
             safety_locks=(
                 ("live_trading", "关闭"),
@@ -569,7 +572,8 @@ def default_console_view_model() -> OperatorConsoleViewModel:
             latest_bars=(("状态", "无真实 K 线"),),
             historical_sync_controls=(
                 ("品种", "ao"),
-                ("交易日", "2026-06-12"),
+                ("开始日期", "2026-06-12"),
+                ("结束日期", "2026-06-12"),
                 ("周期", "1m"),
             ),
             historical_coverage=(
@@ -720,7 +724,8 @@ def market_data_view_model_from_snapshot(
         latest_bars=_latest_bars_rows(snapshot.symbols),
         historical_sync_controls=(
             ("品种", "ao"),
-            ("交易日", "2026-06-12"),
+            ("开始日期", "2026-06-12"),
+            ("结束日期", "2026-06-12"),
             ("周期", "1m"),
         ),
         historical_coverage=(

@@ -11,6 +11,7 @@ from futures_mvp.modules.market_data.adapters import (
     ReadOnlyMarketDataAdapter,
     ReadOnlyMarketDataAdapterConfig,
 )
+from futures_mvp.modules.market_data.akshare_mapping import AKSHARE_SYMBOL_MAPPINGS
 from futures_mvp.modules.market_data.contracts import (
     BarTimeframe,
     HistoricalDataStatus,
@@ -137,7 +138,7 @@ def test_configured_read_only_adapter_reads_symbols_contract_quote_and_bars() ->
     )
     resolution = resolver.resolve("ao", date(2026, 6, 12))
 
-    assert adapter.list_symbols() == ("ao",)
+    assert adapter.list_symbols() == ("ag", "ao", "cu", "rb")
     assert resolution.status.name == "RESOLVED"
     assert resolution.instrument_id == "ao9999"
     assert resolution.trade_instrument_id == "ao2609"
@@ -168,6 +169,17 @@ def test_configured_read_only_adapter_reads_symbols_contract_quote_and_bars() ->
     assert quote.status is HistoricalDataStatus.OK
     assert quote.quote is not None
     assert quote.quote.trade_instrument_id == "ao2609"
+
+
+def test_akshare_mappings_exist_for_phase_i_symbols() -> None:
+    for symbol in ("ao", "rb", "ag", "cu"):
+        mapping = AKSHARE_SYMBOL_MAPPINGS[symbol]
+        assert mapping.symbol == symbol
+        assert mapping.akshare_symbol
+        assert mapping.exchange
+        assert mapping.display_name
+        assert mapping.enabled is True
+        assert mapping.diagnostics
 
 
 def test_configured_read_only_adapter_fails_closed_on_empty_data() -> None:

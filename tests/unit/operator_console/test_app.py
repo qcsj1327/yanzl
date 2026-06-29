@@ -188,6 +188,10 @@ def test_config_center_renders_safety_broker_market_data_preview_and_checks() ->
     assert "**只读行情数据:** 未配置" in rendered
     assert "**网络:** 不会联网" in rendered
     assert "**真实行情:** 不会读取真实行情" in rendered
+    assert "**ao:AkShare 符号:** AO0" in rendered
+    assert "**rb:AkShare 符号:** RB0" in rendered
+    assert "**ag:AkShare 符号:** AG0" in rendered
+    assert "**cu:AkShare 符号:** CU0" in rendered
     assert "### 安全锁" in rendered
     assert "**实盘交易:** 关闭" in rendered
     assert "**Paper:** 启用" in rendered
@@ -341,15 +345,22 @@ def test_market_data_sync_button_renders_local_coverage_without_command() -> Non
             symbol: str,
             trading_day: date,
             timeframe: str,
+            *,
+            end_trading_day: date | None = None,
         ) -> HistoricalDataIngestionResult:
             assert symbol == "ao"
             assert trading_day == date(2026, 6, 12)
+            assert end_trading_day == date(2026, 6, 12)
             assert timeframe == "1m"
             return HistoricalDataIngestionResult(
                 status=HistoricalIngestionStatus.COMPLETED,
                 diagnostics=("历史行情同步完成", "未下单，未启用 ExecutionTarget"),
                 bars_written=3,
+                bars_updated=0,
+                bars_skipped=0,
                 bar_count=3,
+                first_bar_ts=datetime(2026, 6, 12, 9, 1),
+                latest_bar_ts=datetime(2026, 6, 12, 9, 3),
                 latest_ingested_at=datetime(2026, 6, 12, 10, 0),
             )
 
@@ -366,7 +377,12 @@ def test_market_data_sync_button_renders_local_coverage_without_command() -> Non
 
     rendered = _rendered(ui)
     assert "### 历史行情同步结果" in rendered
+    assert "**写入条数:** 3" in rendered
+    assert "**更新条数:** 0" in rendered
+    assert "**跳过条数:** 0" in rendered
     assert "**bar 数量:** 3" in rendered
+    assert "**覆盖开始:** 2026-06-12 09:01:00" in rendered
+    assert "**覆盖结束:** 2026-06-12 09:03:00" in rendered
     assert "**数据源:** real_market_data" in rendered
     assert "未下单，未启用 ExecutionTarget" in rendered
     assert "配置可用于预演。" not in rendered

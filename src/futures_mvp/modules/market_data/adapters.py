@@ -7,6 +7,10 @@ from decimal import Decimal, InvalidOperation
 from importlib import import_module
 from typing import Protocol, cast
 
+from futures_mvp.modules.market_data.akshare_mapping import (
+    enabled_akshare_symbols,
+    get_akshare_mapping,
+)
 from futures_mvp.modules.market_data.contracts import (
     BarTimeframe,
     BidAskLevel,
@@ -85,25 +89,9 @@ class ReadOnlyMarketDataAdapter:
         return self._config.enabled
 
     def list_symbols(self) -> tuple[str, ...]:
-        client_result = self._configured_client()
-        if client_result.blocked:
+        if not self._config.enabled:
             return ()
-        assert client_result.client is not None
-        client = client_result.client
-        try:
-            rows = _records(client.futures_display_main_sina())
-            symbols = tuple(
-                sorted(
-                    {
-                        symbol
-                        for row in rows
-                        if (symbol := _base_symbol_from_row(row)) is not None
-                    }
-                )
-            )
-            return symbols
-        except Exception:
-            return ()
+        return enabled_akshare_symbols()
 
     def list_contracts(
         self,
@@ -127,29 +115,19 @@ class ReadOnlyMarketDataAdapter:
         normalized_symbol = _normalize_symbol(symbol)
         if parsed_day is None or normalized_symbol is None:
             return None
+        mapping = get_akshare_mapping(normalized_symbol)
+        if mapping is None or not mapping.enabled:
+            return None
         client_result = self._configured_client()
         if client_result.blocked:
             return None
-        assert client_result.client is not None
-        client = client_result.client
-        try:
-            rows = _records(client.futures_display_main_sina())
-        except Exception:
-            return None
-        for row in rows:
-            if _base_symbol_from_row(row) != normalized_symbol:
-                continue
-            exchange = _row_text(row, "exchange", default="").upper()
-            if not exchange:
-                return None
-            return _contract(
-                symbol=normalized_symbol,
-                instrument_id=f"{normalized_symbol}9999",
-                exchange=exchange,
-                role=ContractRole.CONTINUOUS_MAIN,
-                trading_day=parsed_day,
-            )
-        return None
+        return _contract(
+            symbol=normalized_symbol,
+            instrument_id=f"{normalized_symbol}9999",
+            exchange=mapping.exchange,
+            role=ContractRole.CONTINUOUS_MAIN,
+            trading_day=parsed_day,
+        )
 
     def get_trade_contract(
         self,
@@ -192,7 +170,12 @@ class ReadOnlyMarketDataAdapter:
         if identity_fields is None or normalized_timeframe is None:
             return _blocked_bars("输入无效，必须提供解析器身份和支持的周期")
         symbol, instrument_id, trade_instrument_id, exchange, trading_day = identity_fields
-        ak_symbol = _akshare_symbol(instrument_id)
+        mapping = get_akshare_mapping(symbol)
+        if mapping is None:
+            return _blocked_bars("品种未配置 AkShare 映射")
+        if not mapping.enabled:
+            return _blocked_bars("AkShare 映射已禁用")
+        ak_symbol = mapping.akshare_symbol
         try:
             if normalized_timeframe is BarTimeframe.D1:
                 rows = _records(client.futures_zh_daily_sina(symbol=ak_symbol))
@@ -244,7 +227,12 @@ class ReadOnlyMarketDataAdapter:
         if identity_fields is None:
             return _blocked_quote("输入无效，必须提供解析器身份")
         symbol, instrument_id, trade_instrument_id, exchange, trading_day = identity_fields
-        ak_symbol = _akshare_symbol(instrument_id)
+        mapping = get_akshare_mapping(symbol)
+        if mapping is None:
+            return _blocked_quote("品种未配置 AkShare 映射")
+        if not mapping.enabled:
+            return _blocked_quote("AkShare 映射已禁用")
+        ak_symbol = mapping.akshare_symbol
         try:
             rows = _records(
                 client.futures_zh_spot(
@@ -449,12 +437,6 @@ def _identity_fields(identity: object) -> tuple[str, str, str, str, date] | None
         main = f"{symbol}9999"
         return symbol, main, main, "", trading_day
     return None
-
-
-def _akshare_symbol(instrument_id: str) -> str:
-    if instrument_id.endswith("9999"):
-        return f"{instrument_id[:-4].upper()}0"
-    return instrument_id.upper()
 
 
 def _decimal(value: object) -> Decimal | None:

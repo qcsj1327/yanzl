@@ -1658,3 +1658,25 @@ Backtest 消费的 bar 仍必须是 resolver 派生身份：
 
 Phase H 不启用 Broker、CTP、SimNow、实盘、`ExecutionTarget.PAPER`、
 `ExecutionTarget.SIM` 或 `ExecutionTarget.LIVE`。
+
+## Phase I AkShare To Local Historical DB Loop
+
+Phase I 不改变 Backtest 的安全边界。Backtest 仍不得直接访问 AkShare。
+
+允许的闭环：
+
+```text
+AkShare 同步任务 -> historical_bars -> data_source=local_historical_db -> Backtest
+```
+
+Backtest 选择 `local_historical_db` 时：
+
+- 有本地历史行情数据才运行。
+- 无本地历史行情数据返回 `BLOCKED`。
+- provider / repository 未配置返回 `BLOCKED`。
+- 不回退 `static_fixture`。
+- 不触发 AkShare 同步。
+- 不连接 Broker、CTP、SimNow。
+
+AkShare 当前只用于开发、验证和补历史数据。后续高质量历史数据源为 RQData，
+生产实时行情源为 CTP MdApi，CTP TraderApi 最后接入交易通道。

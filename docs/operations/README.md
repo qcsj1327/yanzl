@@ -541,3 +541,15 @@ Phase H 历史行情本地库运行规则：
 5. `raw_payload` 不能作为 identity truth；历史行情身份必须来自 resolver。
 6. `ExecutionTarget.MOCK` 仍是唯一允许目标；Phase H 不启用
    `ExecutionTarget.PAPER`、`ExecutionTarget.SIM` 或 `ExecutionTarget.LIVE`。
+
+Phase I AkShare 历史行情同步规则：
+
+1. AkShare 当前只用于开发、验证和补历史数据。
+2. `ao -> AO0`、`rb -> RB0`、`ag -> AG0`、`cu -> CU0` 必须显式配置；不得靠字符串猜测。
+3. 未映射、映射禁用、resolver 失败、AkShare 不可用、空数据、标准化失败、
+   数据库不可用和本地库无数据均必须 `BLOCKED`。
+4. Console 同步按钮只执行历史行情同步，不生成 command，不进入交易路径。
+5. Backtest 使用 `local_historical_db` 时只读本地库，不访问 AkShare，不回退
+   `static_fixture`。
+6. RQData 后续定位为高质量历史数据；CTP MdApi 后续定位为生产实时行情；
+   CTP TraderApi 最后接入交易通道。

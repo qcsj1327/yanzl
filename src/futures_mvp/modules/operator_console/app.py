@@ -708,8 +708,13 @@ def _render_market_data(
     )
     sync_day_text = ui.text_input(
         labels.field_label("historical_trading_day"),
-        value=dict(market_data.historical_sync_controls).get("交易日", "2026-06-12"),
+        value=dict(market_data.historical_sync_controls).get("开始日期", "2026-06-12"),
         key="historical_data_sync:trading_day",
+    )
+    sync_end_day_text = ui.text_input(
+        labels.field_label("historical_end_trading_day"),
+        value=dict(market_data.historical_sync_controls).get("结束日期", sync_day_text),
+        key="historical_data_sync:end_trading_day",
     )
     sync_timeframe = ui.selectbox(
         labels.field_label("historical_timeframe"),
@@ -723,7 +728,8 @@ def _render_market_data(
         labels.section_label("historical_sync_controls"),
         (
             ("品种", sync_symbol),
-            ("交易日", sync_day_text),
+            ("开始日期", sync_day_text),
+            ("结束日期", sync_end_day_text),
             ("周期", sync_timeframe),
             ("动作", "仅同步历史行情"),
         ),
@@ -780,6 +786,7 @@ def _render_market_data(
             historical_ingestion_service,
             sync_symbol,
             sync_day_text,
+            sync_end_day_text,
             sync_timeframe,
         )
         _render_card(
@@ -815,6 +822,7 @@ def _sync_historical_bars(
     service: Any | None,
     symbol: str,
     trading_day_text: str,
+    end_trading_day_text: str,
     timeframe: str,
 ) -> tuple[object, ...]:
     if service is None:
@@ -825,16 +833,27 @@ def _sync_historical_bars(
         )
     try:
         trading_day = date.fromisoformat(trading_day_text.strip())
+        end_trading_day = date.fromisoformat(end_trading_day_text.strip())
     except ValueError:
         return (
             ("状态", "BLOCKED"),
             ("失败原因", "交易日格式无效"),
             ("安全边界", "未下单，未连接 Broker，未启用 ExecutionTarget"),
         )
-    result = service.ingest_symbol(symbol.strip(), trading_day, timeframe)
+    result = service.ingest_symbol(
+        symbol.strip(),
+        trading_day,
+        timeframe,
+        end_trading_day=end_trading_day,
+    )
     return (
         ("状态", str(getattr(result, "status", "UNKNOWN"))),
+        ("写入条数", str(getattr(result, "bars_written", 0))),
+        ("更新条数", str(getattr(result, "bars_updated", 0))),
+        ("跳过条数", str(getattr(result, "bars_skipped", 0))),
         ("bar 数量", str(getattr(result, "bar_count", 0))),
+        ("覆盖开始", str(getattr(result, "first_bar_ts", None) or "无")),
+        ("覆盖结束", str(getattr(result, "latest_bar_ts", None) or "无")),
         ("最近入库时间", str(getattr(result, "latest_ingested_at", None) or "无")),
         ("数据源", str(getattr(result, "source", "real_market_data"))),
         ("失败原因", str(getattr(result, "reason", None) or "无")),

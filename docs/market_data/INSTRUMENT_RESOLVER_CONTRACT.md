@@ -501,3 +501,34 @@ instrument_id + trade_instrument_id + exchange + trading_day
 
 Phase H 不启用 `ExecutionTarget.PAPER`、`ExecutionTarget.SIM` 或
 `ExecutionTarget.LIVE`，不连接 Broker、CTP、SimNow，不提交或撤销订单。
+
+## Phase I AkShare Historical Sync Configuration
+
+Phase I 将 AkShare 定位为当前开发、验证和补数据用历史行情源。AkShare 不是
+生产实时行情源，不是身份事实源，不连接 Broker，不提交订单。
+
+当前显式映射：
+
+| symbol | AkShare 符号 | 交易所 | 名称 | 状态 |
+| --- | --- | --- | --- | --- |
+| ao | AO0 | SHFE | 氧化铝 | 启用 |
+| rb | RB0 | SHFE | 螺纹钢 | 启用 |
+| ag | AG0 | SHFE | 白银 | 启用 |
+| cu | CU0 | SHFE | 铜 | 启用 |
+
+同步链路固定为：
+
+```text
+品种选择 -> AkShare 显式映射 -> resolver -> AkShare adapter
+-> 标准化 HistoricalBar -> historical_bars -> 覆盖情况 -> 本地库回测
+```
+
+未配置映射或映射禁用时必须 `BLOCKED`，并且不得尝试联网。实现不得从
+`instrument_id`、`trade_instrument_id`、UI label 或原始载荷猜测 AkShare
+符号。
+
+后续数据源定位：
+
+- RQData：后续高质量历史数据源。
+- CTP MdApi：后续生产实时行情源。
+- CTP TraderApi：最后接入，且仅用于交易通道；不得早于历史数据和实时行情边界验收。

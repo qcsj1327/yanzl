@@ -3,7 +3,17 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal
 
+import pytest
+
 from futures_mvp.modules.backtest import BacktestRequest, BacktestStatus, LocalBacktestEngine
+from futures_mvp.modules.market_data.adapters import (
+    ReadOnlyMarketDataAdapter,
+    ReadOnlyMarketDataAdapterConfig,
+)
+from futures_mvp.modules.market_data.akshare_mapping import (
+    AKSHARE_SYMBOL_MAPPINGS,
+    AkShareSymbolMapping,
+)
 from futures_mvp.modules.market_data.contracts import (
     BarTimeframe,
     HistoricalBar,
@@ -116,6 +126,26 @@ class _EmptyAdapter(StaticHistoricalDataFixtureProvider):
         return HistoricalBarsResult(status=HistoricalDataStatus.OK, bars=())
 
 
+class _UnavailableAdapter(StaticHistoricalDataFixtureProvider):
+    def get_bars(self, *_args: object, **_kwargs: object) -> HistoricalBarsResult:
+        return HistoricalBarsResult(
+            status=HistoricalDataStatus.BLOCKED,
+            diagnostics=("AkShare 未安装或不可用：ImportError",),
+        )
+
+
+class _FailingHistoricalRepository(_MemoryHistoricalRepository):
+    def upsert_bars(
+        self,
+        bars: tuple[HistoricalBar, ...],
+        *,
+        source: str,
+        resolver_source: str,
+        resolver_confidence: str,
+    ) -> int:
+        raise RuntimeError("数据库不可用")
+
+
 def _request(repository: object) -> BacktestRequest:
     return BacktestRequest(
         strategy_name="noop",
@@ -147,6 +177,50 @@ def test_ingestion_fake_adapter_success_writes_standardized_bars() -> None:
     assert "链路=真实数据源 -> 标准化 -> 本地库" in result.diagnostics
 
 
+def test_ingestion_fake_akshare_success_writes_to_repository() -> None:
+    repository = _MemoryHistoricalRepository()
+    adapter = ReadOnlyMarketDataAdapter(
+        ReadOnlyMarketDataAdapterConfig(enabled=True),
+        client=_FakeAkShareClient(),
+    )
+    service = HistoricalDataIngestionService(
+        resolver=InstrumentResolver(
+            data_source=MarketDataSource.READ_ONLY_ADAPTER,
+            adapter=adapter,
+        ),
+        adapter=adapter,
+        repository=repository,
+    )
+
+    result = service.ingest_symbol("ao", date(2026, 6, 12), BarTimeframe.M1)
+
+    assert result.status is HistoricalIngestionStatus.COMPLETED
+    assert result.bars_written == 1
+    assert result.bars_updated == 0
+    assert result.bars_skipped == 0
+    assert result.bar_count == 1
+    assert repository.bars[0].close == Decimal("3205")
+
+
+def test_repeated_ingestion_is_idempotent() -> None:
+    repository = _MemoryHistoricalRepository()
+    service = HistoricalDataIngestionService(
+        resolver=InstrumentResolver(),
+        adapter=StaticHistoricalDataFixtureProvider(),
+        repository=repository,
+    )
+
+    first = service.ingest_symbol("ao", date(2026, 6, 12), BarTimeframe.M1)
+    second = service.ingest_symbol("ao", date(2026, 6, 12), BarTimeframe.M1)
+
+    assert first.status is HistoricalIngestionStatus.COMPLETED
+    assert second.status is HistoricalIngestionStatus.COMPLETED
+    assert first.bars_written == 3
+    assert second.bars_written == 0
+    assert second.bars_skipped == 3
+    assert len(repository.bars) == 3
+
+
 def test_ingestion_resolver_failure_is_blocked() -> None:
     service = HistoricalDataIngestionService(
         resolver=InstrumentResolver(),
@@ -154,10 +228,45 @@ def test_ingestion_resolver_failure_is_blocked() -> None:
         repository=_MemoryHistoricalRepository(),
     )
 
-    result = service.ingest_symbol("bad-symbol", date(2026, 6, 12), BarTimeframe.M1)
+    result = service.ingest_symbol("ao", date(2027, 1, 1), BarTimeframe.M1)
 
     assert result.status is HistoricalIngestionStatus.BLOCKED
     assert result.reason == "解析器失败，历史行情同步已阻断"
+
+
+def test_ingestion_unmapped_symbol_is_blocked_before_resolver() -> None:
+    service = HistoricalDataIngestionService(
+        resolver=InstrumentResolver(),
+        adapter=StaticHistoricalDataFixtureProvider(),
+        repository=_MemoryHistoricalRepository(),
+    )
+
+    result = service.ingest_symbol("zz", date(2026, 6, 12), BarTimeframe.M1)
+
+    assert result.status is HistoricalIngestionStatus.BLOCKED
+    assert result.reason == "品种未配置 AkShare 映射"
+
+
+def test_ingestion_disabled_mapping_is_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
+    disabled_mapping = AkShareSymbolMapping(
+        symbol="ao",
+        akshare_symbol="AO0",
+        exchange="SHFE",
+        display_name="氧化铝",
+        enabled=False,
+        diagnostics=("测试禁用",),
+    )
+    monkeypatch.setitem(AKSHARE_SYMBOL_MAPPINGS, "ao", disabled_mapping)
+    service = HistoricalDataIngestionService(
+        resolver=InstrumentResolver(),
+        adapter=StaticHistoricalDataFixtureProvider(),
+        repository=_MemoryHistoricalRepository(),
+    )
+
+    result = service.ingest_symbol("ao", date(2026, 6, 12), BarTimeframe.M1)
+
+    assert result.status is HistoricalIngestionStatus.BLOCKED
+    assert result.reason == "AkShare 映射已禁用"
 
 
 def test_ingestion_empty_data_is_blocked() -> None:
@@ -171,6 +280,33 @@ def test_ingestion_empty_data_is_blocked() -> None:
 
     assert result.status is HistoricalIngestionStatus.BLOCKED
     assert result.reason == "AkShare 返回空数据，历史行情同步已阻断"
+
+
+def test_ingestion_akshare_unavailable_is_blocked() -> None:
+    service = HistoricalDataIngestionService(
+        resolver=InstrumentResolver(),
+        adapter=_UnavailableAdapter(),
+        repository=_MemoryHistoricalRepository(),
+    )
+
+    result = service.ingest_symbol("ao", date(2026, 6, 12), BarTimeframe.M1)
+
+    assert result.status is HistoricalIngestionStatus.BLOCKED
+    assert result.reason == "AkShare 只读数据源不可用，历史行情同步已阻断"
+    assert "AkShare 未安装或不可用：ImportError" in result.diagnostics
+
+
+def test_ingestion_database_unavailable_is_blocked() -> None:
+    service = HistoricalDataIngestionService(
+        resolver=InstrumentResolver(),
+        adapter=StaticHistoricalDataFixtureProvider(),
+        repository=_FailingHistoricalRepository(),
+    )
+
+    result = service.ingest_symbol("ao", date(2026, 6, 12), BarTimeframe.M1)
+
+    assert result.status is HistoricalIngestionStatus.BLOCKED
+    assert result.reason == "数据库不可用或写入失败：RuntimeError"
 
 
 def test_backtest_local_historical_db_without_data_is_blocked() -> None:
@@ -207,3 +343,42 @@ def test_local_historical_db_path_does_not_enable_execution_targets() -> None:
 
     assert "ExecutionTarget" not in engine_module.__dict__
     assert "ExecutionTarget" not in ingestion_module.__dict__
+
+
+class _FakeAkShareClient:
+    def futures_display_main_sina(self) -> list[dict[str, object]]:
+        return [{"symbol": "AO0", "exchange": "SHFE"}]
+
+    def match_main_contract(self, symbol: str) -> str:
+        return "AO0"
+
+    def futures_zh_spot(
+        self,
+        symbol: str,
+        market: str = "CF",
+        adjust: str = "0",
+    ) -> list[dict[str, object]]:
+        return [
+            {
+                "symbol": "ao2609",
+                "current_price": "3205",
+                "volume": "10",
+                "hold": "20",
+            }
+        ]
+
+    def futures_zh_minute_sina(self, symbol: str, period: str) -> list[dict[str, object]]:
+        return [
+            {
+                "datetime": "2026-06-12 09:01:00",
+                "open": "3200",
+                "high": "3210",
+                "low": "3190",
+                "close": "3205",
+                "volume": "10",
+                "hold": "20",
+            }
+        ]
+
+    def futures_zh_daily_sina(self, symbol: str) -> list[dict[str, object]]:
+        return self.futures_zh_minute_sina(symbol, "1")

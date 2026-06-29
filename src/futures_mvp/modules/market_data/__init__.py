@@ -1,4 +1,11 @@
 from futures_mvp.modules.market_data.adapters import ReadOnlyMarketDataAdapter
+from futures_mvp.modules.market_data.akshare_mapping import (
+    AKSHARE_SYMBOL_MAPPINGS,
+    AkShareSymbolMapping,
+    akshare_mapping_rows,
+    enabled_akshare_symbols,
+    get_akshare_mapping,
+)
 from futures_mvp.modules.market_data.consumer import (
     ResolvedInstrumentIdentity,
     ResolverConsumerContext,
@@ -30,6 +37,8 @@ from futures_mvp.modules.market_data.runtime import (
 
 __all__ = [
     "ContractRole",
+    "AKSHARE_SYMBOL_MAPPINGS",
+    "AkShareSymbolMapping",
     "HistoricalDataIngestionResult",
     "HistoricalDataIngestionService",
     "HistoricalIngestionStatus",
@@ -48,6 +57,9 @@ __all__ = [
     "ResolverConsumerContext",
     "ResolverConsumerContextBuildResult",
     "ResolverLineage",
+    "akshare_mapping_rows",
     "build_resolver_consumer_context",
+    "enabled_akshare_symbols",
+    "get_akshare_mapping",
     "resolver_context_command_mismatch",
 ]
